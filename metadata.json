@@ -1,0 +1,5 @@
+{
+  "name": "Gestión Horaria Académica V3",
+  "description": "A professional tool to visualize academic schedules from Excel files, organizing data by blocks, classrooms, and instructors with a modern, responsive grid interface.",
+  "requestFramePermissions": []
+}
