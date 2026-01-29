@@ -36,6 +36,10 @@ export const COLORS = [
 
 export const CONTRACT_HOURS_TC = 46.0;
 
+export const SEMESTER_START_DATE = new Date(2026, 1, 16); // 16/02/2026
+export const SEMESTER_END_DATE = new Date(2026, 5, 28);   // 28/06/2026
+export const CUT_OFF_DATE = new Date(2026, 5, 7);      // 07/06/2026
+
 export const TASK_ABBREVIATIONS: Record<string, string> = {
   'Horas Asíncronas': 'Hor Asinc',
   'Asíncrona': 'Asinc',
@@ -78,9 +82,9 @@ export const getHexColor = (tailwindClass: string): string => {
   return mapping[bgClass] || mapping[tailwindClass] || 'FFFFFF';
 };
 
-export const TIME_START = 7; 
-export const TIME_END = 22;  
-export const MAX_ACADEMIC_HOUR = "22:30"; 
+export const TIME_START = 7;
+export const TIME_END = 22;
+export const MAX_ACADEMIC_HOUR = "22:30";
 
 export interface TimeSlotConfig {
   hour: number;

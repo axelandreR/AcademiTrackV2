@@ -1,7 +1,6 @@
-
 import * as XLSX from 'xlsx';
-import { RawScheduleData, RawRoomData, RawInstructorData, RawHolidayData, ProcessedSchedule, RoomData, InstructorData, HolidayData } from '../types';
-import { COLORS } from '../constants';
+import { ProcessedSchedule, RoomData, InstructorData, HolidayData } from '../types';
+import { COLORS, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
 
 export interface ParseResult {
   schedules: ProcessedSchedule[];
@@ -10,6 +9,30 @@ export interface ParseResult {
   holidays: HolidayData[];
 }
 
+const normalizeKey = (key: string) => {
+  if (!key) return '';
+  return key.toString().trim().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, '_');
+};
+
+const normalizeName = (name: string) => {
+  if (!name) return 'Sin asignar';
+  return name.toString()
+    .toUpperCase()
+    .replace(/,/g, ' ') // Quitar comas
+    .replace(/\s+/g, ' ') // Quitar espacios dobles
+    .trim();
+};
+
+const mapFuzzy = (obj: any, candidates: string[]) => {
+  const normalizedCandidates = candidates.map(normalizeKey);
+  for (const key in obj) {
+    if (normalizedCandidates.includes(normalizeKey(key))) return obj[key];
+  }
+  return undefined;
+};
+
 export const parseExcelFile = async (file: File): Promise<ParseResult> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -17,167 +40,154 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array', cellDates: false });
-        
-        // 1. Procesar Hoja de Programación
-        const schedSheetName = workbook.SheetNames.find(name => name.toUpperCase().includes('PROGR')) || workbook.SheetNames[0];
+
+        // 1. Programación
+        const schedSheetName = workbook.SheetNames.find(name => normalizeKey(name).includes('progr')) || workbook.SheetNames[0];
         const schedWorksheet = workbook.Sheets[schedSheetName];
-        const schedJson = XLSX.utils.sheet_to_json<RawScheduleData>(schedWorksheet);
-        
-        // 2. Procesar Hoja de AULA
-        const roomSheetName = workbook.SheetNames.find(name => name.toUpperCase() === 'AULA');
+        const schedJson = XLSX.utils.sheet_to_json<any>(schedWorksheet, { defval: null });
+
+        // 2. Aulas
+        const roomSheetName = workbook.SheetNames.find(name => normalizeKey(name) === 'aula' || normalizeKey(name).includes('ambiente'));
         let rooms: RoomData[] = [];
         if (roomSheetName) {
-          const roomWorksheet = workbook.Sheets[roomSheetName];
-          const roomJson = XLSX.utils.sheet_to_json<RawRoomData>(roomWorksheet);
-          rooms = roomJson.map(r => {
-            const edif = String(r.EDIF || '').trim();
-            const aula = String(r.AULA || '').trim();
-            const roomKey = `${edif} - ${aula}`;
-            
-            return {
-              career: String(r.CARRERA || ''),
-              roomKey: roomKey,
-              building: edif,
-              room: aula,
-              description: String(r["DESCRIPCIÓN ACTUAL"] || ''),
-              type: String(r.TIPO || 'SIN TIPO').trim().toUpperCase(),
-              capacity: Number(r.AFORO || 0)
-            };
-          });
+          const roomJson = XLSX.utils.sheet_to_json<any>(workbook.Sheets[roomSheetName], { defval: null });
+          rooms = roomJson.map(r => ({
+            career: String(mapFuzzy(r, ['CARRERA']) || ''),
+            roomKey: `${String(mapFuzzy(r, ['EDIF']) || '').trim()} - ${String(mapFuzzy(r, ['AULA']) || '').trim()}`,
+            building: String(mapFuzzy(r, ['EDIF']) || ''),
+            room: String(mapFuzzy(r, ['AULA']) || ''),
+            description: String(mapFuzzy(r, ['DESCRIPCION_ACTUAL', 'DESCRIPCION']) || ''),
+            type: String(mapFuzzy(r, ['TIPO']) || 'SIN TIPO').trim().toUpperCase(),
+            capacity: Number(mapFuzzy(r, ['AFORO', 'CAPACIDAD']) || 0)
+          }));
         }
 
-        // 3. Procesar Hoja de Instructores
-        const instSheetName = workbook.SheetNames.find(name => name.toUpperCase().includes('INSTRUCTOR'));
+        // 3. Instructores
+        const instSheetName = workbook.SheetNames.find(name => normalizeKey(name).includes('instructor') || normalizeKey(name).includes('docente'));
         let instructors: InstructorData[] = [];
         if (instSheetName) {
-          const instWorksheet = workbook.Sheets[instSheetName];
-          const instJson = XLSX.utils.sheet_to_json<RawInstructorData>(instWorksheet);
+          const instJson = XLSX.utils.sheet_to_json<any>(workbook.Sheets[instSheetName], { defval: null });
           instructors = instJson.map(i => {
-            const tipoRaw = String(i.TIPO || '').toUpperCase();
-            const type: 'TC' | 'TP' = tipoRaw.includes('TC') || tipoRaw.includes('COMPLETO') ? 'TC' : 'TP';
-            
+            const tipoRaw = String(mapFuzzy(i, ['TIPO']) || '').toUpperCase();
             return {
-              id: String(i.ID || ''),
-              name: String(i.TRABAJADOR || '').trim(),
-              type: type,
-              maxHours: Number(i["HORAS MAX"] || 0),
-              specialty: String(i.ESPECIALIDAD || 'General'),
-              campus: String(i.SEDE || 'N/A'),
-              status: String(i.ESTADO || 'Activo')
+              id: String(mapFuzzy(i, ['ID', 'CODIGO']) || ''),
+              name: normalizeName(String(mapFuzzy(i, ['TRABAJADOR', 'NOMBRE', 'INSTRUCTOR', 'DOCENTE']) || '')),
+              type: (tipoRaw.includes('TC') || tipoRaw.includes('COMPLETO')) ? 'TC' : 'TP',
+              maxHours: Number(mapFuzzy(i, ['HORAS_MAX', 'META']) || 0),
+              specialty: String(mapFuzzy(i, ['ESPECIALIDAD']) || 'General'),
+              campus: String(mapFuzzy(i, ['SEDE', 'CAMPUS']) || 'N/A'),
+              status: String(mapFuzzy(i, ['ESTADO']) || 'Activo')
             };
           });
         }
 
-        // 4. Procesar Hoja de Feriados
-        const holidaySheetName = workbook.SheetNames.find(name => name.toUpperCase() === 'FERIADOS');
+        // 4. Feriados
+        const holidaySheetName = workbook.SheetNames.find(name => normalizeKey(name).includes('feriado'));
         let holidays: HolidayData[] = [];
         if (holidaySheetName) {
-          const holidayWorksheet = workbook.Sheets[holidaySheetName];
-          const holidayJson = XLSX.utils.sheet_to_json<RawHolidayData>(holidayWorksheet);
+          const holidayJson = XLSX.utils.sheet_to_json<any>(workbook.Sheets[holidaySheetName], { defval: null });
           holidays = holidayJson.map(h => ({
-            date: parseExcelDateFixed(h["DÍA FERIADO"]),
-            name: String(h["CELEBRACIÓN"] || 'Feriado'),
-            description: String(h["NOMBRE DIA"] || '')
+            date: parseExcelDateFixed(mapFuzzy(h, ['DIA_FERIADO', 'FECHA', 'FERIADO'])),
+            name: String(mapFuzzy(h, ['CELEBRACION', 'NOMBRE', 'DESCRIPCION']) || 'Feriado'),
+            description: String(mapFuzzy(h, ['NOMBRE_DIA', 'DIA']) || '')
           })).filter(h => h.date instanceof Date && !isNaN(h.date.getTime()));
         }
 
         const nrcColorMap = new Map<string, string>();
         let colorCounter = 0;
-
         const getOrCreateColor = (nrc: string) => {
           const cleanNrc = String(nrc || 'unknown').trim();
-          if (!nrcColorMap.has(cleanNrc)) {
-            nrcColorMap.set(cleanNrc, COLORS[colorCounter % COLORS.length]);
-            colorCounter++;
-          }
+          if (!nrcColorMap.has(cleanNrc)) { nrcColorMap.set(cleanNrc, COLORS[colorCounter % COLORS.length]); colorCounter++; }
           return nrcColorMap.get(cleanNrc)!;
         };
-        
+
         const schedules = schedJson.map((item, index) => {
           const days: string[] = [];
-          const isX = (val: any) => String(val || '').trim().toUpperCase() === 'X';
-          
-          if (isX(item.LUNES)) days.push('LUNES');
-          if (isX(item.MARTES)) days.push('MARTES');
-          if (isX(item.MIERCOLES)) days.push('MIERCOLES');
-          if (isX(item.JUEVES)) days.push('JUEVES');
-          if (isX(item.VIERNES)) days.push('VIERNES');
-          if (isX(item.SABADO)) days.push('SABADO');
-          if (isX(item.DOMINGO)) days.push('DOMINGO');
+          const isMarked = (key: string) => {
+            const val = String(item[key] || '').trim().toUpperCase();
+            return val === 'X' || val === '1' || val === 'SI' || val === 'S';
+          };
 
-          const startDate = parseExcelDateFixed(item.D_INICIO);
-          const endDate = parseExcelDateFixed(item.D_FIN);
-          const nrcValue = String(item.SECCION || '-');
-          const edifSched = String(item.EDIFICIO || '').trim();
-          const roomSched = String(item.SALON || '').trim();
+          for (const key in item) {
+            const n = normalizeKey(key);
+            if ((n === 'lunes' || n === 'lun' || n === 'l') && isMarked(key)) days.push('LUNES');
+            if ((n === 'martes' || n === 'mar' || n === 'ma' || n === 'm') && isMarked(key)) days.push('MARTES');
+            if ((n === 'miercoles' || n === 'mie' || n === 'mi' || n === 'x' || n === 'w') && isMarked(key)) days.push('MIERCOLES');
+            if ((n === 'jueves' || n === 'jue' || n === 'ju' || n === 'j') && isMarked(key)) days.push('JUEVES');
+            if ((n === 'viernes' || n === 'vie' || n === 'vi' || n === 'v') && isMarked(key)) days.push('VIERNES');
+            if ((n === 'sabado' || n === 'sab' || n === 'sa' || n === 's') && isMarked(key)) days.push('SABADO');
+            if ((n === 'domingo' || n === 'dom' || n === 'do' || n === 'd') && isMarked(key)) days.push('DOMINGO');
+          }
+
+          const startTime = formatTime(mapFuzzy(item, ['HORA_INI', 'INICIO_HORA', 'HORA_INICIO', 'H_INI', 'T_INI']));
+          const endTime = formatTime(mapFuzzy(item, ['HORA_FIN', 'FIN_HORA', 'HORA_FINAL', 'H_FIN', 'T_FIN']));
+          // Valor por defecto si faltan fechas: SEMESTER_START / SEMESTER_END
+          const startDate = parseExcelDateFixed(mapFuzzy(item, ['D_INICIO', 'FECHA_INICIO', 'INICIO', 'F_INICIO', 'DESDE'])) || new Date(SEMESTER_START_DATE);
+          const endDate = parseExcelDateFixed(mapFuzzy(item, ['D_FIN', 'FECHA_FIN', 'FIN', 'F_FIN', 'HASTA'])) || new Date(SEMESTER_END_DATE);
+
+          const weeklyHoursRaw = parseNumberRobust(mapFuzzy(item, ['HORAS_SEMANALES', 'HORAS', 'HRS', 'CARGA', 'CREDITOS', 'WEEKLY_HRS']));
+
+          // Cálculo MANUAL de Carga como respaldo si la columna falta, PERO PRIORIZANDO weeklyHoursRaw si existe
+          let weeklyHours = weeklyHoursRaw;
+          if (weeklyHours === 0 && startTime && endTime && days.length > 0) {
+            const [h1, m1] = startTime.split(':').map(Number);
+            const [h2, m2] = endTime.split(':').map(Number);
+            const duration = (h2 * 60 + m2 - (h1 * 60 + m1)) / 60;
+            weeklyHours = duration * days.length;
+          }
+
+          const nrcValue = String(mapFuzzy(item, ['SECCION', 'NRC', 'ID_NRC', 'SEC', 'ID_SECCION']) || '-');
 
           return {
-            id: `row-${index}-${item.ID || 'no-id'}`, 
-            courseCode: item.CODIGO,
-            courseName: item.DESCRIPCION_CURSO,
-            activity: String(item.ACTIVIDAD || ''),
-            meetingType: String(item.TIPO_REUNION || ''),
-            block: item.Bloque,
-            instructor: item.INSTRUCTOR || 'Sin asignar',
-            instructorId: String(item.ID_INST || ''),
-            room: roomSched,
-            building: edifSched,
-            days,
-            startTime: formatTime(item.HORA_INI),
-            endTime: formatTime(item.HORA_FIN),
-            startDate,
-            endDate,
-            career: item.CARRERA,
-            nrc: nrcValue,
-            color: getOrCreateColor(nrcValue),
-            weeklyHours: Number(item.HORAS_SEMANALES || 0),
-            aforo: Number(item.AFORO || 0),
-            periodo: String(item.periodo || ''),
-            semestre: String(item.Semestre || '')
+            id: `row-${index}-${mapFuzzy(item, ['ID', 'INDICE']) || Date.now()}`,
+            courseCode: String(mapFuzzy(item, ['CODIGO', 'CURSO_ID', 'MAT-CUR', 'MAT_CUR', 'MATRICULA_CURSO']) || ''),
+            courseName: String(mapFuzzy(item, ['DESCRIPCION_CURSO', 'MATERIA', 'CURSO']) || ''),
+            activity: String(mapFuzzy(item, ['ACTIVIDAD', 'TIPO_ACT']) || ''),
+            meetingType: String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || ''),
+            block: String(mapFuzzy(item, ['BLOQUE', 'GRUPO']) || ''),
+            instructor: normalizeName(String(mapFuzzy(item, ['INSTRUCTOR', 'DOCENTE', 'TRABAJADOR']) || '')),
+            instructorId: String(mapFuzzy(item, ['ID_INST', 'DOCENTE_ID']) || ''),
+            room: String(mapFuzzy(item, ['SALON', 'AULA', 'AMBIENTE']) || ''),
+            building: String(mapFuzzy(item, ['EDIFICIO', 'EDIF']) || ''),
+            days, startTime, endTime, startDate, endDate,
+            career: String(mapFuzzy(item, ['CARRERA', 'PROGRAMA', 'DEPT']) || ''),
+            nrc: nrcValue, color: getOrCreateColor(nrcValue),
+            weeklyHours, aforo: parseNumberRobust(mapFuzzy(item, ['AFORO', 'CAPACIDAD'])),
+            periodo: String(mapFuzzy(item, ['PERIODO', 'CICLO']) || ''),
+            semestre: String(mapFuzzy(item, ['SEMESTRE', 'NIVEL']) || '')
           };
-        }).filter(item => 
-          item.days.length > 0 && 
-          item.startTime && 
-          item.endTime && 
-          item.startDate instanceof Date && 
-          !isNaN(item.startDate.getTime())
+        }).filter(item =>
+          // RELAJAMOS EL FILTRO: Solo exigimos que tenga horas para no perder carga
+          (item.weeklyHours > 0 || (item.days.length > 0 && item.startTime)) &&
+          item.startDate instanceof Date && !isNaN(item.startDate.getTime())
         );
 
         resolve({ schedules, rooms, instructors, holidays });
-      } catch (err) {
-        reject(err);
-      }
+      } catch (err) { reject(err); }
     };
     reader.onerror = (err) => reject(err);
     reader.readAsArrayBuffer(file);
   });
 };
 
-const parseExcelDateFixed = (val: any): Date => {
-  if (!val) return new Date(NaN);
+const parseNumberRobust = (val: any): number => {
+  if (val === null || val === undefined || val === '') return 0;
+  if (typeof val === 'number') return val;
+  const str = String(val).replace(',', '.').replace(/[^\d.]/g, '');
+  const n = parseFloat(str);
+  return isNaN(n) ? 0 : n;
+};
+
+const parseExcelDateFixed = (val: any): Date | null => {
+  if (!val) return null;
   if (typeof val === 'number') {
     const date = new Date(1899, 11, 30);
     date.setDate(date.getDate() + Math.floor(val));
     date.setHours(0, 0, 0, 0);
     return date;
   }
-  if (typeof val === 'string') {
-    const parts = val.split(/[-/]/);
-    if (parts.length === 3) {
-      let day, month, year;
-      if (parts[0].length === 4) {
-        year = parseInt(parts[0]);
-        month = parseInt(parts[1]) - 1;
-        day = parseInt(parts[2]);
-      } else {
-        day = parseInt(parts[0]);
-        month = parseInt(parts[1]) - 1;
-        year = parseInt(parts[2]);
-      }
-      return new Date(year, month, day, 0, 0, 0, 0);
-    }
-  }
   const d = new Date(val);
+  if (isNaN(d.getTime())) return null;
   d.setHours(0, 0, 0, 0);
   return d;
 };
@@ -186,16 +196,29 @@ const formatTime = (time: any): string => {
   if (!time) return '';
   if (typeof time === 'number') {
     let totalMinutes = Math.round(time * 24 * 60);
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
   }
-  const str = String(time).trim();
-  if (str.includes(':')) {
-    const parts = str.split(':');
-    const h = parts[0].padStart(2, '0');
-    const m = (parts[1] || '00').slice(0, 2).padStart(2, '0');
+  let str = String(time).trim().toUpperCase();
+  // Quitar segundos si existen (HH:MM:SS)
+  if (str.split(':').length === 3) str = str.split(':').slice(0, 2).join(':');
+  // Manejar AM/PM
+  if (str.includes('AM') || str.includes('PM')) {
+    let [t, p] = str.split(/\s+/);
+    if (!p) { p = str.slice(-2); t = str.slice(0, -2).trim(); }
+    let [h, m] = t.split(':').map(Number);
+    if (p === 'PM' && h < 12) h += 12;
+    if (p === 'AM' && h === 12) h = 0;
+    return `${String(h).padStart(2, '0')}:${String(m || 0).padStart(2, '0')}`;
+  }
+  // Formato comprimido: 745 -> 07:45
+  if (!str.includes(':') && /^\d{3,4}$/.test(str)) {
+    const h = str.length === 3 ? '0' + str[0] : str.slice(0, 2);
+    const m = str.slice(-2);
     return `${h}:${m}`;
+  }
+  if (str.includes(':')) {
+    const [h, m] = str.split(':');
+    return `${h.padStart(2, '0')}:${(m || '00').slice(0, 2).padStart(2, '0')}`;
   }
   return str;
 };

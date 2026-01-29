@@ -1,7 +1,6 @@
-
 import ExcelJS from 'exceljs';
 import { ProcessedSchedule, ViewType, InstructorData, HolidayData } from '../types';
-import { getTimeSlots, DAYS_OF_WEEK, getHexColor } from '../constants';
+import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 
 interface ExcelExportParams {
   data: ProcessedSchedule[];
@@ -15,7 +14,8 @@ interface ExcelExportParams {
   holidays?: HolidayData[];
 }
 
-const SEMESTER_END_LIMIT = new Date(2026, 5, 28); // 28/06/2026
+const SEMESTER_LIMIT_START = SEMESTER_START_DATE;
+const SEMESTER_LIMIT_END = SEMESTER_END_DATE;
 
 const timeToMin = (t: string) => {
   if (!t) return -1;
@@ -25,6 +25,13 @@ const timeToMin = (t: string) => {
   const m = parseInt(parts[1], 10);
   if (isNaN(h) || isNaN(m)) return -1;
   return h * 60 + m;
+};
+
+const formatTimeLabel = (h: number) => {
+  const totalMin = Math.round(h * 60);
+  const hh = Math.floor(totalMin / 60);
+  const mm = totalMin % 60;
+  return `${hh}h:${String(mm).padStart(2, '0')}m`;
 };
 
 const findClosestSlotIdx = (timeStr: string, timeSlots: any[]): number => {
@@ -51,7 +58,7 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
   const latestMinutes = data.reduce((max, s) => Math.max(max, timeToMin(s.endTime)), 0);
   const clipLimitMinutes = latestMinutes > 0 ? Math.min(timeToMin("23:15"), latestMinutes + 60) : timeToMin("22:30");
   const timeSlots = allTimeSlots.filter(slot => timeToMin(slot.label) <= clipLimitMinutes);
-  
+
   const allDates = data.map(d => d.startDate.getTime()).concat(data.map(d => d.endDate.getTime()));
   let startLimit: Date;
   let endLimit: Date;
@@ -59,12 +66,17 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
   if (scope === 'custom' && customStartDate && customEndDate) {
     startLimit = new Date(customStartDate + 'T00:00:00');
     endLimit = new Date(customEndDate + 'T23:59:59');
+  } else if (scope === 'allWeeks') {
+    startLimit = new Date(SEMESTER_LIMIT_START);
+    endLimit = new Date(SEMESTER_LIMIT_END);
   } else if (allDates.length > 0) {
-    startLimit = new Date(Math.min(...allDates));
-    endLimit = new Date(Math.min(Math.max(...allDates), SEMESTER_END_LIMIT.getTime()));
+    const minD = Math.min(...allDates);
+    const maxD = Math.max(...allDates);
+    startLimit = new Date(Math.max(minD, SEMESTER_LIMIT_START.getTime()));
+    endLimit = new Date(Math.min(maxD, SEMESTER_LIMIT_END.getTime()));
   } else {
-    startLimit = new Date();
-    endLimit = new Date(SEMESTER_END_LIMIT);
+    startLimit = new Date(SEMESTER_LIMIT_START);
+    endLimit = new Date(SEMESTER_LIMIT_END);
   }
 
   const getStartOfWeek = (d: Date) => {
@@ -72,21 +84,42 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
     const day = date.getDay();
     const diff = date.getDate() - day + (day === 0 ? -6 : 1);
     date.setDate(diff);
-    date.setHours(0,0,0,0);
+    date.setHours(0, 0, 0, 0);
     return date;
   };
 
   const isHolidayDate = (date: Date) => {
-    return holidays.find(h => 
-      h.date.getDate() === date.getDate() && 
-      h.date.getMonth() === date.getMonth() && 
+    return holidays.find(h =>
+      h.date.getDate() === date.getDate() &&
+      h.date.getMonth() === date.getMonth() &&
       h.date.getFullYear() === date.getFullYear()
     );
   };
 
   const startDate = getStartOfWeek(startLimit);
-  const totalWeeks = scope === 'firstWeek' ? 1 : Math.ceil((endLimit.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000)) || 1;
-  
+
+  // Calcular semanas de forma robusta iterando
+  const weeksList: { start: Date; end: Date }[] = [];
+  let scannerDate = new Date(startDate);
+  const effectiveEndLimit = new Date(endLimit); // Use a new variable to avoid confusion with maxAuditDate
+
+  if (scope === 'firstWeek') {
+    const wEnd = new Date(scannerDate);
+    wEnd.setDate(scannerDate.getDate() + 6);
+    wEnd.setHours(23, 59, 59, 999);
+    weeksList.push({ start: new Date(scannerDate), end: wEnd });
+  } else {
+    while (scannerDate <= effectiveEndLimit) {
+      const wEnd = new Date(scannerDate);
+      wEnd.setDate(scannerDate.getDate() + 6);
+      wEnd.setHours(23, 59, 59, 999);
+      weeksList.push({ start: new Date(scannerDate), end: wEnd });
+      scannerDate.setDate(scannerDate.getDate() + 7);
+    }
+  }
+
+  const totalWeeks = weeksList.length;
+
   const firstItem = data[0];
 
   // Configuración de anchos de columna
@@ -109,30 +142,30 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
 
   const infoStartRow = 6;
   if (type === 'Instructor') {
-    worksheet.getCell(`B${infoStartRow}`).value = 'ID:';
-    worksheet.getCell(`C${infoStartRow}`).value = instructorInfo?.id || firstItem?.instructorId || 'N/A';
-    worksheet.getCell(`D${infoStartRow}`).value = 'INSTRUCTOR:';
-    worksheet.getCell(`E${infoStartRow}`).value = itemName;
-    worksheet.getCell(`G${infoStartRow}`).value = 'HORARIO ' + (firstItem?.periodo || '') + ' CFP';
-    
-    worksheet.getCell(`B${infoStartRow + 1}`).value = 'PERIODO:';
-    worksheet.getCell(`C${infoStartRow + 1}`).value = firstItem?.periodo || 'N/A';
-    worksheet.getCell(`D${infoStartRow + 1}`).value = 'INICIO GRAL:';
-    worksheet.getCell(`E${infoStartRow + 1}`).value = startLimit.toLocaleDateString('es-ES');
-    worksheet.getCell(`G${infoStartRow + 1}`).value = 'FIN GRAL:';
-    worksheet.getCell(`H${infoStartRow + 1}`).value = endLimit.toLocaleDateString('es-ES');
+    worksheet.getCell(`B${infoStartRow} `).value = 'ID:';
+    worksheet.getCell(`C${infoStartRow} `).value = instructorInfo?.id || firstItem?.instructorId || 'N/A';
+    worksheet.getCell(`D${infoStartRow} `).value = 'INSTRUCTOR:';
+    worksheet.getCell(`E${infoStartRow} `).value = itemName;
+    worksheet.getCell(`G${infoStartRow} `).value = 'HORARIO ' + (firstItem?.periodo || '') + ' CFP';
 
-    [`B${infoStartRow}`, `D${infoStartRow}`, `G${infoStartRow}`, `B${infoStartRow + 1}`, `D${infoStartRow + 1}`, `G${infoStartRow + 1}`].forEach(ref => {
+    worksheet.getCell(`B${infoStartRow + 1} `).value = 'PERIODO:';
+    worksheet.getCell(`C${infoStartRow + 1} `).value = firstItem?.periodo || 'N/A';
+    worksheet.getCell(`D${infoStartRow + 1} `).value = 'INICIO GRAL:';
+    worksheet.getCell(`E${infoStartRow + 1} `).value = startLimit.toLocaleDateString('es-ES');
+    worksheet.getCell(`G${infoStartRow + 1} `).value = 'FIN GRAL:';
+    worksheet.getCell(`H${infoStartRow + 1} `).value = endLimit.toLocaleDateString('es-ES');
+
+    [`B${infoStartRow} `, `D${infoStartRow} `, `G${infoStartRow} `, `B${infoStartRow + 1} `, `D${infoStartRow + 1} `, `G${infoStartRow + 1} `].forEach(ref => {
       const cell = worksheet.getCell(ref);
       cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
     });
   } else {
     if (type === 'Bloque') {
-      worksheet.getCell(`A${infoStartRow}`).value = 'BLOQUE:'; worksheet.getCell(`B${infoStartRow}`).value = itemName;
-      worksheet.getCell(`C${infoStartRow}`).value = 'CARRERA:'; worksheet.getCell(`D${infoStartRow}`).value = firstItem?.career || 'N/A';
+      worksheet.getCell(`A${infoStartRow} `).value = 'BLOQUE:'; worksheet.getCell(`B${infoStartRow} `).value = itemName;
+      worksheet.getCell(`C${infoStartRow} `).value = 'CARRERA:'; worksheet.getCell(`D${infoStartRow} `).value = firstItem?.career || 'N/A';
     } else {
-      worksheet.getCell(`A${infoStartRow}`).value = 'AULA:'; worksheet.getCell(`B${infoStartRow}`).value = itemName;
+      worksheet.getCell(`A${infoStartRow} `).value = 'AULA:'; worksheet.getCell(`B${infoStartRow} `).value = itemName;
     }
   }
 
@@ -142,14 +175,13 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
   const dayRowValues: string[] = [];
 
   for (let w = 0; w < totalWeeks; w++) {
-    const weekStart = new Date(startDate);
-    weekStart.setDate(startDate.getDate() + (w * 7));
-    weekRowValues.push(`SEMANA ${w + 1}`, '', '', '', '', '', '', '', '');
-    dateRowValues.push('', ''); 
-    for(let i=0; i<7; i++) {
-        const d = new Date(weekStart);
-        d.setDate(weekStart.getDate() + i);
-        dateRowValues.push(d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }));
+    const weekStart = weeksList[w].start;
+    weekRowValues.push(`SEMANA ${w + 1} `, '', '', '', '', '', '', '', '');
+    dateRowValues.push('', '');
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      dateRowValues.push(d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }));
     }
     dayRowValues.push('INICIO', 'FIN', ...DAYS_OF_WEEK.map(d => d.label.toUpperCase()));
   }
@@ -191,7 +223,7 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
       cell.alignment = { vertical: 'middle', horizontal: 'center' };
       const colInGroup = colNumber % 9;
       if (colInGroup === 1 || colInGroup === 2) {
-          cell.font = { size: 8, color: { argb: 'FF000000' }, bold: true };
+        cell.font = { size: 8, color: { argb: 'FF000000' }, bold: true };
       }
     });
   });
@@ -199,11 +231,8 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
   const weeklySummaries: { sync: number, async: number, pc: number, coord: number, other: number }[] = [];
 
   for (let w = 0; w < totalWeeks; w++) {
-    const weekStart = new Date(startDate);
-    weekStart.setDate(startDate.getDate() + (w * 7));
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
-    weekEnd.setHours(23, 59, 59, 999);
+    const weekStart = weeksList[w].start;
+    const weekEnd = weeksList[w].end;
 
     const colOffset = w * 9;
     let wSync = 0, wAsync = 0, wPC = 0, wCoord = 0, wOther = 0;
@@ -220,7 +249,7 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
           const excelStartRow = startGridRow + startSlotIdx;
           const excelEndRow = startGridRow + endSlotIdx;
           const cell = worksheet.getCell(excelStartRow, colIndex);
-          cell.value = `FERIADO NO LABORABLE\n${holiday.name.toUpperCase()}\n07:45 - 17:42`;
+          cell.value = `FERIADO NO LABORABLE\n${holiday.name.toUpperCase()} \n07: 45 - 17: 42`;
           if (excelEndRow > excelStartRow) worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex);
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
           cell.font = { size: 7, bold: true, color: { argb: 'FF991B1B' } };
@@ -247,15 +276,16 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
             const excelStartRow = startGridRow + startSlotIdx;
             const excelEndRow = startGridRow + endSlotIdx;
             const cell = worksheet.getCell(excelStartRow, colIndex);
-            
+
             if (sched.isAdministrative) {
-              let taskName = sched.category === 'refrigerio' ? 'REFRIGERIO' : (sched.category === 'preparacion' ? 'PREPARACIÓN DE CLASE' : (sched.category === 'asincrona' ? 'ASÍNCRONA' : (sched.category === 'por_asignar' ? 'HORAS POR ASIGNAR' : sched.courseName)));
-              cell.value = `${taskName} ${sched.modality?.toUpperCase() || ''}\n${sched.startTime} - ${sched.endTime}`;
+              const taskName = sched.category === 'refrigerio' ? 'REFRIGERIO' : (sched.category === 'preparacion' ? 'PREPARACIÓN DE CLASE' : (sched.category === 'asincrona' ? 'ASÍNCRONA' : (sched.category === 'por_asignar' ? 'HORAS POR ASIGNAR' : (sched.category === 'coordinador' ? 'COORDINADOR CARRERA' : sched.courseName))));
+              const modalitySuffix = sched.modality ? ` ${sched.modality.toUpperCase()} ` : '';
+              cell.value = `${taskName}${modalitySuffix} \n${sched.startTime} - ${sched.endTime} `;
             } else {
-              const instructorLine = type === 'Instructor' ? '' : `Docente: ${sched.instructor}\n`;
-              cell.value = `${sched.nrc} - ${sched.block}\n${sched.courseName}\n${sched.activity}\n${instructorLine}${sched.building}-${sched.room}\n${sched.startTime}-${sched.endTime}`;
+              const instructorLine = type === 'Instructor' ? '' : `Docente: ${sched.instructor} \n`;
+              cell.value = `${sched.nrc} - ${sched.block} \n${sched.courseName} \n${sched.activity} \n${instructorLine}${sched.building} -${sched.room} \n${sched.startTime} -${sched.endTime} `;
             }
-            
+
             if (excelEndRow > excelStartRow) worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex);
 
             let hexColor = getHexColor(sched.color);
@@ -276,7 +306,21 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
             else if (sched.category === 'preparacion') wPC += duration;
             else if (sched.category === 'coordinador') wCoord += duration;
             else if (sched.category === 'por_asignar') wOther += duration;
-            else if (sched.category !== 'refrigerio') wSync += duration;
+            else if (sched.category !== 'refrigerio') {
+              const cName = (sched.courseName || '').toUpperCase();
+              const cCode = (sched.courseCode || '').toUpperCase();
+              const isOtherFuncCourse =
+                cCode.includes('CNI-108') || cCode.includes('CNIU-108') ||
+                cCode.includes('CNI-126') || cCode.includes('CNIU-126') ||
+                cName.includes('REV Y CALIF CUADERNOS INFORME') ||
+                cName.includes('ASESORIA EN ELABORACION DE PROYECTOS') ||
+                cName.includes('MEJORA / CREATIVIDAD');
+              if (isOtherFuncCourse) {
+                wCoord += duration;
+              } else {
+                wSync += duration;
+              }
+            }
           }
         });
       }
@@ -290,19 +334,23 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
       const colOffset = w * 9;
       const s = weeklySummaries[w];
       const rows = [
-        ['HORAS SINCRONAS', `${Math.floor(s.sync)}h:${String(Math.round((s.sync % 1) * 60)).padStart(2, '0')}m`],
-        ['HORAS ASINCRONAS', `${Math.floor(s.async)}h:${String(Math.round((s.async % 1) * 60)).padStart(2, '0')}m`],
-        ['PC', `${Math.floor(s.pc)}h:${String(Math.round((s.pc % 1) * 60)).padStart(2, '0')}m`],
-        ['COORDINACIÓN/OTROS', `${Math.floor(s.coord + s.other)}h:${String(Math.round(((s.coord + s.other) % 1) * 60)).padStart(2, '0')}m`],
-        ['TOTAL SEMANA', `${Math.floor(s.sync + s.async + s.pc + s.coord + s.other)}h:${String(Math.round(((s.sync + s.async + s.pc + s.coord + s.other) % 1) * 60)).padStart(2, '0')}m`]
+        ['HORAS SINCRONAS', formatTimeLabel(s.sync)],
+        ['HORAS ASINCRONAS', formatTimeLabel(s.async)],
+        ['PC', formatTimeLabel(s.pc)],
+        ['OTRAS FUNCIONES', formatTimeLabel(s.coord)],
+        ['HORAS POR ASIGNAR', formatTimeLabel(s.other)],
+        ['TOTAL SEMANA', formatTimeLabel(s.sync + s.async + s.pc + s.coord + s.other)]
       ];
       rows.forEach((r, idx) => {
-        const rowNum = summaryStartRow + idx;
-        const cellLabel = worksheet.getCell(rowNum, colOffset + 4);
-        const cellValue = worksheet.getCell(rowNum, colOffset + 5);
-        cellLabel.value = r[0]; cellValue.value = r[1];
-        cellLabel.font = { bold: true, size: 8 }; cellValue.font = { size: 8 };
-        if (idx === 4) cellLabel.font = { bold: true, size: 9 };
+        const rowIdx = summaryStartRow + idx;
+        const cellLabel = worksheet.getCell(rowIdx, colOffset + 4);
+        const cellValue = worksheet.getCell(rowIdx, colOffset + 5);
+        cellLabel.value = r[0];
+        cellValue.value = r[1];
+        cellLabel.font = { bold: true, size: 8 };
+        cellValue.font = { bold: true, size: 8 };
+        cellLabel.alignment = { horizontal: 'left' };
+        cellValue.alignment = { horizontal: 'right' };
       });
     }
 
@@ -313,11 +361,11 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
     mainTitleCell.value = 'RESUMEN DE CARGA ACADÉMICA (CURSOS ASIGNADOS)';
     mainTitleCell.font = { bold: true, size: 12, color: { argb: 'FF1E3A8A' } };
     mainTitleCell.alignment = { horizontal: 'center' };
-    
+
     const tableHeaderRow = academicSummaryRow + 2;
     const headers = ['NRC', 'BLOQUE', 'CURSO', 'ACTIVIDAD', 'AULA', 'INICIO', 'FIN'];
     const columnWidths = [10, 15, 40, 15, 15, 12, 12];
-    
+
     headers.forEach((h, idx) => {
       const cell = worksheet.getCell(tableHeaderRow, idx + 1);
       cell.value = h;
@@ -331,10 +379,10 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
     const academicSchedules = data.filter(s => !s.isAdministrative);
     // Agrupar sesiones por NRC y bloque para evitar duplicidad de "filas de curso" si el curso tiene varias sesiones en la semana
     // Pero respetando que un NRC puede tener múltiples bloques o edificios si fuera el caso
-    const uniqueAcademicLines = Array.from(new Set(academicSchedules.map(s => `${s.nrc}|${s.block}|${s.courseName}|${s.activity}|${s.building}-${s.room}|${s.startDate.getTime()}|${s.endDate.getTime()}`)));
+    const uniqueAcademicLines = Array.from(new Set(academicSchedules.map(s => `${s.nrc}| ${s.block}| ${s.courseName}| ${s.activity}| ${s.building} -${s.room}| ${s.startDate.getTime()}| ${s.endDate.getTime()} `)));
 
     let currentItemRow = tableHeaderRow + 1;
-    
+
     uniqueAcademicLines.forEach((line) => {
       const [nrc, block, course, activity, room, startT, endT] = line.split('|');
       const row = worksheet.getRow(currentItemRow);
@@ -345,8 +393,8 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
       row.getCell(5).value = room;
       row.getCell(6).value = new Date(Number(startT)).toLocaleDateString('es-ES');
       row.getCell(7).value = new Date(Number(endT)).toLocaleDateString('es-ES');
-      
-      for(let i=1; i<=7; i++) {
+
+      for (let i = 1; i <= 7; i++) {
         const cell = row.getCell(i);
         cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         cell.alignment = { horizontal: i === 3 ? 'left' : 'center', vertical: 'middle' };
@@ -371,14 +419,12 @@ export const generateGlobalAuditExcel = async (instructors: InstructorData[], sc
     const day = date.getDay();
     const diff = date.getDate() - day + (day === 0 ? -6 : 1);
     date.setDate(diff);
-    date.setHours(0,0,0,0);
+    date.setHours(0, 0, 0, 0);
     return date;
   };
 
-  const starts = schedules.map(s => s.startDate.getTime());
-  const ends = schedules.map(s => s.endDate.getTime());
-  const globalStart = getStartOfWeek(new Date(Math.min(...starts)));
-  const globalEnd = new Date(Math.min(Math.max(...ends), SEMESTER_END_LIMIT.getTime()));
+  const globalStart = getStartOfWeek(SEMESTER_START_DATE);
+  const globalEnd = new Date(SEMESTER_END_DATE);
 
   const weeks: { start: Date, end: Date }[] = [];
   let scanner = new Date(globalStart);
@@ -391,7 +437,7 @@ export const generateGlobalAuditExcel = async (instructors: InstructorData[], sc
 
   const headerRow1 = worksheet.getRow(1);
   const headerRow2 = worksheet.getRow(2);
-  headerRow1.values = ['ID', 'TRABAJADOR', 'TIPO', 'ESPECIALIDAD', ...weeks.flatMap(w => [`SEMANA ${w.start.toLocaleDateString('es-ES', {day:'2-digit', month:'2-digit'})}`, ''])];
+  headerRow1.values = ['ID', 'TRABAJADOR', 'TIPO', 'ESPECIALIDAD', ...weeks.flatMap(w => [`SEMANA ${w.start.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })} `, ''])];
   headerRow2.values = ['', '', '', '', ...weeks.flatMap(() => ['ARCHIVO', 'REAL'])];
 
   for (let i = 0; i < weeks.length; i++) {
@@ -417,7 +463,7 @@ export const generateGlobalAuditExcel = async (instructors: InstructorData[], sc
       let wMeta = 0, wReal = 0;
       for (let i = 0; i < 7; i++) {
         const d = new Date(w.start); d.setDate(w.start.getDate() + i);
-        if (d > SEMESTER_END_LIMIT) continue;
+        if (d > SEMESTER_END_DATE) continue;
 
         const dName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][d.getDay()];
         const hol = holidays.find(h => h.date.toDateString() === d.toDateString());

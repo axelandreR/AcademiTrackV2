@@ -124,7 +124,7 @@ export interface ProcessedSchedule {
 }
 
 export type ViewType = 'Bloque' | 'Aula' | 'Instructor';
-export type AppMode = 'landing' | 'schedule' | 'reports' | 'editor' | 'instructors_manager' | 'rooms_manager';
+export type AppMode = 'landing' | 'schedule' | 'reports' | 'editor' | 'instructors_manager' | 'rooms_manager' | 'progress';
 
 export interface TimeSlot {
   hour: number;

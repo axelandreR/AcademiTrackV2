@@ -9,12 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.3",
+    "@supabase/supabase-js": "^2.91.1",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",
     "react": "^19.2.3",
-    "xlsx": "^0.18.5",
-    "jszip": "^3.10.1",
-    "exceljs": "^4.4.0"
+    "react-dom": "^19.2.3",
+    "react-router-dom": "^7.13.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
