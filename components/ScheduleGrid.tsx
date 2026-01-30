@@ -1,5 +1,7 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
 import { ProcessedSchedule, ViewType, AvailabilityWindow, InstructorData, ScheduleCategory, AppMode, ModalityType, HolidayData } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE } from '../constants';
 import {
@@ -168,35 +170,21 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
       dayTasksInCalendar.forEach(s => {
         const dur = (timeToMinutes(s.endTime) - timeToMinutes(s.startTime));
-        const isAutoestudio = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO'));
-        const isRefrigerio = (s.courseName || '').toUpperCase().includes('REFRIGERIO');
-
-        if (!isRefrigerio) {
+        if (isContractualLoad(s)) {
           dayTotalMin += dur;
         }
 
-        if (!s.isAdministrative) {
-          const cName = (s.courseName || '').toUpperCase();
-          const cCode = (s.courseCode || '').toUpperCase();
-          const isOtherFuncCourse =
-            cCode.includes('CNI-108') || cCode.includes('CNIU-108') ||
-            cCode.includes('CNI-126') || cCode.includes('CNIU-126') ||
-            cName.includes('REV Y CALIF CUADERNOS INFORME') ||
-            cName.includes('ASESORIA EN ELABORACION DE PROYECTOS') ||
-            cName.includes('MEJORA / CREATIVIDAD');
-
-          if (isOtherFuncCourse) {
-            otherFuncsTotalMin += dur;
-          } else if (isAutoestudio) {
-            asyncTotalMin += dur;
-          } else {
-            syncTotalMin += dur;
-          }
-        } else {
-          if (s.category === 'asincrona') asyncTotalMin += dur;
-          else if (s.category === 'preparacion') prepTotalMin += dur;
+        if (isAcademicMetaLoad(s)) {
+          const isAutoestudio = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
+          if (isAutoestudio) asyncTotalMin += dur;
+          else syncTotalMin += dur;
+        } else if (s.isAdministrative) {
+          if (s.category === 'preparacion') prepTotalMin += dur;
           else if (s.category === 'coordinador') otherFuncsTotalMin += dur;
           else if (s.category === 'por_asignar') assignTotalMin += dur;
+        } else if (isOtherFunctionsCourse(s)) {
+          // Se cuenta para el total contractual (46h) pero no para la meta académica
+          otherFuncsTotalMin += dur;
         }
       });
 
@@ -266,17 +254,19 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
         calTasks.forEach(s => {
           const dur = (timeToMinutes(s.endTime) - timeToMinutes(s.startTime));
-          const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-          const isRefrigerio = (s.courseName || '').toUpperCase().includes('REFRIGERIO');
-
-          if (!isRefrigerio) {
+          if (isContractualLoad(s)) {
             dayMinutesTotal += dur;
           }
 
-          if (!s.isAdministrative) { if (isAuto) wAsync += dur / 60; else wSync += dur / 60; }
-          else {
-            if (s.category === 'asincrona') wAsync += dur / 60; else if (s.category === 'preparacion') wPC += dur / 60;
-            else if (s.category === 'coordinador') wCoord += dur / 60; else if (s.category === 'por_asignar') wAssign += dur / 60;
+          if (isAcademicMetaLoad(s)) {
+            const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
+            if (isAuto) wAsync += dur / 60; else wSync += dur / 60;
+          } else if (s.isAdministrative) {
+            if (s.category === 'preparacion') wPC += dur / 60;
+            else if (s.category === 'coordinador') wCoord += dur / 60;
+            else if (s.category === 'por_asignar') wAssign += dur / 60;
+          } else if (isOtherFunctionsCourse(s)) {
+            wCoord += dur / 60;
           }
         });
 

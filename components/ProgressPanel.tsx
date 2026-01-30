@@ -3,6 +3,7 @@ import { useData } from '../context/DataContext';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { isOtherFunctionsCourse, isAcademicMetaLoad, isExcludedFromTotalLoad } from '../services/businessRules';
 
 const ProgressPanel: React.FC = () => {
     const { allSchedules, instructors, exportedInstructors, toggleInstructorExported, holidays } = useData();
@@ -77,25 +78,13 @@ const ProgressPanel: React.FC = () => {
                         const durMin = timeToMinutes(s.endTime) - timeToMinutes(s.startTime);
                         const durHours = durMin / 60;
 
-                        if (s.category !== 'refrigerio') {
+                        if (!isExcludedFromTotalLoad(s)) {
                             cargaTotalSemana += durHours;
                             dayTotalMin += durMin;
                         }
 
-                        const cName = (s.courseName || '').toUpperCase();
-                        const cCode = (s.courseCode || '').toUpperCase();
-                        const isOtherFuncCourse =
-                            cCode.includes('CNI-108') || cCode.includes('CNIU-108') ||
-                            cCode.includes('CNI-126') || cCode.includes('CNIU-126') ||
-                            cName.includes('REV Y CALIF CUADERNOS INFORME') ||
-                            cName.includes('ASESORIA EN ELABORACION DE PROYECTOS') ||
-                            cName.includes('MEJORA / CREATIVIDAD');
-
-                        if (!s.isAdministrative) {
-                            if (!isOtherFuncCourse) cargaAcademicaReal += durHours;
-                        } else {
-                            const isAccemicAdmin = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-                            if (isAccemicAdmin || isOtherFuncCourse) cargaAcademicaReal += durHours;
+                        if (isAcademicMetaLoad(s)) {
+                            cargaAcademicaReal += durHours;
                         }
                     });
 

@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs';
 import { ProcessedSchedule, ViewType, InstructorData, HolidayData } from '../types';
+import { isOtherFunctionsCourse, isExcludedFromTotalLoad } from './businessRules';
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 
 interface ExcelExportParams {
@@ -31,7 +32,7 @@ const formatTimeLabel = (h: number) => {
   const totalMin = Math.round(h * 60);
   const hh = Math.floor(totalMin / 60);
   const mm = totalMin % 60;
-  return `${hh}h:${String(mm).padStart(2, '0')}m`;
+  return `${hh} h:${String(mm).padStart(2, '0')} m`;
 };
 
 const findClosestSlotIdx = (timeStr: string, timeSlots: any[]): number => {
@@ -306,16 +307,8 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
             else if (sched.category === 'preparacion') wPC += duration;
             else if (sched.category === 'coordinador') wCoord += duration;
             else if (sched.category === 'por_asignar') wOther += duration;
-            else if (sched.category !== 'refrigerio') {
-              const cName = (sched.courseName || '').toUpperCase();
-              const cCode = (sched.courseCode || '').toUpperCase();
-              const isOtherFuncCourse =
-                cCode.includes('CNI-108') || cCode.includes('CNIU-108') ||
-                cCode.includes('CNI-126') || cCode.includes('CNIU-126') ||
-                cName.includes('REV Y CALIF CUADERNOS INFORME') ||
-                cName.includes('ASESORIA EN ELABORACION DE PROYECTOS') ||
-                cName.includes('MEJORA / CREATIVIDAD');
-              if (isOtherFuncCourse) {
+            else if (!isExcludedFromTotalLoad(sched)) {
+              if (isOtherFunctionsCourse(sched)) {
                 wCoord += duration;
               } else {
                 wSync += duration;

@@ -1,11 +1,10 @@
-
 import React, { useMemo, useState } from 'react';
 import {
-  ArrowLeft, BarChart4, Users, AlertTriangle, CheckCircle,
-  Search, FileDown, TrendingDown, UserCircle2,
-  Briefcase, Activity, Clock, X, Calendar, Info,
-  ChevronRight, AlertCircle, Minus
+  FileDown, Search, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, CheckCircle, ShieldAlert, Activity, ChevronRight, Download,
+  ArrowLeft, BarChart4, UserCircle2, Minus, X, Calendar, AlertCircle, Info, Briefcase, Calendar as CalendarIcon
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
 import { ProcessedSchedule, InstructorData, HolidayData } from '../types';
 import { generateGlobalAuditExcel } from '../services/excelExporter';
 
@@ -110,14 +109,12 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
         instSchedules.filter(s => s.days.includes(dayName) && currentDate >= s.startDate && currentDate <= s.endDate)
           .forEach(s => {
             const durTotal = (timeToMin(s.endTime) - timeToMin(s.startTime));
-            const isRefrigerio = (s.courseName || '').toUpperCase().includes('REFRIGERIO');
-            if (!isRefrigerio) dayMinS1 += durTotal;
+            if (isContractualLoad(s)) dayMinS1 += durTotal;
 
             const dur = durTotal / 60;
-            const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-            if (!s.isAdministrative) {
+            if (isAcademicMetaLoad(s)) {
               totalSyncS1 += dur;
-            } else if (isAuto || s.category === 'asincrona' || s.category === 'preparacion' || s.category === 'coordinador') {
+            } else if (!isExcludedFromTotalLoad(s)) {
               totalAsyncS1 += dur;
             }
           });
@@ -138,8 +135,8 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
         const scanEnd = new Date(scannerDate); scanEnd.setDate(scannerDate.getDate() + 6);
         const scanEndTime = scanEnd.getTime();
 
-        // 1. Meta de la semana (por tareas activas)
-        const weeklyTasks = instAcademic.filter(s => s.startDate.getTime() <= scanEndTime && s.endDate.getTime() >= scanStart);
+        // 1. Meta de la semana (por tareas activas que cuentan para meta académica)
+        const weeklyTasks = instSchedules.filter(s => isAcademicMetaLoad(s) && s.startDate.getTime() <= scanEndTime && s.endDate.getTime() >= scanStart);
         wMeta = weeklyTasks.reduce((sum, s) => sum + s.weeklyHours, 0);
 
         // 2. Ejecución real (por cuadritos en el calendario)
@@ -158,26 +155,12 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
           let dayMinScanner = 0;
           instSchedules.filter(s => s.days.includes(dName) && d >= s.startDate && d <= s.endDate).forEach(s => {
             const durTotal = (timeToMin(s.endTime) - timeToMin(s.startTime));
-            const cName = (s.courseName || '').toUpperCase();
-            const cCode = (s.courseCode || '').toUpperCase();
-            const isOtherFuncCourse =
-              cCode.includes('CNI-108') || cCode.includes('CNIU-108') ||
-              cCode.includes('CNI-126') || cCode.includes('CNIU-126') ||
-              cName.includes('REV Y CALIF CUADERNOS INFORME') ||
-              cName.includes('ASESORIA EN ELABORACION DE PROYECTOS') ||
-              cName.includes('MEJORA / CREATIVIDAD');
-
-            const isRefrigerio = cName.includes('REFRIGERIO');
-            if (!isRefrigerio) dayMinScanner += durTotal;
+            if (isContractualLoad(s)) dayMinScanner += durTotal;
 
             const dur = durTotal / 60;
-            const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-
-            if (!s.isAdministrative) {
-              if (isOtherFuncCourse) { /* Se cuenta en total pero no en meta académica */ }
-              else wReal += dur;
+            if (isAcademicMetaLoad(s)) {
+              wReal += dur;
             }
-            else if (isAuto || s.category === 'asincrona' || s.category === 'preparacion' || s.category === 'coordinador' || isOtherFuncCourse) wReal += dur;
           });
 
           // Validación diaria en escáner
