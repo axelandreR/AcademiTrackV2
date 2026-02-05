@@ -96,14 +96,12 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
       return;
     }
 
-    // REGLA DE INMUTABILIDAD:
-    // Solo recalculamos carga para tareas administrativas.
-    // Para clases académicas, preservamos el valor original del archivo.
+    // REGLA DE CARGA:
+    // 1. Si es Administrativa: Mantenemos HORAS CRONOLÓGICAS (divisor 60)
+    // 2. Si es Académica: Usamos el valor de weeklyHours (que el usuario sincronizó con horas de 45m)
     let finalWeeklyHours = formData.weeklyHours || 0;
     if (formData.isAdministrative) {
       finalWeeklyHours = durationMin / 60;
-    } else if (initialData) {
-      finalWeeklyHours = initialData.weeklyHours;
     }
 
     onSave({
@@ -113,6 +111,10 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
     } as ProcessedSchedule);
     onClose();
   };
+
+  const currentDurationPedagogical = ((timeToMinutes(formData.endTime || '00:00') - timeToMinutes(formData.startTime || '00:00')) / 45);
+  // El botón de sincronización solo es relevante para clases académicas (del archivo base)
+  const isSyncNeeded = !formData.isAdministrative && Math.abs((formData.weeklyHours || 0) - currentDurationPedagogical) > 0.01;
 
   const toggleDay = (day: string) => {
     // Removed academic lock check to allow editing days
@@ -251,6 +253,57 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Fin</label>
                   <input type="time" required className="w-full px-4 py-3 bg-slate-100 border-none rounded-2xl font-black text-sm focus:ring-2 focus:ring-blue-500 outline-none" value={formData.endTime} onChange={e => setFormData({ ...formData, endTime: e.target.value })} />
+                </div>
+              </div>
+
+              {/* Calculadora de Carga */}
+              <div className="mt-4 p-4 bg-slate-50 border border-slate-100 rounded-[24px] flex items-center justify-between group">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-white rounded-xl shadow-sm group-hover:bg-indigo-50 transition-colors">
+                    <Clock size={16} className="text-slate-400 group-hover:text-indigo-600" />
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                      {formData.isAdministrative ? 'Duración Cronológica' : 'Duración Sugerida'}
+                    </p>
+                    <p className="text-xs font-black text-slate-700">
+                      {formData.isAdministrative
+                        ? ((timeToMinutes(formData.endTime || '00:00') - timeToMinutes(formData.startTime || '00:00')) / 60).toFixed(2) + 'h Reloj'
+                        : currentDurationPedagogical.toFixed(2) + 'h Pedagógicas'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-4">
+                  {!formData.isAdministrative && (
+                    <>
+                      <div className="text-right">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Meta Archivo</p>
+                        <p className={`text-xs font-black ${isSyncNeeded ? 'text-amber-500' : 'text-emerald-500'}`}>
+                          {(formData.weeklyHours || 0).toFixed(2)}h
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!isSyncNeeded}
+                        onClick={() => {
+                          setFormData({ ...formData, weeklyHours: currentDurationPedagogical });
+                        }}
+                        className={`p-2 rounded-xl shadow-lg transition-all active:scale-90 ${isSyncNeeded ? 'bg-slate-900 text-white hover:bg-indigo-600 animate-pulse' : 'bg-slate-100 text-slate-300 shadow-none cursor-not-allowed'}`}
+                        title={isSyncNeeded ? "Sincronizar Meta con Horario Actual" : "Meta sincronizada"}
+                      >
+                        <Save size={16} />
+                      </button>
+                    </>
+                  )}
+                  {formData.isAdministrative && (
+                    <div className="text-right">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Carga Real</p>
+                      <p className="text-xs font-black text-indigo-600">
+                        {((timeToMinutes(formData.endTime || '00:00') - timeToMinutes(formData.startTime || '00:00')) / 60).toFixed(2)}h
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

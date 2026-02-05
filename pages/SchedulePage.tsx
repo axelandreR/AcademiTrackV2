@@ -14,6 +14,7 @@ import RecordModal from '../components/RecordModal';
 import ExportModal from '../components/ExportModal';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule, ViewType, AppMode, ScheduleCategory, ModalityType, ExportConfig } from '../types';
+import { isAcademicMetaLoad, isContractualLoad } from '../services/businessRules';
 import { generateScheduleExcel } from '../services/excelExporter';
 import { DAYS_OF_WEEK, SEMESTER_START_DATE, SEMESTER_END_DATE, CUT_OFF_DATE } from '../constants';
 
@@ -40,7 +41,11 @@ interface GroupedOption {
 const SchedulePage: React.FC = () => {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
-    const { allSchedules, data, administrativeTasks, rooms, instructors, holidays, setSchedules, setAdministrativeTasks, saveScheduleCloud, deleteScheduleCloud } = useData();
+    const {
+        allSchedules, data, administrativeTasks, rooms, instructors, holidays,
+        setSchedules, setAdministrativeTasks, saveScheduleCloud, deleteScheduleCloud,
+        instructorsByNameMap, roomsMap
+    } = useData();
 
     // Estados locales de la vista
     const [appMode, setAppMode] = useState<AppMode>('schedule');
@@ -141,7 +146,7 @@ const SchedulePage: React.FC = () => {
             careerMap.forEach((blocks: Set<string>, career: string) => { const filtered = [...blocks].filter(b => b.toLowerCase().includes(term)).sort(); if (filtered.length > 0) groups.push({ groupName: career, items: filtered }); });
         } else if (viewType === 'Aula') {
             const typeMap = new Map<string, Set<string>>();
-            allSchedules.forEach(s => { const roomKey = `${s.building} - ${s.room}`; const roomMeta = rooms.find(r => r.roomKey === roomKey); const type = roomMeta?.type || 'SIN TIPO'; if (!typeMap.has(type)) typeMap.set(type, new Set()); typeMap.get(type)!.add(roomKey); });
+            allSchedules.forEach(s => { const roomKey = `${s.building} - ${s.room}`; const roomMeta = roomsMap[roomKey]; const type = roomMeta?.type || 'SIN TIPO'; if (!typeMap.has(type)) typeMap.set(type, new Set()); typeMap.get(type)!.add(roomKey); });
             typeMap.forEach((roomsInType: Set<string>, type: string) => { const filtered = [...roomsInType].filter(r => r.toLowerCase().includes(term)).sort(); if (filtered.length > 0) groups.push({ groupName: type, items: filtered }); });
         } else {
             const tcSet = new Set<string>();
@@ -190,66 +195,76 @@ const SchedulePage: React.FC = () => {
     };
 
     const checkInstructorDiscrepancy = (instructorName: string): boolean => {
-        const inst = instructors.find(i => i.name === instructorName);
+        const inst = instructorsByNameMap[instructorName.toLowerCase()];
         if (!inst) return false;
 
-        const weekStart = new Date(currentWeekStart);
-        if (weekStart > SEMESTER_END_DATE) return false;
+        const weekStartId = currentWeekStart.getTime();
+        if (weekStartId > SEMESTER_END_DATE.getTime()) return false;
 
-        // Regla: Si hay feriado en la semana, se suspende la auditoría (coincide con ScheduleGrid)
+        // Regla: Si hay feriado en la semana, se suspende la auditoría
+        let hasHolidayInWeek = false;
         for (let i = 0; i < 7; i++) {
-            const currentDate = new Date(weekStart); currentDate.setDate(weekStart.getDate() + i);
-            if (holidays.find(h =>
+            const currentDate = new Date(currentWeekStart); currentDate.setDate(currentWeekStart.getDate() + i);
+            if (holidays.some(h =>
                 h.date.getDate() === currentDate.getDate() &&
                 h.date.getMonth() === currentDate.getMonth() &&
                 h.date.getFullYear() === currentDate.getFullYear()
-            )) return false;
+            )) {
+                hasHolidayInWeek = true;
+                break;
+            }
         }
+        if (hasHolidayInWeek) return false;
 
         const isTC = inst.type === 'TC';
-        const academicSchedulesInFile = allSchedules.filter(s => s.instructor === instructorName && !s.isAdministrative);
         const instSchedules = allSchedules.filter(s => s.instructor === instructorName);
-        let metaCarga = 0;
-        let cargaReal = 0;
-        let totalSemana = 0;
 
-        // Carga Meta (Archivo) - Calculada una sola vez para la semana (evita duplicidad y rescata horas flotantes)
-        const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
-        const activeAcademicTasks = academicSchedulesInFile.filter(s => s.startDate <= weekEnd && s.endDate >= weekStart);
+        let metaCarga = 0;
+        let cargaAcademicaReal = 0;
+        let totalSemana = 0;
+        let hasDailyBreach = false;
+
+        const weekEnd = new Date(currentWeekStart); weekEnd.setDate(currentWeekStart.getDate() + 6);
+        const weekEndAtTime = weekEnd.getTime();
+        const weekStartAtTime = currentWeekStart.getTime();
+
+        // Meta de carga (File load filtered by isAcademicMetaLoad)
+        const activeAcademicTasks = instSchedules.filter(s => !s.isAdministrative && isAcademicMetaLoad(s) && s.startDate.getTime() <= weekEndAtTime && s.endDate.getTime() >= weekStartAtTime);
         metaCarga = activeAcademicTasks.reduce((sum, s) => sum + s.weeklyHours, 0);
 
         for (let i = 0; i < 7; i++) {
-            const currentDate = new Date(weekStart); currentDate.setDate(weekStart.getDate() + i);
+            const currentDate = new Date(currentWeekStart); currentDate.setDate(currentWeekStart.getDate() + i);
             if (currentDate > SEMESTER_END_DATE) continue;
 
             const dayName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][currentDate.getDay()];
+            let dayTotalMin = 0;
 
-            // Carga Real (Clases + Administrativas elegibles)
             instSchedules.filter(s => s.days.includes(dayName) && currentDate >= s.startDate && currentDate <= s.endDate).forEach(s => {
-                const dur = (timeToMinutes(s.endTime) - timeToMinutes(s.startTime)) / 60;
+                const durMin = timeToMinutes(s.endTime) - timeToMinutes(s.startTime);
+                const durH = durMin / 60;
 
-                // REGLA: Excluimos refrigerio del total contractual 46h
-                if (s.category !== 'refrigerio') {
-                    totalSemana += dur;
+                if (isContractualLoad(s)) {
+                    totalSemana += durH;
+                    dayTotalMin += durMin;
                 }
 
-                if (!s.isAdministrative) {
-                    cargaReal += dur;
-                } else {
-                    const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-                    if (isAuto || s.category === 'asincrona' || s.category === 'preparacion' || s.category === 'coordinador') cargaReal += dur;
+                if (isAcademicMetaLoad(s)) {
+                    cargaAcademicaReal += durH;
                 }
             });
+
+            if (isTC && dayTotalMin > 552.01) hasDailyBreach = true;
+            if (!isTC && dayTotalMin > 420.01) hasDailyBreach = true;
         }
 
-        const academicDiscrepancy = Math.abs(cargaReal - metaCarga) > 0.01;
+        if (hasDailyBreach) return true;
+
+        const academicMismatch = Math.abs(cargaAcademicaReal - metaCarga) > 0.01;
 
         if (isTC) {
-            // Regla de Oro para TC: Cumplir la meta de 46h. La discrepancia académica es opcional.
             return Math.abs(totalSemana - 46) > 0.01;
         } else {
-            // Para TP: Sigue siendo primordial que la carga académica coincida.
-            return academicDiscrepancy;
+            return academicMismatch;
         }
     };
 
@@ -264,11 +279,11 @@ const SchedulePage: React.FC = () => {
             const zip = new JSZip();
             if (config.mode === 'individual') {
                 const item = config.selectedItem || ''; const itemData = allSchedules.filter(s => { if (config.type === 'Bloque') return s.block === item; if (config.type === 'Aula') return `${s.building} - ${s.room}` === item; if (config.type === 'Instructor') return s.instructor === item; return false; });
-                const blob = await generateScheduleExcel({ data: itemData, type: config.type, itemName: item, scope: config.scope, customStartDate: config.customStartDate, customEndDate: config.customEndDate, instructorInfo: instructors.find(i => i.name === item), logo: config.logo, holidays });
+                const blob = await generateScheduleExcel({ data: itemData, type: config.type, itemName: item, scope: config.scope, customStartDate: config.customStartDate, customEndDate: config.customEndDate, instructorInfo: instructorsByNameMap[item.toLowerCase()], logo: config.logo, holidays });
                 const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${item}.xlsx`; a.click();
             } else {
                 const itemsToExport = Array.from(new Set(allSchedules.map(s => { if (config.type === 'Bloque') return s.block; if (config.type === 'Aula') return `${s.building} - ${s.room}`; if (config.type === 'Instructor') return s.instructor; return ''; }))).filter((item): item is string => Boolean(item));
-                for (const item of itemsToExport) { const itemData = allSchedules.filter(s => { if (config.type === 'Bloque') return s.block === item; if (config.type === 'Aula') return `${s.building} - ${s.room}` === item; if (config.type === 'Instructor') return s.instructor === item; return false; }); const blob = await generateScheduleExcel({ data: itemData, type: config.type, itemName: item, scope: config.scope, instructorInfo: instructors.find(i => i.name === item), logo: config.logo, holidays }); zip.file(`${item}.xlsx`, blob); }
+                for (const item of itemsToExport) { const itemData = allSchedules.filter(s => { if (config.type === 'Bloque') return s.block === item; if (config.type === 'Aula') return `${s.building} - ${s.room}` === item; if (config.type === 'Instructor') return s.instructor === item; return false; }); const blob = await generateScheduleExcel({ data: itemData, type: config.type, itemName: item, scope: config.scope, instructorInfo: instructorsByNameMap[item.toLowerCase()], logo: config.logo, holidays }); zip.file(`${item}.xlsx`, blob); }
                 const zipBlob = await zip.generateAsync({ type: 'blob' }); const url = window.URL.createObjectURL(zipBlob); const a = document.createElement('a'); a.href = url; a.download = `Reporte_${config.type}.zip`; a.click();
             }
         } catch (err) { alert('Error al generar Excel.'); }
@@ -280,7 +295,7 @@ const SchedulePage: React.FC = () => {
 
         const [h, m] = startTime.split(':').map(Number); const startMin = h * 60 + m; const endMin = startMin + duration; const endH = Math.floor(endMin / 60); const endM = endMin % 60;
         const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
-        const instructor = instructors.find(i => i.name === selectedFilter); const effectiveModality = category === 'por_asignar' ? 'presencial' : modality;
+        const instructor = instructorsByNameMap[selectedFilter.toLowerCase()]; const effectiveModality = category === 'por_asignar' ? 'presencial' : modality;
 
         // Usamos la fecha de corte centralizada
         const baseStartDate = new Date(currentWeekStart);
@@ -296,7 +311,8 @@ const SchedulePage: React.FC = () => {
                 finalEndDate = new Date(SEMESTER_END_DATE);
             }
         }
-        finalEndDate.setHours(23, 59, 59, 999);
+        // Normalizamos a medianoche para evitar milisegundos de desfase
+        finalEndDate.setHours(0, 0, 0, 0);
 
         // --- Escáner de Colisiones Futuras (Blindaje contra solapamientos) ---
         // Verificamos semana a semana si ya existe algo en este slot para este docente.
@@ -323,7 +339,7 @@ const SchedulePage: React.FC = () => {
                 const daysToBack = scanner.getDay() === 0 ? 7 : scanner.getDay();
                 newLimit.setDate(scanner.getDate() - daysToBack);
                 finalEndDate = new Date(newLimit);
-                finalEndDate.setHours(23, 59, 59, 999);
+                finalEndDate.setHours(0, 0, 0, 0);
                 break;
             }
             scanner.setDate(scanner.getDate() + 7);
@@ -364,32 +380,60 @@ const SchedulePage: React.FC = () => {
             saveScheduleCloud(splitTasks);
             return;
         }
+        // Intentar encontrar en tareas académicas (Solo para 'REV Y CALIF CUADERNOS INFORME' O Feriados)
+        const academicTask = allSchedules.find(t => t.id === taskId);
 
-        // Try finding in academic tasks (ONLY for 'REV Y CALIF CUADERNOS INFORME')
-        const acadTaskIndex = filteredData.findIndex(t => t.id === taskId);
-        if (acadTaskIndex !== -1) {
-            const task = filteredData[acadTaskIndex];
-            if (task.courseName !== 'REV Y CALIF CUADERNOS INFORME') return;
+        if (academicTask) {
+            // Normalizamos targetDate a medianoche para evitar desfases
+            const normalizedTarget = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
 
-            const targetTime = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
-            const startTime = new Date(task.startDate.getFullYear(), task.startDate.getMonth(), task.startDate.getDate()).getTime();
-            const endTime = new Date(task.endDate.getFullYear(), task.endDate.getMonth(), task.endDate.getDate()).getTime();
+            const isHol = holidays.some(h =>
+                h.date.getDate() === normalizedTarget.getDate() &&
+                h.date.getMonth() === normalizedTarget.getMonth() &&
+                h.date.getFullYear() === normalizedTarget.getFullYear()
+            );
 
+            // Si no es el bloque especial de revisión ni es feriado, salimos
+            if (academicTask.courseName !== 'REV Y CALIF CUADERNOS INFORME' && !isHol) return;
+
+            const targetTime = normalizedTarget.getTime();
+            const startTime = new Date(academicTask.startDate.getFullYear(), academicTask.startDate.getMonth(), academicTask.startDate.getDate()).getTime();
+            const endTime = new Date(academicTask.endDate.getFullYear(), academicTask.endDate.getMonth(), academicTask.endDate.getDate()).getTime();
+
+            // Si ya es un registro de un solo día, no hay nada que separar
             if (startTime === endTime) return;
 
             const splitTasks: ProcessedSchedule[] = [];
+            // Parte anterior
             if (startTime < targetTime) {
-                const pastEndDate = new Date(targetTime); pastEndDate.setDate(pastEndDate.getDate() - 1);
-                splitTasks.push({ ...task, id: `past-${Date.now()}-${Math.random()}`, endDate: pastEndDate });
+                const pastEndDate = new Date(targetTime);
+                pastEndDate.setDate(pastEndDate.getDate() - 1);
+                splitTasks.push({ ...academicTask, id: `past-${Date.now()}-${Math.random()}`, endDate: pastEndDate });
             }
-            splitTasks.push({ ...task, id: `indiv-${Date.now()}-${Math.random()}`, startDate: new Date(targetTime), endDate: new Date(targetTime) });
+            // La instancia individualizada
+            splitTasks.push({
+                ...academicTask,
+                id: `indiv-${Date.now()}-${Math.random()}`,
+                startDate: new Date(targetTime),
+                endDate: new Date(targetTime)
+            });
+            // Parte futura
             if (endTime > targetTime) {
-                const futureStartDate = new Date(targetTime); futureStartDate.setDate(futureStartDate.getDate() + 1);
-                splitTasks.push({ ...task, id: `future-${Date.now()}-${Math.random()}`, startDate: futureStartDate });
+                const futureStartDate = new Date(targetTime);
+                futureStartDate.setDate(futureStartDate.getDate() + 1);
+                splitTasks.push({ ...academicTask, id: `future-${Date.now()}-${Math.random()}`, startDate: futureStartDate });
             }
 
-            deleteScheduleCloud(taskId);
-            saveScheduleCloud(splitTasks);
+            // Ejecutamos la sincronización
+            const runSplitting = async () => {
+                try {
+                    await deleteScheduleCloud(taskId);
+                    await saveScheduleCloud(splitTasks);
+                } catch (err) {
+                    console.error("Error al individualizar:", err);
+                }
+            };
+            runSplitting();
         }
     };
 
@@ -400,8 +444,8 @@ const SchedulePage: React.FC = () => {
         setSearchParams({ view: type, filter });
         // Auto-expandir grupos relacionados
         if (type === 'Bloque') { const schedule = allSchedules.find(s => s.block === filter); if (schedule) setExpandedGroups(new Set([schedule.career])); }
-        else if (type === 'Aula') { const room = rooms.find(r => r.roomKey === filter); if (room) setExpandedGroups(new Set([room.type])); }
-        else if (type === 'Instructor') { const meta = instructors.find(i => i.name === filter); if (meta) setExpandedGroups(new Set([meta.type === 'TC' ? 'TIEMPO COMPLETO (TC)' : 'TIEMPO PARCIAL (TP)'])); }
+        else if (type === 'Aula') { const room = roomsMap[filter]; if (room) setExpandedGroups(new Set([room.type])); }
+        else if (type === 'Instructor') { const meta = instructorsByNameMap[filter.toLowerCase()]; if (meta) setExpandedGroups(new Set([meta.type === 'TC' ? 'TIEMPO COMPLETO (TC)' : 'TIEMPO PARCIAL (TP)'])); }
         setIsSidebarVisible(true);
     };
 

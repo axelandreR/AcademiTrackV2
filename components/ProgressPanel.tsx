@@ -1,13 +1,14 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
-import { SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
-import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock } from 'lucide-react';
+import { SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
+import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { isOtherFunctionsCourse, isAcademicMetaLoad, isExcludedFromTotalLoad } from '../services/businessRules';
+import { isAcademicMetaLoad, isExcludedFromTotalLoad, isContractualLoad } from '../services/businessRules';
 
 const ProgressPanel: React.FC = () => {
     const { allSchedules, instructors, exportedInstructors, toggleInstructorExported, holidays } = useData();
     const navigate = useNavigate();
+    const [selectedAuditIssuer, setSelectedAuditIssuer] = useState<{ name: string, issues: { week: string, reasons: string[] }[] } | null>(null);
 
     const timeToMinutes = (t: string) => {
         if (!t) return 0;
@@ -32,16 +33,15 @@ const ProgressPanel: React.FC = () => {
     }, []);
 
     const progressData = useMemo(() => {
-        // Filtrar instructores con carga académica en el sistema
         const activeInstructors = instructors.filter(inst =>
             allSchedules.some(s => s.instructor === inst.name && !s.isAdministrative)
         );
 
-        const processed = activeInstructors.map(inst => {
+        return activeInstructors.map(inst => {
             const instSchedules = allSchedules.filter(s => s.instructor === inst.name);
-
-            let isAuditOk = false;
-            let foundValidWeek = false;
+            let totalWeeksChecked = 0;
+            let weeksOk = 0;
+            let auditIssues: { week: string, reasons: string[] }[] = [];
 
             for (const weekStart of semesterWeeks) {
                 let hasHoliday = false;
@@ -56,15 +56,16 @@ const ProgressPanel: React.FC = () => {
                 weekEnd.setHours(23, 59, 59, 999);
 
                 const metaCarga = instSchedules
-                    .filter(s => !s.isAdministrative && s.startDate <= weekEnd && s.endDate >= weekStart)
+                    .filter(s => !s.isAdministrative && isAcademicMetaLoad(s) && s.startDate <= weekEnd && s.endDate >= weekStart)
                     .reduce((sum, s) => sum + s.weeklyHours, 0);
 
                 if (metaCarga === 0 && inst.type !== 'TC') continue;
 
-                foundValidWeek = true;
+                totalWeeksChecked++;
                 let cargaAcademicaReal = 0;
                 let cargaTotalSemana = 0;
                 let hasDailyBreach = false;
+                let dailyBreachDay = "";
 
                 for (let i = 0; i < 7; i++) {
                     const currentDate = new Date(weekStart);
@@ -78,7 +79,7 @@ const ProgressPanel: React.FC = () => {
                         const durMin = timeToMinutes(s.endTime) - timeToMinutes(s.startTime);
                         const durHours = durMin / 60;
 
-                        if (!isExcludedFromTotalLoad(s)) {
+                        if (isContractualLoad(s)) {
                             cargaTotalSemana += durHours;
                             dayTotalMin += durMin;
                         }
@@ -88,28 +89,53 @@ const ProgressPanel: React.FC = () => {
                         }
                     });
 
-                    if (inst.type === 'TC' && dayTotalMin > 600) hasDailyBreach = true;
-                    if (inst.type === 'TP' && dayTotalMin > 480) hasDailyBreach = true;
+                    const limit = inst.type === 'TC' ? 552.01 : 420.01;
+                    if (dayTotalMin > limit) {
+                        hasDailyBreach = true;
+                        dailyBreachDay = dayName;
+                    }
                 }
 
-                const academicMatch = Math.abs(cargaAcademicaReal - metaCarga) < 0.1;
-                const totalMatch = inst.type === 'TC' ? Math.abs(cargaTotalSemana - 46) < 0.1 : true;
+                const isTC = inst.type === 'TC';
+                const academicMatch = Math.abs(cargaAcademicaReal - metaCarga) < 0.01;
+                const totalMatch = isTC ? Math.abs(cargaTotalSemana - 46) < 0.01 : true;
 
-                if (academicMatch && totalMatch && !hasDailyBreach) {
-                    isAuditOk = true;
-                    break;
+                // REGLA: Para TC solo falla si no cumple las 46h o hay exceso diario.
+                // Para TP falla si no cumple el match académico o hay exceso diario.
+                const isWeekValid = isTC ? (totalMatch && !hasDailyBreach) : (academicMatch && !hasDailyBreach);
+
+                if (isWeekValid) {
+                    weeksOk++;
+                } else {
+                    const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
+                    const reasons: string[] = [];
+
+                    if (isTC) {
+                        if (!totalMatch) {
+                            reasons.push(`Programado: ${cargaTotalSemana.toFixed(2)}h vs Meta: 46.00h`);
+                        }
+                    } else {
+                        if (!academicMatch) {
+                            reasons.push(`Programado: ${cargaAcademicaReal.toFixed(2)}h vs Meta: ${metaCarga.toFixed(2)}h`);
+                        }
+                    }
+
+                    if (hasDailyBreach) reasons.push(`Exceso diario: ${dailyBreachDay}`);
+
+                    auditIssues.push({ week: weekLabel, reasons });
                 }
             }
 
+            const isAuditOk = totalWeeksChecked > 0 && weeksOk === totalWeeksChecked;
+
             return {
                 ...inst,
-                isAuditOk: foundValidWeek ? isAuditOk : false,
+                isAuditOk,
+                auditIssues,
                 isExported: exportedInstructors.has(inst.id),
                 isFictitious: inst.name.toUpperCase().startsWith('INST.')
             };
         });
-
-        return processed;
     }, [instructors, allSchedules, semesterWeeks, holidays, exportedInstructors]);
 
     const tcStats = useMemo(() => {
@@ -122,10 +148,6 @@ const ProgressPanel: React.FC = () => {
         return { total: tps.length, auditOk: tps.filter(i => i.isAuditOk).length, exported: tps.filter(i => i.isExported).length };
     }, [progressData]);
 
-    const fictitiousCount = useMemo(() => {
-        return progressData.filter(i => i.isFictitious).length;
-    }, [progressData]);
-
     const globalProgress = progressData.length > 0
         ? Math.round(((tcStats.auditOk + tpStats.auditOk) / (tcStats.total + tpStats.total)) * 100)
         : 0;
@@ -133,9 +155,20 @@ const ProgressPanel: React.FC = () => {
     const renderInstructorRow = (inst: any) => (
         <div key={inst.id} className="group flex items-center justify-between p-4 bg-white border border-slate-100 rounded-2xl hover:border-blue-200 hover:shadow-md transition-all">
             <div className="flex items-center space-x-4">
-                <div onClick={() => navigate(`/schedule?view=Instructor&filter=${encodeURIComponent(inst.name)}`)} className="cursor-pointer">
-                    <div className="text-sm font-black text-slate-900 group-hover:text-blue-600 transition-colors uppercase">{inst.name}</div>
-                    <div className="text-[10px] text-slate-400 font-bold tracking-widest uppercase mt-0.5">{inst.specialty}</div>
+                <div onClick={() => navigate(`/schedule?view=Instructor&filter=${encodeURIComponent(inst.name)}`)} className="cursor-pointer flex items-center space-x-3">
+                    <div>
+                        <div className="text-sm font-black text-slate-900 group-hover:text-blue-600 transition-colors uppercase">{inst.name}</div>
+                        <div className="text-[10px] text-slate-400 font-bold tracking-widest uppercase mt-0.5">{inst.specialty}</div>
+                    </div>
+                    {!inst.isAuditOk && inst.auditIssues?.length > 0 && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); setSelectedAuditIssuer({ name: inst.name, issues: inst.auditIssues }); }}
+                            className="p-1 text-rose-500 hover:bg-rose-50 rounded-lg animate-pulse"
+                            title="Ver problemas detectados"
+                        >
+                            <AlertTriangle size={18} />
+                        </button>
+                    )}
                 </div>
             </div>
             <div className="flex items-center space-x-8">
@@ -238,27 +271,51 @@ const ProgressPanel: React.FC = () => {
                         <div className="space-y-3">{progressData.filter(i => i.type === 'TP' && !i.isFictitious).map(renderInstructorRow)}</div>
                     </div>
                 </div>
+            </div>
 
-                {fictitiousCount > 0 && (
-                    <div className="pt-10 border-t border-slate-200">
-                        <div className="flex items-center space-x-3 mb-6 pl-2">
-                            <div className="p-2 bg-slate-100 text-slate-400 rounded-xl"><Users size={20} /></div>
-                            <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest">Instructores de Horario Reservado (Ficticios)</h4>
-                            <span className="text-[10px] font-black bg-slate-100 text-slate-400 px-2 py-1 rounded-md">{fictitiousCount}</span>
+            {selectedAuditIssuer && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+                    <div className="bg-white w-full max-w-lg rounded-[32px] shadow-2xl overflow-hidden animate-in zoom-in duration-300 border border-slate-100">
+                        <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                            <div className="flex items-center space-x-3">
+                                <div className="p-2 bg-rose-100 text-rose-600 rounded-xl"><AlertTriangle size={20} /></div>
+                                <div>
+                                    <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Observaciones de Auditoría</h3>
+                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{selectedAuditIssuer.name}</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setSelectedAuditIssuer(null)} className="p-2 hover:bg-white rounded-xl transition-all"><X size={20} className="text-slate-400" /></button>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {progressData.filter(i => i.isFictitious).map(inst => (
-                                <div key={inst.id} className="flex items-center justify-between p-4 bg-slate-50/50 border border-dashed border-slate-200 rounded-2xl opacity-60 hover:opacity-100 transition-all">
-                                    <div className="flex items-center space-x-3">
-                                        <div className="text-xs font-bold text-slate-500 uppercase">{inst.name}</div>
+                        <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4 custom-scrollbar">
+                            {selectedAuditIssuer.issues.map((issue, idx) => (
+                                <div key={idx} className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                                    <div className="flex items-center space-x-2 mb-2">
+                                        <Info size={14} className="text-blue-500" />
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Semana: {issue.week}</span>
                                     </div>
-                                    <button onClick={() => navigate(`/schedule?view=Instructor&filter=${encodeURIComponent(inst.name)}`)} className="p-2 text-slate-300 hover:text-slate-600"><ArrowRight size={14} /></button>
+                                    <ul className="space-y-1.5">
+                                        {issue.reasons.map((reason, ridx) => (
+                                            <li key={ridx} className="flex items-start space-x-2 text-[11px] font-bold text-slate-700">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1 shrink-0" />
+                                                <span>{reason}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
                                 </div>
                             ))}
                         </div>
+                        <div className="p-6 bg-slate-50 flex justify-end gap-3">
+                            <button onClick={() => {
+                                const instructor = selectedAuditIssuer.name;
+                                setSelectedAuditIssuer(null);
+                                navigate(`/schedule?view=Instructor&filter=${encodeURIComponent(instructor)}`);
+                            }} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all active:scale-95">
+                                Ver Horario
+                            </button>
+                        </div>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
         </div>
     );
 };

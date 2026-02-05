@@ -14,25 +14,24 @@ export const isOtherFunctionsCourse = (sched: ProcessedSchedule): boolean => {
         cCode.includes('CNI-126') || cCode.includes('CNIU-126') ||
         cName.includes('REV Y CALIF CUADERNOS INFORME') ||
         cName.includes('ASESORIA EN ELABORACION DE PROYECTOS') ||
-        cName.includes('MEJORA / CREATIVIDAD')
+        cName.includes('MEJORA / CREATIVIDAD') ||
+        cName.includes('COORDINAR') ||
+        cName.includes('COORDINACION')
     );
 };
 
 /**
  * Determina si una tarea debe ser contada para la Meta de Carga Académica 
  * (Incluye Clases + VAEE/Autoestudio + Asíncronas)
- * Las "Otras Funciones" (CNIU-108, etc.) NO cuentan para esta meta.
+ * Asegura que el ARCHIVO refleje la suma de HORAS SEMANALES del Excel base.
  */
 export const isAcademicMetaLoad = (sched: ProcessedSchedule): boolean => {
-    const isOtherFunc = isOtherFunctionsCourse(sched);
-
-    // Si no es administrativa, se cuenta solo si NO es "Otras Funciones"
+    // Si no es administrativa (viene del Excel), se cuenta SIEMPRE para la meta académica
     if (!sched.isAdministrative) {
-        return !isOtherFunc;
+        return true;
     }
 
-    // Si es administrativa, se cuenta solo si es VAEE/Autoestudio/Asíncrona
-    // Nota: Las "Otras Funciones" marcadas como admin NO cuentan para meta académica.
+    // Si es administrativa (creada en el app), se cuenta solo si es VAEE/Autoestudio/Asíncrona
     const isAutoestudio =
         sched.meetingType === 'VAEE' ||
         (sched.activity && sched.activity.toUpperCase().includes('AUTOESTUDIO')) ||

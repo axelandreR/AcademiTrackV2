@@ -35,6 +35,12 @@ interface DataContextType {
   // Cloud CRUD
   saveScheduleCloud: (schedule: ProcessedSchedule | ProcessedSchedule[]) => Promise<void>;
   deleteScheduleCloud: (id: string | string[]) => Promise<void>;
+
+  // Normalized
+  instructorsMap: Record<string, InstructorData>;
+  instructorsByNameMap: Record<string, InstructorData>;
+  roomsMap: Record<string, RoomData>;
+  holidaysMap: Record<string, HolidayData>;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -42,16 +48,20 @@ const DataContext = createContext<DataContextType | undefined>(undefined);
 // Helper para evitar desfase de zona horaria (UTC -> Local)
 const parseLocalDBDate = (dateStr: string | null | undefined): Date => {
   if (!dateStr) return new Date(NaN);
-  // Manejamos formatos YYYY-MM-DD o ISO completos
-  const cleanDate = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
-  const parts = cleanDate.split('-');
-  if (parts.length !== 3) return new Date(dateStr); // Fallback si no es el formato esperado
+
+  // Extraemos solo la parte de la fecha (YYYY-MM-DD)
+  // Manejamos casos con 'T' (ISO) o espacio (Postgres standard)
+  const datePart = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr.split(' ')[0];
+  const parts = datePart.split('-');
+
+  if (parts.length !== 3) return new Date(dateStr);
 
   const year = parseInt(parts[0], 10);
   const month = parseInt(parts[1], 10) - 1;
   const day = parseInt(parts[2], 10);
 
-  // Creamos la fecha en hora local (medianoche)
+  // Forzamos medianoche LOCAL. Esto evita que desfases de zona horaria
+  // muevan la fecha al día anterior o siguiente al cargar.
   return new Date(year, month, day, 0, 0, 0, 0);
 };
 
@@ -389,26 +399,32 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   return (
     <DataContext.Provider value={{
-      schedules,
-      administrativeTasks,
-      rooms,
-      instructors,
-      holidays,
-      isLoading,
-      hasInitialData,
-      error,
-      setSchedules,
-      setAdministrativeTasks,
-      setRooms,
-      setInstructors,
-      setHolidays,
-      refreshData,
-      uploadSchedulesToSupabase,
-      saveScheduleCloud,
-      deleteScheduleCloud,
-      allSchedules,
-      exportedInstructors, // Added
-      toggleInstructorExported // Added
+      schedules, administrativeTasks, rooms, instructors, holidays,
+      isLoading, hasInitialData, error,
+      setSchedules, setAdministrativeTasks, setRooms, setInstructors, setHolidays,
+      refreshData, uploadSchedulesToSupabase, saveScheduleCloud, deleteScheduleCloud,
+      allSchedules, exportedInstructors, toggleInstructorExported,
+      // Estados normalizados para acceso O(1)
+      instructorsMap: React.useMemo(() => {
+        const map: Record<string, InstructorData> = {};
+        instructors.forEach(inst => { map[inst.id] = inst; });
+        return map;
+      }, [instructors]),
+      instructorsByNameMap: React.useMemo(() => {
+        const map: Record<string, InstructorData> = {};
+        instructors.forEach(inst => { map[inst.name.toLowerCase()] = inst; });
+        return map;
+      }, [instructors]),
+      roomsMap: React.useMemo(() => {
+        const map: Record<string, RoomData> = {};
+        rooms.forEach(room => { map[room.roomKey] = room; });
+        return map;
+      }, [rooms]),
+      holidaysMap: React.useMemo(() => {
+        const map: Record<string, HolidayData> = {};
+        holidays.forEach(h => { map[h.date.toDateString()] = h; });
+        return map;
+      }, [holidays])
     }}>
       {children}
     </DataContext.Provider>

@@ -1,19 +1,19 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useData } from '../context/DataContext';
 import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
 import { ProcessedSchedule, ViewType, AvailabilityWindow, InstructorData, ScheduleCategory, AppMode, ModalityType, HolidayData } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE } from '../constants';
 import {
-  Clock, MapPin,
-  CheckCircle, Briefcase, Hash, MonitorPlay,
-  ShieldAlert, Coffee, Zap, BookOpen,
-  Video, UserCircle, Settings, AlertTriangle,
-  Info, Trash2, Link2Off, LayoutDashboard, Table as TableIcon, Calendar as CalendarIcon,
-  ChevronRight, ChevronLeft, X, ShieldCheck, Activity, ChevronDown, ChevronUp, Layers,
-  AlertCircle
+  Clock, MapPin, Hash, Video, LayoutDashboard, Table as TableIcon,
+  ChevronRight, ChevronLeft, Layers, AlertTriangle
 } from 'lucide-react';
 import DataTable from './DataTable';
+import AuditModal from './AuditModal';
+import AuditFooter from './AuditFooter';
+import ScheduleSidebar from './ScheduleSidebar';
+import ScheduleCard from './ScheduleCard';
 
 const SEMESTER_END_DATE = new Date(2026, 5, 28); // 28/06/2026
 
@@ -90,10 +90,12 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
   const isInstructorView = viewType === 'Instructor';
 
+  const { instructorsByNameMap } = useData();
+
   const currentInstructorMeta = useMemo(() => {
     if (!isInstructorView || !selectedFilterName) return null;
-    return instructorsData.find(i => i.name.toLowerCase() === selectedFilterName.toLowerCase());
-  }, [instructorsData, selectedFilterName, isInstructorView]);
+    return instructorsByNameMap[selectedFilterName.toLowerCase()] || null;
+  }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
 
   useEffect(() => {
     if (currentInstructorMeta) {
@@ -152,7 +154,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
     // Una tarea es válida si su rango de fechas [startDate, endDate] se solapa con la semana actual
     const activeTasksThisWeek = academicSchedulesInFile.filter(s => {
-      return s.startDate.getTime() <= weekEndAt && s.endDate.getTime() >= weekStartAt;
+      return isAcademicMetaLoad(s) && s.startDate.getTime() <= weekEndAt && s.endDate.getTime() >= weekStartAt;
     });
 
     fileLoadHours = activeTasksThisWeek.reduce((sum, s) => sum + s.weeklyHours, 0);
@@ -160,6 +162,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     const isHolidayInWeek = datesOfWeek.some(day => isHoliday(day.date));
     let hasDailyBreach = false;
     const dailyLimit = instructorType === 'TC' ? 9.2 : 7.0;
+    const dailyLimitMins = instructorType === 'TC' ? 552.01 : 420.01;
 
     datesOfWeek.forEach(day => {
       // REGLA 1: Ignorar días después del 28/06 en el cálculo de carga en calendario
@@ -188,7 +191,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         }
       });
 
-      if (dayTotalMin / 60 > dailyLimit + 0.01 && !isHoliday(day.date)) {
+      if (dayTotalMin > dailyLimitMins && !isHoliday(day.date)) {
         hasDailyBreach = true;
       }
     });
@@ -221,42 +224,66 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
   const auditObservations = useMemo(() => {
     const list: { date: Date; type: 'academic' | 'contractual' | 'daily'; meta: number; real: number }[] = [];
-    if (!isInstructorView || !selectedFilterName) return list;
+
+    // OPTIMIZACIÓN 1: Ejecución perezosa. Solo calculamos si el modal está abierto.
+    if (!showAuditModal || !isInstructorView || !selectedFilterName) return list;
+
     const isTC = instructorType === 'TC';
     const dailyLimit = isTC ? 9.2 : 7.0;
+    const scanDailyLimitMins = isTC ? 552.01 : 420.01;
 
-    // El escáner de auditoría siempre debe empezar desde el inicio del semestre
-    let scannerDate = new Date(SEMESTER_START_DATE);
+    // OPTIMIZACIÓN 2: Pre-filtrado. Separamos administrativas de académicas una sola vez.
     const academicInFile = schedules.filter(s => !s.isAdministrative);
 
-    // Auditar máximo hasta la semana que contiene el 28/06
+    // OPTIMIZACIÓN 3: Agrupación por día de la semana para evitar .filter internos costosos.
+    const tasksByDay = {
+      'LUNES': schedules.filter(s => s.days.includes('LUNES')),
+      'MARTES': schedules.filter(s => s.days.includes('MARTES')),
+      'MIERCOLES': schedules.filter(s => s.days.includes('MIERCOLES')),
+      'JUEVES': schedules.filter(s => s.days.includes('JUEVES')),
+      'VIERNES': schedules.filter(s => s.days.includes('VIERNES')),
+      'SABADO': schedules.filter(s => s.days.includes('SABADO')),
+      'DOMINGO': schedules.filter(s => s.days.includes('DOMINGO')),
+    };
+
+    let scannerDate = new Date(SEMESTER_START_DATE);
+
     while (scannerDate <= SEMESTER_END_DATE) {
       let wTarget = 0, wSync = 0, wAsync = 0, wPC = 0, wCoord = 0, wAssign = 0;
       let hasHolidayInWeek = false;
 
-      for (let d = 0; d < 7; d++) {
-        const current = new Date(scannerDate); current.setDate(scannerDate.getDate() + d);
+      const weekStart = new Date(scannerDate);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
 
-        // Si el día está fuera del semestre, no lo auditamos
+      const weekStartAt = weekStart.getTime();
+      const weekEndAt = weekEnd.getTime();
+
+      // Meta Académica de la semana
+      const weeklyMetaTasks = academicInFile.filter(s =>
+        isAcademicMetaLoad(s) && s.startDate.getTime() <= weekEndAt && s.endDate.getTime() >= weekStartAt
+      );
+      wTarget = weeklyMetaTasks.reduce((sum, s) => sum + s.weeklyHours, 0);
+
+      for (let d = 0; d < 7; d++) {
+        const current = new Date(scannerDate);
+        current.setDate(scannerDate.getDate() + d);
         if (current > SEMESTER_END_DATE) continue;
 
-        const dayName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][current.getDay()];
+        const currentTime = current.getTime();
+        const dayIdx = current.getDay();
+        const dayName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][dayIdx] as keyof typeof tasksByDay;
+
         const isHol = isHoliday(current);
-        if (isHol) {
-          hasHolidayInWeek = true;
-        }
+        if (isHol) hasHolidayInWeek = true;
 
-        const fileSessions = academicInFile.filter(s => s.days.includes(dayName) && current >= s.startDate && current <= s.endDate);
-        fileSessions.forEach(s => wTarget += s.weeklyHours);
-
-        const calTasks = schedules.filter(s => s.days.includes(dayName) && current >= s.startDate && current <= s.endDate);
+        // OPTIMIZACIÓN 4: Usamos el subset pre-filtrado por día.
+        const calTasks = tasksByDay[dayName].filter(s => currentTime >= s.startDate.getTime() && currentTime <= s.endDate.getTime());
         let dayMinutesTotal = 0;
 
         calTasks.forEach(s => {
           const dur = (timeToMinutes(s.endTime) - timeToMinutes(s.startTime));
-          if (isContractualLoad(s)) {
-            dayMinutesTotal += dur;
-          }
+          if (isContractualLoad(s)) dayMinutesTotal += dur;
 
           if (isAcademicMetaLoad(s)) {
             const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
@@ -270,18 +297,13 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
           }
         });
 
-        // Validación diaria
-        const dayHours = dayMinutesTotal / 60;
-        if (dayHours > dailyLimit + 0.01 && !isHol) {
-          list.push({ date: new Date(current), type: 'daily', meta: dailyLimit, real: dayHours });
+        if (dayMinutesTotal > scanDailyLimitMins && !isHol) {
+          list.push({ date: new Date(current), type: 'daily', meta: dailyLimit, real: dayMinutesTotal / 60 });
         }
       }
 
-      // Si hay feriado, omitimos registrar observaciones semanales para esta semana
       if (!hasHolidayInWeek) {
         const currentAcademicReal = wSync + wAsync;
-
-        // REGLA DE ORO: Si es TC, NO agregamos observaciones académicas a la lista (son opcionales)
         if (!isTC && Math.abs(currentAcademicReal - wTarget) > 0.01) {
           list.push({ date: new Date(scannerDate), type: 'academic', meta: wTarget, real: currentAcademicReal });
         }
@@ -296,7 +318,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       scannerDate.setDate(scannerDate.getDate() + 7);
     }
     return list;
-  }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType]);
+  }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType, showAuditModal]);
 
   useEffect(() => {
     if (isInstructorView) onDeficitStatusChange?.(stats.hasAuditWarning);
@@ -313,22 +335,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
   const TOTAL_GRID_HEIGHT = (visibleTimeSlots.length * SLOT_HEIGHT);
 
-  const getCategoryStyles = (sched: ProcessedSchedule, isHolidayDay: boolean) => {
-    const { category, modality, meetingType, activity } = sched;
-    const isAutoestudio = meetingType === 'VAEE' || (activity && activity.toUpperCase().includes('AUTOESTUDIO'));
-    if (sched.isAdministrative && isHolidayDay) return 'bg-rose-50 border-rose-300 border-dashed text-rose-700 opacity-60';
-    switch (category) {
-      case 'asincrona': return modality === 'presencial' ? 'bg-[#93bc81] border-[#7a9d6b] text-white' : 'bg-[#e4f4dd] border-[#93bc81] text-[#2d4a2d]';
-      case 'preparacion': return modality === 'presencial' ? 'bg-[#EABC2D] border-[#c09a25] text-white' : 'bg-[#FFFA48] border-[#eabc2d] text-[#4a4600]';
-      case 'por_asignar': return 'bg-violet-50 border-violet-200 text-violet-700';
-      case 'refrigerio': return 'bg-slate-400 border-slate-500 text-white';
-      case 'coordinador': return 'bg-[#e6fcf5] border-[#63e6be] text-[#087f5b]';
-      case 'clase':
-      default:
-        if (isAutoestudio) return 'bg-slate-200 border-slate-300 text-slate-700';
-        return 'bg-[#D9FFFF] border-cyan-200 text-slate-800';
-    }
-  };
+  // Estilos y visualización movidos a ScheduleCard.tsx
 
   const getPosition = (time: string) => ((timeToMinutes(time) - TIME_START * 60) / 60) * HOUR_HEIGHT;
   const getDurationHeight = (start: string, end: string) => ((timeToMinutes(end) - timeToMinutes(start)) / 60) * HOUR_HEIGHT;
@@ -380,92 +387,19 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         }
       `}</style>
 
-      {isEditorMode && (
-        <>
-          <button
-            onClick={() => setIsSelectorExpanded(!isSelectorExpanded)}
-            className="xl:hidden w-full bg-slate-800 border-b border-slate-700 py-3 px-6 flex items-center justify-between text-white font-black uppercase text-[10px] tracking-widest z-[60]"
-          >
-            <div className="flex items-center space-x-2">
-              <Settings size={14} className="text-blue-400" />
-              <span>Tareas Administrativas</span>
-            </div>
-            {isSelectorExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          </button>
-
-          <div
-            style={window.innerWidth >= 1280 ? { width: `${sidebarWidth}px` } : {}}
-            className={`
-              bg-slate-900 border-slate-800 flex flex-col shrink-0 overflow-y-auto custom-scrollbar z-50 transition-all duration-300
-              ${isSelectorExpanded ? 'max-h-[800px] opacity-100 py-6 px-6' : 'max-h-0 opacity-0 py-0 px-6'}
-              xl:max-h-none xl:opacity-100 xl:py-6 xl:border-r
-              ${isResizing ? 'user-select-none' : ''}
-            `}
-          >
-            <div className="flex flex-col md:flex-row xl:flex-col gap-6 md:gap-10">
-              <div className="flex-1 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white flex items-center"><Settings size={14} className="mr-2 text-blue-400" />Tarea</h3>
-                </div>
-                <div className="grid grid-cols-2 xl:grid-cols-1 gap-2.5">
-                  {[
-                    { id: 'asincrona', label: 'Horas Asíncronas', icon: Zap, color: 'text-cyan-400' },
-                    { id: 'preparacion', label: 'Preparación de Clase', icon: BookOpen, color: 'text-violet-400', disabled: instructorType === 'TP' },
-                    { id: 'coordinador', label: 'Coordinador Carrera', icon: UserCircle, color: 'text-emerald-400' },
-                    { id: 'por_asignar', label: 'Horas por Asignar', icon: Briefcase, color: 'text-violet-300', disabled: instructorType === 'TP' },
-                    { id: 'refrigerio', label: 'Refrigerio', icon: Coffee, color: 'text-orange-400' },
-                  ].map((tool) => (
-                    <button
-                      key={tool.id}
-                      disabled={tool.disabled}
-                      onClick={() => setActiveEditorTool(tool.id as ScheduleCategory)}
-                      className={`flex items-center justify-between p-2.5 min-[1501px]:p-3.5 rounded-2xl transition-all border-2 ${tool.disabled ? 'opacity-20 cursor-not-allowed grayscale' : activeEditorTool === tool.id ? 'bg-white/10 border-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.2)]' : 'border-transparent hover:bg-white/5'}`}
-                    >
-                      <div className="flex items-center space-x-2.5 min-w-0">
-                        <tool.icon size={16} className={`${tool.color} shrink-0`} />
-                        <span className="text-[10px] font-black uppercase tracking-widest text-white truncate">{getShortLabel(tool.label)}</span>
-                      </div>
-                      {activeEditorTool === tool.id && <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="w-full md:w-[180px] xl:w-full pt-0 md:pt-0 xl:pt-6 xl:border-t border-white/10 flex flex-col gap-4">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white flex items-center shrink-0"><MonitorPlay size={14} className="mr-2 text-blue-400" />Modalidad</h3>
-                <div className={`flex flex-col p-1.5 rounded-2xl border border-white/5 w-full gap-2 ${activeEditorTool === 'refrigerio' ? 'bg-slate-900/50 opacity-40' : 'bg-slate-800 shadow-inner'}`}>
-                  <button
-                    disabled={activeEditorTool === 'por_asignar' || activeEditorTool === 'refrigerio' || activeEditorTool === 'coordinador'}
-                    onClick={() => setActiveModality('presencial')}
-                    className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase flex items-center justify-center space-x-2 ${(activeModality === 'presencial' || activeEditorTool === 'coordinador' || activeEditorTool === 'por_asignar') ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <MapPin size={12} />
-                    <span>Presencial</span>
-                  </button>
-                  <button
-                    disabled={activeEditorTool === 'por_asignar' || activeEditorTool === 'refrigerio' || activeEditorTool === 'coordinador'}
-                    onClick={() => setActiveModality('virtual')}
-                    className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase flex items-center justify-center space-x-2 ${(activeModality === 'virtual' && activeEditorTool !== 'coordinador' && activeEditorTool !== 'por_asignar' && activeEditorTool !== 'refrigerio') ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <Video size={12} />
-                    <span>Virtual</span>
-                  </button>
-                </div>
-                {activeEditorTool === 'refrigerio' && <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest text-center">No aplica modalidad</p>}
-                {(activeEditorTool === 'coordinador' || activeEditorTool === 'por_asignar') && <p className="text-[8px] font-black text-blue-400 uppercase tracking-widest text-center">Forzado a Presencial</p>}
-              </div>
-            </div>
-          </div>
-          {/* Resizer Handle */}
-          <div
-            onMouseDown={() => setIsResizing(true)}
-            className={`
-              hidden xl:block w-1.5 h-full cursor-col-resize z-[60] -ml-1 transition-all
-              ${isResizing ? 'bg-blue-600 shadow-[0_0_10px_rgba(37,99,235,0.5)]' : 'hover:bg-blue-600/30'}
-            `}
-          />
-        </>
-      )}
+      <ScheduleSidebar
+        isEditorMode={isEditorMode}
+        isSelectorExpanded={isSelectorExpanded}
+        setIsSelectorExpanded={setIsSelectorExpanded}
+        sidebarWidth={sidebarWidth}
+        isResizing={isResizing}
+        setIsResizing={setIsResizing}
+        activeEditorTool={activeEditorTool}
+        setActiveEditorTool={setActiveEditorTool}
+        instructorType={instructorType}
+        activeModality={activeModality}
+        setActiveModality={setActiveModality}
+      />
 
       <div className="flex-1 flex flex-col min-h-0 relative">
         <div className="flex-1 overflow-auto custom-scrollbar relative">
@@ -546,69 +480,22 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                             }
                           }
 
-                          return dayTasks.map((sched) => {
-                            const isOverlapping = overlappingIds.has(sched.id);
-                            const catColor = getCategoryStyles(sched, !!holiday);
-                            const isAutoestudio = sched.meetingType === 'VAEE' || (sched.activity && sched.activity.toUpperCase().includes('AUTOESTUDIO'));
-                            const durationHours = (timeToMinutes(sched.endTime) - timeToMinutes(sched.startTime)) / 60;
-                            const isLargeBlock = durationHours >= 1.5;
-                            const overlapClass = isOverlapping ? 'animate-overlap-error' : '';
-
-                            return (
-                              <div
-                                key={`${sched.id}-${day.key}`}
-                                className={`absolute left-[5px] right-[5px] p-2.5 rounded-2xl border-l-[6px] shadow-lg overflow-hidden transition-all hover:scale-[1.015] hover:z-[60] cursor-pointer flex flex-col group z-30 ${catColor} ${overlapClass}`}
-                                style={{ top: `${getPosition(sched.startTime)}rem`, height: `${getDurationHeight(sched.startTime, sched.endTime)}rem`, margin: '1px 0' }}
-                                onClick={(e) => { e.stopPropagation(); onEditRecord?.(sched); }}
-                              >
-                                <div className="absolute top-1.5 right-1.5 flex space-x-1 opacity-0 group-hover:opacity-100 z-[80] transition-opacity">
-                                  {(sched.isAdministrative || sched.courseName === 'REV Y CALIF CUADERNOS INFORME') && onIndividualizeTask && sched.startDate.getTime() !== sched.endDate.getTime() && (
-                                    <button onClick={(e) => { e.stopPropagation(); onIndividualizeTask(sched.id, day.date); }} className="p-1.5 bg-black/5 hover:bg-blue-600 hover:text-white rounded-lg transition-all" title="Individualizar"><Link2Off size={12} /></button>
-                                  )}
-                                  {(sched.isAdministrative || sched.courseName === 'REV Y CALIF CUADERNOS INFORME') && onDeleteRecord && (
-                                    <button onClick={(e) => { e.stopPropagation(); onDeleteRecord(sched.id); }} className="p-1.5 bg-black/5 hover:bg-rose-500 hover:text-white rounded-lg transition-all" title="Eliminar"><Trash2 size={12} /></button>
-                                  )}
-                                </div>
-                                {!sched.isAdministrative ? (
-                                  <>
-                                    <div className="flex justify-between items-center font-black uppercase text-[8px] opacity-80 mb-1 shrink-0">
-                                      <span onClick={(e) => { e.stopPropagation(); onNavigate?.('Bloque', sched.block); }} className="flex items-center hover:underline"><Hash size={8} className="mr-1" />NRC: {sched.nrc} • {sched.block}</span>
-                                      <div className="flex items-center space-x-1">{sched.modality === 'presencial' ? <MapPin size={9} /> : <Video size={9} />}<span>{sched.modality?.toUpperCase()}</span></div>
-                                    </div>
-                                    <div className="flex flex-col flex-1 min-h-0 overflow-hidden mb-1">
-                                      <h4 onClick={(e) => { e.stopPropagation(); onNavigate?.('Bloque', sched.block); }} className={`font-black leading-tight text-slate-900 whitespace-normal break-words hover:underline xl:text-sm lg:text-[11px] text-[10px]`}>
-                                        {isAutoestudio ? `${sched.courseName} (AUTOESTUDIO)` : sched.courseName}
-                                        {isInstructorView && sched.activity && (
-                                          <span className="ml-1.5 text-[8px] font-black bg-slate-900/10 text-slate-600 px-1 py-0.5 rounded-md align-middle">{sched.activity}</span>
-                                        )}
-                                      </h4>
-                                      {!isInstructorView && (
-                                        <div className="flex flex-col mt-0.5">
-                                          <div onClick={(e) => { e.stopPropagation(); onNavigate?.('Instructor', sched.instructor); }} className={`font-bold text-slate-500 whitespace-normal break-words hover:underline hover:text-blue-600 transition-colors ${isLargeBlock ? 'text-[12px] mt-1' : 'text-[9px]'}`}>
-                                            {sched.instructor}
-                                          </div>
-                                          {sched.activity && (
-                                            <div className={`mt-0.5 font-black text-indigo-600 uppercase tracking-tighter ${isLargeBlock ? 'text-[10px]' : 'text-[8px]'}`}>
-                                              TIPO: {sched.activity}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                      <div className={`flex items-center flex-wrap gap-2 mt-auto pt-1 shrink-0 ${isLargeBlock ? 'justify-between' : ''}`}>
-                                        <div onClick={(e) => { e.stopPropagation(); onNavigate?.('Aula', `${sched.building} - ${sched.room}`); }} className={`font-black text-slate-700 uppercase flex items-center hover:underline ${isLargeBlock ? 'text-[11px]' : 'text-[9px]'}`}><MapPin size={isLargeBlock ? 12 : 9} className="mr-1 shrink-0" /><span className="whitespace-nowrap">{sched.building} - {sched.room}</span></div>
-                                        <div className={`font-black text-slate-500 flex items-center shrink-0 ${isLargeBlock ? 'text-[11px]' : 'text-[9px]'}`}><Clock size={isLargeBlock ? 12 : 9} className="mr-1" /><span className="whitespace-nowrap">{sched.startTime}-{sched.endTime}</span></div>
-                                      </div>
-                                    </div>
-                                  </>
-                                ) : (
-                                  <div className="flex flex-col h-full items-center justify-center text-center px-1">
-                                    <h4 className="font-black leading-tight uppercase text-[10px] whitespace-normal break-words">{getShortLabel(sched.courseName)} {sched.category !== 'coordinador' && sched.category !== 'refrigerio' ? `- ${sched.modality?.toUpperCase()}` : ''}</h4>
-                                    <div className="font-black border-t border-black/5 w-full pt-1 mt-1 text-[10px]">{sched.startTime} - {sched.endTime}</div>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          });
+                          return dayTasks.map((sched) => (
+                            <ScheduleCard
+                              key={`${sched.id}-${day.key}`}
+                              sched={sched}
+                              day={day}
+                              isHolidayDay={!!holiday}
+                              isInstructorView={isInstructorView}
+                              isOverlapping={overlappingIds.has(sched.id)}
+                              getPosition={getPosition}
+                              getDurationHeight={getDurationHeight}
+                              onEditRecord={onEditRecord}
+                              onDeleteRecord={onDeleteRecord}
+                              onIndividualizeTask={onIndividualizeTask}
+                              onNavigate={onNavigate}
+                            />
+                          ));
                         })()}
                       </div>
                     );
@@ -641,144 +528,23 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
           </>
         )}
 
-        {isInstructorView && (
-          <div className="border-t-4 border-slate-900 bg-white shrink-0 shadow-[0_-15px_40px_rgba(0,0,0,0.15)] z-[100] relative">
-            <div
-              className="xl:hidden bg-slate-900 border-b border-white/10 px-8 py-4 flex items-center justify-between text-white cursor-pointer"
-              onClick={() => setIsFooterExpanded(!isFooterExpanded)}
-            >
-              <div className="flex items-center space-x-4">
-                <div className={`p-2 rounded-lg ${stats.hasAuditWarning ? 'bg-rose-600 animate-pulse' : 'bg-blue-600'}`}>
-                  {stats.hasAuditWarning ? <AlertTriangle size={16} /> : <CheckCircle size={16} />}
-                </div>
-                <div>
-                  <h3 className="text-[10px] font-black uppercase tracking-widest leading-none">Resumen de Carga</h3>
-                  <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase">Real: {stats.academicLoad.toFixed(2)}h / {stats.targetLoadForWeek.toFixed(2)}h</p>
-                </div>
-              </div>
-              {isFooterExpanded ? <ChevronDown size={20} /> : <ChevronUp size={20} />}
-            </div>
-
-            <div className={`
-              flex flex-col xl:flex-row items-stretch xl:items-center justify-between px-8 bg-slate-900 text-white transition-all duration-300 overflow-hidden
-              ${isFooterExpanded ? 'max-h-[500px] py-6' : 'max-h-0 xl:max-h-none py-0 xl:py-5'}
-            `}>
-              <div className="flex items-center space-x-5">
-                <div className={`hidden xl:block p-2.5 rounded-xl shadow-lg ${stats.hasAuditWarning ? 'bg-rose-600 animate-pulse' : 'bg-blue-600'}`}>
-                  {stats.hasAuditWarning ? <AlertTriangle size={20} /> : <CheckCircle size={20} />}
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="hidden xl:block">
-                    <h3 className="text-sm font-black uppercase tracking-widest leading-none">Carga {instructorType}</h3>
-                    <p className={`text-[10px] font-bold uppercase mt-1 ${stats.hasAuditWarning ? 'text-rose-300' : 'text-slate-400'}`}>
-                      {stats.isWeekOutOfSemester ? 'Vigencia de Ciclo Finalizada' : stats.isHolidayInWeek ? 'Vigencia de Feriado (Auditoría Suspendida)' : stats.hasAuditWarning ? 'Alerta Detectada' : 'Estado Óptimo'}
-                    </p>
-                  </div>
-                  {!stats.isHolidayInWeek && !stats.isWeekOutOfSemester && (
-                    <button
-                      onClick={() => setShowAuditModal(true)}
-                      className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black uppercase tracking-widest transition-all shadow-lg active:scale-95 px-4 py-2 text-[10px] w-full xl:w-auto justify-center"
-                    >
-                      <ShieldCheck size={14} />
-                      <span className="whitespace-nowrap">Auditoría Detallada</span>
-                    </button>
-                  )}
-                  {(stats.isHolidayInWeek || stats.isWeekOutOfSemester) && (
-                    <div className={`flex items-center space-x-2 ${stats.isWeekOutOfSemester ? 'bg-slate-600' : 'bg-amber-500'} text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest`}>
-                      <AlertCircle size={14} />
-                      <span>{stats.isWeekOutOfSemester ? 'Fuera de Ciclo Lectivo' : 'Semana con Feriado'}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 md:grid-cols-4 xl:flex xl:items-center flex-wrap gap-x-6 gap-y-4 justify-center md:justify-end mt-6 xl:mt-0 pt-6 xl:pt-0 border-t border-white/10 xl:border-none">
-                <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Archivo</span><span className="text-base font-black text-blue-400">{stats.fileLoadHours.toFixed(2)}h</span></div>
-                <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Real</span><span className={`text-base font-black ${stats.hasAcademicDiscrepancy ? 'text-rose-400' : 'text-emerald-400'}`}>{stats.academicLoad.toFixed(2)}h</span></div>
-                <div className="h-8 w-px bg-white/10 hidden xl:block" />
-                <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Sinc</span><span className="text-base font-black text-slate-200">{stats.syncHours.toFixed(2)}h</span></div>
-                <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Asinc</span><span className="text-base font-black text-slate-200">{stats.asyncHours.toFixed(2)}h</span></div>
-                <div className="flex flex-col items-center"><span className="text-[8px] font-black text-blue-400 uppercase mb-1">Otros</span><span className="text-base font-black text-blue-300">{stats.otherHours.toFixed(2)}h</span></div>
-                {instructorType === 'TC' && (
-                  <>
-                    <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">PC</span><span className="text-base font-black text-slate-200">{stats.prepHours.toFixed(2)}h</span></div>
-                    <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Asignar</span><span className="text-base font-black text-slate-200">{stats.assignHours.toFixed(2)}h</span></div>
-                    <div className="h-8 w-px bg-white/10 hidden xl:block" />
-                    <div className="flex flex-col items-center"><span className="text-[8px] font-black text-rose-400 uppercase mb-1">Meta 46h</span><span className={`text-lg font-black ${stats.hasContractDiscrepancy ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>{stats.totalContractHours.toFixed(2)}h</span></div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+        <AuditFooter
+          isInstructorView={isInstructorView}
+          instructorType={instructorType}
+          stats={stats}
+          isFooterExpanded={isFooterExpanded}
+          setIsFooterExpanded={setIsFooterExpanded}
+          setShowAuditModal={setShowAuditModal}
+        />
       </div>
 
-      {showAuditModal && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-10 py-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center space-x-5">
-                <div className="p-3 bg-blue-600 text-white rounded-2xl shadow-xl shadow-blue-100"><ShieldCheck size={28} /></div>
-                <div><h3 className="text-2xl font-black text-slate-900 tracking-tight leading-none uppercase">Auditoría de Carga</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">{selectedFilterName} • {instructorType}</p></div>
-              </div>
-              <button onClick={() => setShowAuditModal(false)} className="p-3 hover:bg-slate-200 rounded-full transition-colors text-slate-400 hover:text-slate-900"><X size={24} /></button>
-            </div>
-            <div className="p-10 overflow-y-auto custom-scrollbar flex-1 space-y-10">
-              <section>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-3"><div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><Activity size={20} /></div><h4 className="text-sm font-black uppercase tracking-widest text-slate-700">Auditoría Académica (Hasta 28/06)</h4></div>
-                  {auditObservations.filter(o => o.type === 'academic').length === 0
-                    ? <div className="flex items-center space-x-2 text-emerald-600 bg-emerald-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><CheckCircle size={14} /><span>Sin discrepancias</span></div>
-                    : <div className={`flex items-center space-x-2 ${instructorType === 'TC' ? 'text-amber-600 bg-amber-50' : 'text-rose-600 bg-rose-50'} px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest`}><AlertTriangle size={14} /><span>{instructorType === 'TC' ? 'Diferencia Informativa' : 'Observaciones'}</span></div>}
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {auditObservations.filter(o => o.type === 'academic').map((obs, i) => (
-                    <div key={i} className={`p-5 ${instructorType === 'TC' ? 'bg-amber-50/30 border-amber-100' : 'bg-rose-50 border-rose-100'} border rounded-3xl flex items-center justify-between`}>
-                      <div className="flex items-center space-x-4"><CalendarIcon size={20} className={instructorType === 'TC' ? 'text-amber-400' : 'text-rose-400'} /><div><p className={`text-[10px] font-black ${instructorType === 'TC' ? 'text-amber-800/60' : 'text-rose-800/60'} uppercase`}>Semana {obs.date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}</p><p className={`text-xs font-black ${instructorType === 'TC' ? 'text-amber-900' : 'text-rose-900'}`}>Obs. Carga Académica</p></div></div>
-                      <div className="text-right"><p className={`text-[10px] font-black ${instructorType === 'TC' ? 'text-amber-600' : 'text-rose-500'} uppercase`}>Dif: {(obs.real - obs.meta).toFixed(2)}h</p><p className={`text-[9px] font-bold ${instructorType === 'TC' ? 'text-amber-400' : 'text-rose-400'} uppercase`}>Total: {obs.real.toFixed(2)}h / {obs.meta.toFixed(2)}h</p></div>
-                    </div>
-                  ))}
-                  {auditObservations.filter(o => o.type === 'academic').length === 0 && <div className="col-span-full p-10 border-2 border-dashed border-slate-100 rounded-[32px] flex flex-col items-center justify-center text-slate-300"><CheckCircle size={48} className="mb-4 opacity-20" /><p className="text-xs font-black uppercase tracking-widest">Carga académica perfecta.</p></div>}
-                </div>
-              </section>
-              {instructorType === 'TC' && (
-                <section className="pt-8 border-t border-slate-100">
-                  <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center space-x-3"><div className="p-2 bg-violet-50 text-violet-600 rounded-xl"><ShieldAlert size={20} /></div><h4 className="text-sm font-black uppercase tracking-widest text-slate-700">Auditoría Contractual (Meta 46h)</h4></div>
-                    {auditObservations.filter(o => o.type === 'contractual').length === 0 ? <div className="flex items-center space-x-2 text-emerald-600 bg-emerald-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><CheckCircle size={14} /><span>Cumple 46h</span></div> : <div className="flex items-center space-x-2 text-rose-600 bg-rose-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><AlertTriangle size={14} /><span>Fuera de contrato</span></div>}
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {auditObservations.filter(o => o.type === 'contractual').map((obs, i) => (
-                      <div key={i} className="p-5 bg-amber-50 border border-amber-100 rounded-3xl flex items-center justify-between">
-                        <div className="flex items-center space-x-4"><Clock size={20} className="text-amber-500" /><div><p className="text-[10px] font-black text-amber-800/60 uppercase">Semana {obs.date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}</p><p className="text-xs font-black text-amber-900">Obs. Contractual (Meta 46h)</p></div></div>
-                        <div className="text-right"><p className="text-[10px] font-black text-amber-600 uppercase">Var: {(obs.real - 46).toFixed(2)}h</p><p className="text-[9px] font-bold text-amber-400 uppercase">Total: {obs.real.toFixed(2)}h / 46h</p></div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
-              <section className="pt-8 border-t border-slate-100">
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center space-x-3"><div className="p-2 bg-rose-50 text-rose-600 rounded-xl"><Clock size={20} /></div><h4 className="text-sm font-black uppercase tracking-widest text-slate-700">Validación de Jornada Diaria</h4></div>
-                  {auditObservations.filter(o => o.type === 'daily').length === 0
-                    ? <div className="flex items-center space-x-2 text-emerald-600 bg-emerald-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><CheckCircle size={14} /><span>Sin excesos</span></div>
-                    : <div className="flex items-center space-x-2 text-rose-600 bg-rose-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><AlertTriangle size={14} /><span>Exceso detectado</span></div>}
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {auditObservations.filter(o => o.type === 'daily').map((obs, i) => (
-                    <div key={i} className="p-5 bg-rose-50 border border-rose-100 rounded-3xl flex items-center justify-between">
-                      <div className="flex items-center space-x-4"><Clock size={20} className="text-rose-400" /><div><p className="text-[10px] font-black text-rose-800/60 uppercase">{obs.date.toLocaleDateString('es-ES', { weekday: 'long', day: '2-digit', month: 'short' })}</p><p className="text-xs font-black text-rose-900">Exceso Jornada (Límite {obs.meta}h)</p></div></div>
-                      <div className="text-right"><p className="text-[10px] font-black text-rose-600 uppercase">Total: {obs.real.toFixed(2)}h</p><p className="text-[9px] font-bold text-rose-400 uppercase">Dif: +{(obs.real - obs.meta).toFixed(2)}h</p></div>
-                    </div>
-                  ))}
-                  {auditObservations.filter(o => o.type === 'daily').length === 0 && <div className="col-span-full p-10 border-2 border-dashed border-slate-100 rounded-[32px] flex flex-col items-center justify-center text-slate-300"><CheckCircle size={48} className="mb-4 opacity-20" /><p className="text-xs font-black uppercase tracking-widest">Jornadas diarias correctas.</p></div>}
-                </div>
-              </section>
-            </div>
-            <div className="px-10 py-8 border-t border-slate-100 bg-slate-50/50 flex justify-end"><button onClick={() => setShowAuditModal(false)} className="px-12 py-4 bg-slate-900 text-white text-xs font-black uppercase tracking-[0.2em] rounded-2xl shadow-xl hover:bg-slate-800 transition-all active:scale-95">Cerrar</button></div>
-          </div>
-        </div>
-      )}
+      <AuditModal
+        isOpen={showAuditModal}
+        onClose={() => setShowAuditModal(false)}
+        instructorName={selectedFilterName || ''}
+        instructorType={instructorType}
+        observations={auditObservations}
+      />
     </div>
   );
 };
