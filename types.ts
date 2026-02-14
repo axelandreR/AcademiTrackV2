@@ -72,7 +72,7 @@ export interface RawInstructorData {
   ESTADO: string;
 }
 
-export interface InstructorData {
+export interface Instructor {
   id: string;
   name: string;
   type: 'TC' | 'TP';
@@ -80,6 +80,8 @@ export interface InstructorData {
   specialty: string;
   campus: string;
   status: string;
+  auditStatus?: 'OK' | 'DEFICIT' | 'EXCESS' | 'PENDING' | 'ERROR' | null;
+  auditJson?: string | null;
 }
 
 export interface RoomData {
@@ -123,7 +125,7 @@ export interface ProcessedSchedule {
   modality?: ModalityType;
 }
 
-export type ViewType = 'Bloque' | 'Aula' | 'Instructor';
+export type ViewType = 'Bloque' | 'Aula' | 'Instructor' | 'Simulacion';
 export type AppMode = 'landing' | 'schedule' | 'reports' | 'editor' | 'instructors_manager' | 'rooms_manager' | 'progress';
 
 export interface TimeSlot {
@@ -146,4 +148,35 @@ export interface ExportConfig {
   customStartDate?: string;
   customEndDate?: string;
   logo?: string; // Base64 logo
+}
+export interface InstitutionalReference {
+  id?: string;
+  nrc: string;
+  tipo: string;
+  instructor_id: string;
+  dia: string;
+  hora_inicio: string;
+  hora_fin: string;
+  fecha_inicio: string;
+  fecha_fin: string;
+  edificio: string;
+  salon: string;
+  instructor_nombre: string;
+  curso_nombre: string;
+}
+
+export interface ReconciliationResult {
+  id: string; // App schedule ID
+  nrc: string;
+  status: 'ok' | 'discrepancy' | 'extra' | 'missing';
+  errors: string[];
+  reference?: InstitutionalReference;
+}
+
+export interface Scenario {
+  id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  data: any;
 }

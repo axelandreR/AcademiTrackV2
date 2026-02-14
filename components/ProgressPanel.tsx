@@ -1,14 +1,22 @@
 import React, { useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
-import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info } from 'lucide-react';
+import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { isAcademicMetaLoad, isExcludedFromTotalLoad, isContractualLoad } from '../services/businessRules';
+import { validateInstructorWeek } from '../services/auditService';
+import { supabase } from '../supabaseClient';
+import { mapSchedFromDB } from '../context/DataContext';
 
 const ProgressPanel: React.FC = () => {
-    const { allSchedules, instructors, exportedInstructors, toggleInstructorExported, holidays } = useData();
+    const { globalSchedulesSummary, instructors, exportedInstructors, toggleInstructorExported, holidays, updateInstructorAuditStatus, allSchedules } = useData();
     const navigate = useNavigate();
     const [selectedAuditIssuer, setSelectedAuditIssuer] = useState<{ name: string, issues: { week: string, reasons: string[] }[] } | null>(null);
+
+
+    // Use global summary as source. If allSchedules is empty (lazy), use summary.
+    // Actually, 'allSchedules' now only contains "currently viewed" or "nothing".
+    // So for global stats, we MUST use globalSchedulesSummary.
+
 
     const timeToMinutes = (t: string) => {
         if (!t) return 0;
@@ -33,109 +41,65 @@ const ProgressPanel: React.FC = () => {
     }, []);
 
     const progressData = useMemo(() => {
-        const activeInstructors = instructors.filter(inst =>
-            allSchedules.some(s => s.instructor === inst.name && !s.isAdministrative)
-        );
+        // 1. Get all schedules in memory (Full Load Mode)
+        const schedules = allSchedules;
 
-        return activeInstructors.map(inst => {
-            const instSchedules = allSchedules.filter(s => s.instructor === inst.name);
-            let totalWeeksChecked = 0;
-            let weeksOk = 0;
-            let auditIssues: { week: string, reasons: string[] }[] = [];
+        return instructors
+            .filter(inst => {
+                // Filter 1: Must be Active and Real (not 'INST.')
+                if (inst.status !== 'Activo' || inst.name.startsWith('INST.')) return false;
 
-            for (const weekStart of semesterWeeks) {
-                let hasHoliday = false;
-                for (let i = 0; i < 7; i++) {
-                    const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
-                    if (holidays.some(h => h.date.toDateString() === d.toDateString())) { hasHoliday = true; break; }
-                }
-                if (hasHoliday) continue;
+                // Filter 2: Must have at least one schedule assigned (Academic or Admin)
+                const hasSchedules = schedules.some(s => s.instructor === inst.name);
+                return hasSchedules;
+            })
+            .map(inst => {
+                // Get schedules for this specific instructor
+                const instSchedules = schedules.filter(s => s.instructor === inst.name);
 
-                const weekEnd = new Date(weekStart);
-                weekEnd.setDate(weekStart.getDate() + 6);
-                weekEnd.setHours(23, 59, 59, 999);
+                let totalWeeksChecked = 0;
+                let weeksOk = 0;
+                let auditIssues: { week: string, reasons: string[] }[] = [];
 
-                const metaCarga = instSchedules
-                    .filter(s => !s.isAdministrative && isAcademicMetaLoad(s) && s.startDate <= weekEnd && s.endDate >= weekStart)
-                    .reduce((sum, s) => sum + s.weeklyHours, 0);
-
-                if (metaCarga === 0 && inst.type !== 'TC') continue;
-
-                totalWeeksChecked++;
-                let cargaAcademicaReal = 0;
-                let cargaTotalSemana = 0;
-                let hasDailyBreach = false;
-                let dailyBreachDay = "";
-
-                for (let i = 0; i < 7; i++) {
-                    const currentDate = new Date(weekStart);
-                    currentDate.setDate(weekStart.getDate() + i);
-                    if (currentDate > SEMESTER_END_DATE) continue;
-
-                    const dayName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][currentDate.getDay()];
-                    let dayTotalMin = 0;
-
-                    instSchedules.filter(s => s.days.includes(dayName) && currentDate >= s.startDate && currentDate <= s.endDate).forEach(s => {
-                        const durMin = timeToMinutes(s.endTime) - timeToMinutes(s.startTime);
-                        const durHours = durMin / 60;
-
-                        if (isContractualLoad(s)) {
-                            cargaTotalSemana += durHours;
-                            dayTotalMin += durMin;
-                        }
-
-                        if (isAcademicMetaLoad(s)) {
-                            cargaAcademicaReal += durHours;
-                        }
-                    });
-
-                    const limit = inst.type === 'TC' ? 552.01 : 420.01;
-                    if (dayTotalMin > limit) {
-                        hasDailyBreach = true;
-                        dailyBreachDay = dayName;
+                for (const weekStart of semesterWeeks) {
+                    // Holiday Check
+                    let hasHoliday = false;
+                    for (let i = 0; i < 7; i++) {
+                        const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+                        if (holidays.some(h => h.date.toDateString() === d.toDateString())) { hasHoliday = true; break; }
                     }
-                }
+                    if (hasHoliday) continue;
 
-                const isTC = inst.type === 'TC';
-                const academicMatch = Math.abs(cargaAcademicaReal - metaCarga) < 0.01;
-                const totalMatch = isTC ? Math.abs(cargaTotalSemana - 46) < 0.01 : true;
+                    // Execute robust validation (Same logic as Editor)
+                    const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays);
 
-                // REGLA: Para TC solo falla si no cumple las 46h o hay exceso diario.
-                // Para TP falla si no cumple el match académico o hay exceso diario.
-                const isWeekValid = isTC ? (totalMatch && !hasDailyBreach) : (academicMatch && !hasDailyBreach);
+                    totalWeeksChecked++;
 
-                if (isWeekValid) {
-                    weeksOk++;
-                } else {
-                    const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
-                    const reasons: string[] = [];
-
-                    if (isTC) {
-                        if (!totalMatch) {
-                            reasons.push(`Programado: ${cargaTotalSemana.toFixed(2)}h vs Meta: 46.00h`);
-                        }
+                    if (validation.isValid) {
+                        weeksOk++;
                     } else {
-                        if (!academicMatch) {
-                            reasons.push(`Programado: ${cargaAcademicaReal.toFixed(2)}h vs Meta: ${metaCarga.toFixed(2)}h`);
-                        }
+                        const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
+                        auditIssues.push({ week: weekLabel, reasons: validation.reasons });
                     }
-
-                    if (hasDailyBreach) reasons.push(`Exceso diario: ${dailyBreachDay}`);
-
-                    auditIssues.push({ week: weekLabel, reasons });
                 }
-            }
 
-            const isAuditOk = totalWeeksChecked > 0 && weeksOk === totalWeeksChecked;
+                // Status Logic: 
+                // - OK if ALL checked weeks are valid.
+                // - If no weeks checked (e.g. all holidays), it's OK.
+                const isAuditOk = totalWeeksChecked === 0 || (weeksOk === totalWeeksChecked);
 
-            return {
-                ...inst,
-                isAuditOk,
-                auditIssues,
-                isExported: exportedInstructors.has(inst.id),
-                isFictitious: inst.name.toUpperCase().startsWith('INST.')
-            };
-        });
+                return {
+                    ...inst,
+                    isAuditOk,
+                    auditIssues,
+                    isExported: exportedInstructors.has(inst.id),
+                    isFictitious: false
+                };
+            })
+            // Sort by Audit Status (Error first?) or Name (Alphabetical)
+            // Let's keep alphabetical for consistency with sidebar
+            .sort((a, b) => a.name.localeCompare(b.name));
+
     }, [instructors, allSchedules, semesterWeeks, holidays, exportedInstructors]);
 
     const tcStats = useMemo(() => {
@@ -211,9 +175,11 @@ const ProgressPanel: React.FC = () => {
                             </svg>
                             <div className="absolute inset-0 flex items-center justify-center text-xs font-black text-slate-900">{globalProgress}%</div>
                         </div>
-                        <div className="text-left">
-                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Docentes Terminados</div>
-                            <div className="text-xl font-black text-slate-900">{tcStats.auditOk + tpStats.auditOk} / {tcStats.total + tpStats.total}</div>
+                        <div className="text-left space-y-2">
+                            <div>
+                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Docentes Terminados</div>
+                                <div className="text-xl font-black text-slate-900">{tcStats.auditOk + tpStats.auditOk} / {tcStats.total + tpStats.total}</div>
+                            </div>
                         </div>
                     </div>
                 </div>

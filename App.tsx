@@ -34,8 +34,8 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 2. Mostrar Loading mientras descarga de la nube
-  if (isLoading && allSchedules.length === 0) {
+  // 2. Mostrar Loading mientras descarga de la nube (Solo inicial)
+  if (isLoading && !hasInitialData) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-10">
         <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-6"></div>

@@ -1,0 +1,139 @@
+import React, { useEffect, useState } from 'react';
+import { useData } from '../context/DataContext';
+import { Scenario } from '../types';
+import { supabase } from '../supabaseClient';
+import { Play, Trash2, Calendar, FileText } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+
+const SimulationsList: React.FC = () => {
+    const { loadScenario } = useData();
+    const [scenarios, setScenarios] = useState<Scenario[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [_, setSearchParams] = useSearchParams();
+
+    const fetchScenarios = async () => {
+        setIsLoading(true);
+        try {
+            const { data, error } = await supabase
+                .from('scenarios')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+            setScenarios(data || []);
+        } catch (e) {
+            console.error('Error fetching scenarios:', e);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchScenarios();
+    }, []);
+
+    const handleDelete = async (id: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!window.confirm('¿Estás seguro de que quieres eliminar esta simulación?')) return;
+
+        try {
+            const { error } = await supabase.from('scenarios').delete().eq('id', id);
+            if (error) throw error;
+            setScenarios(prev => prev.filter(s => s.id !== id));
+        } catch (e: any) {
+            alert('Error al eliminar: ' + e.message);
+        }
+    };
+
+    const handleLoad = async (id: string) => {
+        const metadata = await loadScenario(id);
+        if (metadata?.view && metadata?.filter) {
+            setSearchParams({ view: metadata.view, filter: metadata.filter });
+        } else if (metadata?.instructorName) {
+            setSearchParams({ view: 'Instructor', filter: metadata.instructorName });
+        } else {
+            // Default behavior for old simulations or if saved without context
+            setSearchParams({ view: 'Bloque' });
+        }
+    };
+
+    return (
+        <div className="flex-1 bg-slate-50 p-8 overflow-y-auto">
+            <div className="max-w-5xl mx-auto">
+                <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Simulaciones Guardadas</h2>
+                <p className="text-slate-500 mb-8 font-medium">Gestiona y cargas tus escenarios de prueba previamente guardados.</p>
+
+                {isLoading ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {[1, 2, 3].map(i => (
+                            <div key={i} className="bg-white rounded-2xl shadow-sm p-6 animate-pulse h-48"></div>
+                        ))}
+                    </div>
+                ) : scenarios.length === 0 ? (
+                    <div className="text-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100">
+                        <div className="bg-amber-50 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-6">
+                            <FileText size={40} className="text-amber-500" />
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-700">No hay simulaciones guardadas</h3>
+                        <p className="text-slate-400 mt-2">Guarda un escenario desde el "Modo de Prueba" para verlo aquí.</p>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {scenarios.map(scenario => (
+                            <div
+                                key={scenario.id}
+                                className="group bg-white rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-slate-100 overflow-hidden cursor-pointer"
+                                onClick={() => handleLoad(scenario.id)}
+                            >
+                                <div className="p-6">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                                            <FileText size={24} />
+                                        </div>
+                                        <button
+                                            onClick={(e) => handleDelete(scenario.id, e)}
+                                            className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                            title="Eliminar Simulación"
+                                        >
+                                            <Trash2 size={18} />
+                                        </button>
+                                    </div>
+
+                                    <h3 className="font-bold text-slate-800 text-lg mb-2 line-clamp-1 group-hover:text-indigo-600 transition-colors">{scenario.name}</h3>
+
+                                    {scenario.data?.metadata?.instructorName && (
+                                        <div className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded mb-2 w-fit uppercase">
+                                            {scenario.data.metadata.instructorName}
+                                        </div>
+                                    )}
+
+                                    <p className="text-sm text-slate-400 line-clamp-2 mb-4 h-10">{scenario.description || 'Sin descripción'}</p>
+
+                                    <div className="flex items-center text-xs font-bold text-slate-400 bg-slate-50 rounded-lg px-3 py-2 w-fit">
+                                        <Calendar size={14} className="mr-2" />
+                                        {new Date(scenario.created_at).toLocaleDateString('es-ES', {
+                                            day: 'numeric',
+                                            month: 'long',
+                                            year: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit'
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="bg-slate-50 px-6 py-4 border-t border-slate-100 flex items-center justify-between group-hover:bg-indigo-50 transition-colors">
+                                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider group-hover:text-indigo-600">Cargar Escenario</span>
+                                    <div className="bg-white p-1.5 rounded-lg shadow-sm group-hover:bg-indigo-600 group-hover:text-white transition-all text-slate-400">
+                                        <Play size={16} className="ml-0.5" />
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default SimulationsList;

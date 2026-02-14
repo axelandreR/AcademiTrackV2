@@ -1,20 +1,22 @@
 import React, { useMemo, useState } from 'react';
 import {
   FileDown, Search, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, CheckCircle, ShieldAlert, Activity, ChevronRight, Download,
-  ArrowLeft, BarChart4, UserCircle2, Minus, X, Calendar, AlertCircle, Info, Briefcase, Calendar as CalendarIcon, ShieldCheck
+  ArrowLeft, BarChart4, UserCircle2, Minus, X, Calendar, AlertCircle, Info, Briefcase, Calendar as CalendarIcon, ShieldCheck,
+  Upload, Database, FileWarning, SearchCode, ClipboardCheck
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
-import { ProcessedSchedule, InstructorData, HolidayData } from '../types';
+import { ProcessedSchedule, Instructor, HolidayData, InstitutionalReference, ReconciliationResult } from '../types';
 import { generateGlobalAuditExcel } from '../services/excelExporter';
+import { parseInstitutionalReport } from '../services/excelParser';
 
 const SEMESTER_START_DATE = new Date(2026, 1, 16); // 16/02/2026
 const SEMESTER_END_DATE = new Date(2026, 5, 28);   // 28/06/2026
 
 interface ReportsDashboardProps {
   schedules: ProcessedSchedule[];
-  instructors: InstructorData[];
+  instructors: Instructor[];
   holidays: HolidayData[];
   onBack: () => void;
 }
@@ -37,9 +39,13 @@ interface DeepAuditResult {
 const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instructors, holidays, onBack }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAudit, setSelectedAudit] = useState<DeepAuditResult | null>(null);
+  const [selectedReconResult, setSelectedReconResult] = useState<ReconciliationResult | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [activeTab, setActiveTab] = useState<'audit' | 'conflicts'>('audit');
-  const { holidaysMap } = useData();
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 20;
+
+  const { holidaysMap, institutionalReferences, uploadInstitutionalReference, allSchedules } = useData();
 
   const navigate = useNavigate();
 
@@ -56,8 +62,18 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
     const day = date.getDay();
     const diff = date.getDate() - day + (day === 0 ? -6 : 1);
     date.setDate(diff);
-    date.setHours(0, 0, 0, 0);
     return date;
+  };
+
+  const formatDisplayDate = (dateStr: string | Date | null | undefined) => {
+    if (!dateStr) return 'N/A';
+    // Si es string YYYY-MM-DD, forzamos interpretación local para evitar desfases
+    const d = typeof dateStr === 'string' ? new Date(dateStr + 'T00:00:00') : dateStr;
+    if (isNaN(d.getTime())) return String(dateStr);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}/${month}/${year}`;
   };
 
   const semesterRange = useMemo(() => {
@@ -104,20 +120,29 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
         if (hol) hasHolidayS1 = true;
 
         let dayMinS1 = 0;
-        instSchedules.filter(s => s.days.includes(dayName) && currentDate >= s.startDate && currentDate <= s.endDate)
+        instSchedules.filter(s => s.days && Array.isArray(s.days) && s.days.includes(dayName) && currentDate >= s.startDate && currentDate <= s.endDate)
           .forEach(s => {
             const durTotal = (timeToMin(s.endTime) - timeToMin(s.startTime));
             if (isContractualLoad(s)) dayMinS1 += durTotal;
 
             const dur = durTotal / 60;
-            if (isAcademicMetaLoad(s)) {
-              totalSyncS1 += dur;
-            } else if (!isExcludedFromTotalLoad(s)) {
-              totalAsyncS1 += dur;
+            if (isTC) {
+              // Para TC, todo lo contractual cuenta para la carga real
+              if (isContractualLoad(s)) totalSyncS1 += dur;
+            } else {
+              // Para TP, solo carga académica
+              if (isAcademicMetaLoad(s)) totalSyncS1 += dur;
             }
           });
 
         if (dayMinS1 / 60 > dailyLimit + 0.01 && !hol) hasDailyBreachS1 = true;
+      }
+
+      if (isTC) {
+        metaCargaS1 = 46;
+      } else {
+        const activeAcademicWeek1 = instAcademic.filter(s => s.startDate.getTime() <= weekEndAtTime && s.endDate.getTime() >= weekStartAt);
+        metaCargaS1 = activeAcademicWeek1.reduce((sum, s) => sum + s.weeklyHours, 0);
       }
 
       const discrepancies: Discrepancy[] = [];
@@ -132,8 +157,12 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
         const scanEnd = new Date(scannerDate); scanEnd.setDate(scannerDate.getDate() + 6);
         const scanEndTime = scanEnd.getTime();
 
-        const weeklyTasks = instSchedules.filter(s => isAcademicMetaLoad(s) && s.startDate.getTime() <= scanEndTime && s.endDate.getTime() >= scanStart);
-        wMeta = weeklyTasks.reduce((sum, s) => sum + s.weeklyHours, 0);
+        if (isTC) {
+          wMeta = 46;
+        } else {
+          const weeklyTasks = instSchedules.filter(s => isAcademicMetaLoad(s) && s.startDate.getTime() <= scanEndTime && s.endDate.getTime() >= scanStart);
+          wMeta = weeklyTasks.reduce((sum, s) => sum + s.weeklyHours, 0);
+        }
 
         for (let i = 0; i < 7; i++) {
           const d = new Date(scannerDate); d.setDate(scannerDate.getDate() + i);
@@ -144,13 +173,15 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
           if (hol) hasHolidayInWeek = true;
 
           let dayMinScanner = 0;
-          instSchedules.filter(s => s.days.includes(dName) && d >= s.startDate && d <= s.endDate).forEach(s => {
+          instSchedules.filter(s => s.days && Array.isArray(s.days) && s.days.includes(dName) && d >= s.startDate && d <= s.endDate).forEach(s => {
             const durTotal = (timeToMin(s.endTime) - timeToMin(s.startTime));
             if (isContractualLoad(s)) dayMinScanner += durTotal;
 
             const dur = durTotal / 60;
-            if (isAcademicMetaLoad(s)) {
-              wReal += dur;
+            if (isTC) {
+              if (isContractualLoad(s)) wReal += dur;
+            } else {
+              if (isAcademicMetaLoad(s)) wReal += dur;
             }
           });
 
@@ -175,7 +206,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
         scannerDate.setDate(scannerDate.getDate() + 7);
       }
 
-      const cargaRealS1 = totalSyncS1 + totalAsyncS1;
+      const cargaRealS1 = totalSyncS1; // totalSyncS1 ya contiene el acumulado correcto según tipo
       const isWeekBeforeSemester = weekEndAtTime < SEMESTER_START_DATE.getTime();
       const isWeekAfterSemester = weekStartAt > SEMESTER_END_DATE.getTime();
 
@@ -257,7 +288,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
 
           // Solo tomamos las tareas ACTIVAS en este día específico (igual que la grilla)
           const activeToday = list.filter(s => {
-            if (!s.days.includes(dayName)) return false;
+            if (!s.days || !Array.isArray(s.days) || !s.days.includes(dayName)) return false;
             const sStart = new Date(s.startDate.getFullYear(), s.startDate.getMonth(), s.startDate.getDate()).getTime();
             const sEnd = new Date(s.endDate.getFullYear(), s.endDate.getMonth(), s.endDate.getDate()).getTime();
             return timeTarget >= sStart && timeTarget <= sEnd;
@@ -318,7 +349,127 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
     instGroups.forEach((list, instructor) => findOverlap(list, 'instructor', instructor));
     roomGroups.forEach((list, room) => findOverlap(list, 'room', room));
     return conflicts;
-  }, [schedules]);
+  }, [schedules, semesterRange.start, semesterRange.end, holidaysMap]);
+
+  const reconciliationResults = useMemo(() => {
+    // DESACTIVADO TEMPORALMENTE: Para mejorar rendimiento del dashboard
+    // No eliminar el código inferior, se reactivará más adelante.
+    return [];
+
+    if (institutionalReferences.length === 0) return [];
+
+    const academicSchedules = schedules.filter(s => !s.isAdministrative);
+    const results: ReconciliationResult[] = [];
+
+    const isTimeMatch = (timeA: string, timeB: string) => {
+      if (!timeA || !timeB) return false;
+      return Math.abs(timeToMin(timeA) - timeToMin(timeB)) <= 2;
+    };
+
+    const dateToISO = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    const cleanId = (id: string | number) => String(id || '').trim().toUpperCase().replace(/^A/i, '').replace(/^0+/, '');
+    const normalizePlace = (txt: string) => String(txt || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    // 1. Auditoría Principal: Basada en el REPORTE DEL SISTEMA (Master List)
+    institutionalReferences.forEach(ref => {
+      const refId = cleanId(ref.instructor_id);
+      const refNrc = cleanId(ref.nrc);
+
+      // Buscar si existe en la App
+      const appMatches = academicSchedules.filter(sched =>
+        cleanId(sched.nrc) === refNrc &&
+        cleanId(sched.instructorId) === refId &&
+        sched.days.includes(ref.dia) &&
+        isTimeMatch(sched.startTime, ref.hora_inicio)
+      );
+
+      if (appMatches.length === 0) {
+        // MISSING: El sistema lo tiene, la App NO
+        results.push({
+          id: `missing-${ref.nrc}-${ref.dia}-${ref.hora_inicio}`,
+          nrc: ref.nrc,
+          status: 'missing',
+          errors: [`La sesión institucional no ha sido programada en la aplicación.`],
+          reference: ref
+        });
+      } else {
+        // EXISTE: Validar discrepancias
+        const sched = appMatches[0];
+        const errors: string[] = [];
+
+        if (dateToISO(sched.startDate) !== ref.fecha_inicio) {
+          errors.push(`Fecha Inicio: Sistema (${ref.fecha_inicio}) vs App (${dateToISO(sched.startDate)})`);
+        }
+        if (dateToISO(sched.endDate) !== ref.fecha_fin) {
+          errors.push(`Fecha Fin: Sistema (${ref.fecha_fin}) vs App (${dateToISO(sched.endDate)})`);
+        }
+
+        const appPlace = normalizePlace(sched.building + sched.room);
+        const refPlace = normalizePlace(ref.edificio + ref.salon);
+        if (appPlace !== refPlace) {
+          errors.push(`Ubicación: Sistema (${ref.edificio}-${ref.salon}) vs App (${sched.building}-${sched.room})`);
+        }
+
+        if (!isTimeMatch(sched.endTime, ref.hora_fin)) {
+          errors.push(`Hora Fin: Sistema (${ref.hora_fin}) vs App (${sched.endTime})`);
+        }
+
+        results.push({
+          id: sched.id,
+          nrc: ref.nrc,
+          status: errors.length > 0 ? 'discrepancy' : 'ok',
+          errors,
+          reference: ref
+        });
+      }
+    });
+
+    // 2. Reporte de Extras: Basado en la APP que NO está en el sistema
+    academicSchedules.forEach(sched => {
+      if (!sched.nrc || sched.nrc === '-' || sched.nrc === '0') return;
+
+      sched.days.forEach(day => {
+        const schedNrc = cleanId(sched.nrc);
+        const schedId = cleanId(sched.instructorId);
+
+        const inSystem = institutionalReferences.some(ref =>
+          cleanId(ref.nrc) === schedNrc &&
+          cleanId(ref.instructor_id) === schedId &&
+          ref.dia === day &&
+          isTimeMatch(sched.startTime, ref.hora_inicio)
+        );
+
+        if (!inSystem) {
+          results.push({
+            id: sched.id,
+            nrc: sched.nrc,
+            status: 'extra',
+            errors: [`Esta sesión de la App no existe en el reporte oficial del sistema.`],
+            reference: { nrc: sched.nrc, dia: day, hora_inicio: sched.startTime, instructor_id: sched.instructorId } as any
+          });
+        }
+      });
+    });
+
+    return results;
+  }, [schedules, institutionalReferences]);
+
+  const handleInstitutionalUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = await parseInstitutionalReport(file);
+      await uploadInstitutionalReference(data);
+    } catch (err) {
+      alert("Error al procesar reporte institucional.");
+    }
+  };
 
   const handleGlobalExport = async () => {
     setIsExporting(true);
@@ -374,6 +525,13 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
               {conflictData.length > 0 && <div className="w-2 h-2 bg-rose-500 rounded-full animate-ping" />}
               <span>Conflictos ({conflictData.length})</span>
             </button>
+            {/* 
+            <button
+              onClick={() => setActiveTab('institutional')}
+              className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'institutional' ? 'bg-white text-emerald-600 shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>
+              Conciliación
+            </button>
+            */}
           </div>
           {activeTab === 'audit' && (
             <>
@@ -469,7 +627,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
               </table>
             </div>
           </>
-        ) : (
+        ) : activeTab === 'conflicts' ? (
           <div className="space-y-6">
             <div className="flex items-center justify-between mb-8">
               <div>
@@ -550,69 +708,360 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
               </div>
             )}
           </div>
+        ) : (
+          <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-2xl font-black text-slate-900 tracking-tight">Conciliación Institucional</h3>
+                <p className="text-slate-500 text-sm mt-1">Contraste de programación App vs Datos maestros del sistema.</p>
+              </div>
+              <div className="flex items-center space-x-4">
+                <label className="cursor-pointer flex items-center space-x-2 px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-100">
+                  <Upload size={18} />
+                  <span>Cargar Reporte Sistema</span>
+                  <input type="file" className="hidden" accept=".xlsx,.xls" onChange={handleInstitutionalUpload} />
+                </label>
+              </div>
+            </div>
+
+            {institutionalReferences.length === 0 ? (
+              <div className="bg-white rounded-[40px] p-24 flex flex-col items-center justify-center text-center shadow-2xl border border-slate-100">
+                <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-8 border-4 border-dashed border-slate-100">
+                  <Database size={48} />
+                </div>
+                <h4 className="text-2xl font-black text-slate-900">Sin Datos de Referencia</h4>
+                <p className="text-slate-400 mt-4 max-w-md text-balance">Para iniciar la auditoría, carga el reporte oficial del sistema (50+ columnas). El sistema extraerá automáticamente los datos relevantes para el cruce.</p>
+              </div>
+            ) : (
+              <div className="space-y-8">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <div className="bg-white p-6 rounded-[32px] shadow-lg border border-slate-100">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Analizados</p>
+                    <h4 className="text-3xl font-black text-slate-900">{reconciliationResults.length}</h4>
+                  </div>
+                  <div className="bg-white p-6 rounded-[32px] shadow-lg border border-slate-100">
+                    <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Sincronizados OK</p>
+                    <h4 className="text-3xl font-black text-emerald-600">{reconciliationResults.filter(r => r.status === 'ok').length}</h4>
+                  </div>
+                  <div className="bg-white p-6 rounded-[32px] shadow-lg border border-slate-100">
+                    <p className="text-[10px] font-black text-rose-600 uppercase tracking-widest mb-1">Discrepancias</p>
+                    <h4 className="text-3xl font-black text-rose-600">{reconciliationResults.filter(r => r.status === 'discrepancy').length}</h4>
+                  </div>
+                  <div className="bg-white p-6 rounded-[32px] shadow-lg border border-slate-100">
+                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1">Extras en App</p>
+                    <h4 className="text-3xl font-black text-amber-600">{reconciliationResults.filter(r => r.status === 'extra').length}</h4>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-[40px] shadow-2xl overflow-hidden border border-slate-100">
+                  <div className="px-8 py-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                    <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest flex items-center space-x-2">
+                      <ClipboardCheck size={16} className="text-indigo-600" />
+                      <span>Auditoría de Cumplimiento (Master List Sistema)</span>
+                    </h4>
+                  </div>
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="bg-slate-50/50 border-b border-slate-100">
+                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">NRC / Sistema</th>
+                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Estado</th>
+                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Hallazgos</th>
+                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {(() => {
+                        const filtered = reconciliationResults.filter(r => r.status !== 'extra');
+                        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+                        const startIdx = (currentPage - 1) * itemsPerPage;
+                        const paginated = filtered.slice(startIdx, startIdx + itemsPerPage);
+
+                        return (
+                          <>
+                            {paginated.map((res, idx) => {
+                              return (
+                                <tr key={idx} className="hover:bg-slate-50/50 transition-colors group cursor-pointer" onClick={() => setSelectedReconResult(res)}>
+                                  <td className="px-8 py-5">
+                                    <p className="text-sm font-black text-slate-900">{res.nrc}</p>
+                                    <p className="text-[10px] font-bold text-slate-400 truncate max-w-[200px]">{res.reference?.curso_nombre}</p>
+                                  </td>
+                                  <td className="px-8 py-5">
+                                    <span className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase ${res.status === 'ok' ? 'bg-emerald-100 text-emerald-700' :
+                                      res.status === 'discrepancy' ? 'bg-rose-100 text-rose-700' :
+                                        'bg-slate-100 text-slate-600'
+                                      }`}>
+                                      {res.status === 'ok' ? <CheckCircle size={14} /> : res.status === 'discrepancy' ? <FileWarning size={14} /> : <SearchCode size={14} />}
+                                      <span>{res.status === 'ok' ? 'Sincronizado' : res.status === 'discrepancy' ? 'Discrepancia' : 'No en App'}</span>
+                                    </span>
+                                  </td>
+                                  <td className="px-8 py-5">
+                                    {res.status === 'ok' ? (
+                                      <span className="text-[10px] font-bold text-emerald-600 flex items-center space-x-1"><CheckCircle size={12} /> <span>Sin observaciones</span></span>
+                                    ) : (
+                                      <div className="space-y-1">
+                                        {res.errors.slice(0, 1).map((err, i) => (
+                                          <p key={i} className="text-[11px] font-bold text-slate-600 flex items-center space-x-2">
+                                            <div className={`w-1.5 h-1.5 rounded-full ${res.status === 'discrepancy' ? 'bg-rose-400' : 'bg-slate-400'}`} />
+                                            <span className="truncate max-w-[250px]">{err}</span>
+                                          </p>
+                                        ))}
+                                        {res.errors.length > 1 && <p className="text-[9px] font-black text-indigo-600">+{res.errors.length - 1} más...</p>}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="px-8 py-5 text-right">
+                                    <button className="p-2 bg-slate-100 rounded-xl text-slate-400 group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                                      <ChevronRight size={16} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            {totalPages > 1 && (
+                              <tr>
+                                <td colSpan={4} className="px-8 py-4 bg-slate-50/50">
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-[10px] font-black text-slate-400 uppercase">
+                                      Página {currentPage} de {totalPages} ({filtered.length} registros)
+                                    </p>
+                                    <div className="flex space-x-2">
+                                      <button
+                                        disabled={currentPage === 1}
+                                        onClick={(e) => { e.stopPropagation(); setCurrentPage(p => Math.max(1, p - 1)); }}
+                                        className="p-2 bg-white border border-slate-200 rounded-xl disabled:opacity-30 hover:bg-slate-100 transition-colors"
+                                      >
+                                        <ArrowLeft size={16} />
+                                      </button>
+                                      <button
+                                        disabled={currentPage === totalPages}
+                                        onClick={(e) => { e.stopPropagation(); setCurrentPage(p => Math.min(totalPages, p + 1)); }}
+                                        className="p-2 bg-white border border-slate-200 rounded-xl disabled:opacity-30 hover:bg-slate-100 transition-colors"
+                                      >
+                                        <ArrowRight size={16} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Sección PROMETIDA: SESIONES ADICIONALES (Solo en App) */}
+                <div className="bg-white rounded-[40px] shadow-2xl overflow-hidden border border-slate-100 opacity-80">
+                  <div className="px-8 py-6 bg-amber-50/50 border-b border-amber-100 flex items-center justify-between">
+                    <h4 className="text-xs font-black text-amber-700 uppercase tracking-widest flex items-center space-x-2">
+                      <AlertCircle size={16} />
+                      <span>Sesiones Adicionales (Exclusivas de la App)</span>
+                    </h4>
+                    <span className="text-[10px] font-black text-amber-600 uppercase">No reportar al sistema institucional</span>
+                  </div>
+                  <table className="w-full text-left">
+                    <tbody className="divide-y divide-slate-100">
+                      {reconciliationResults.filter(r => r.status === 'extra').length === 0 ? (
+                        <tr><td className="px-8 py-10 text-center text-slate-400 text-xs font-bold">No hay sesiones adicionales registradas en la App.</td></tr>
+                      ) : (
+                        reconciliationResults.filter(r => r.status === 'extra').map((res, idx) => {
+                          const sched = schedules.find(s => s.id === res.id);
+                          return (
+                            <tr key={idx} className="hover:bg-amber-50/30 transition-colors">
+                              <td className="px-8 py-4">
+                                <div className="flex items-center space-x-4">
+                                  <div className="p-2 bg-amber-100 text-amber-600 rounded-lg"><Info size={14} /></div>
+                                  <div>
+                                    <p className="text-sm font-black text-slate-900">{res.nrc} <span className="text-[10px] font-bold text-slate-400 ml-2">{sched?.courseName}</span></p>
+                                    <p className="text-[10px] font-bold text-amber-600 uppercase">
+                                      {sched?.days.join(', ')} | {sched?.startTime} - {sched?.endTime}
+                                      <span className="ml-2 text-slate-400">({formatDisplayDate(sched?.startDate)} - {formatDisplayDate(sched?.endDate)})</span>
+                                    </p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-8 py-4 text-right">
+                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">Omitido en Auditoría Principal</span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </main>
 
-      {selectedAudit && (
-        <div className="fixed inset-0 z-[250] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
-            <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
-              <div className="flex items-center space-x-4">
-                <div className={`p-3 rounded-2xl text-white shadow-xl ${selectedAudit.isPerfect ? 'bg-emerald-600 shadow-emerald-100' : 'bg-rose-600 shadow-rose-100'}`}>
-                  {selectedAudit.isPerfect ? <CheckCircle size={24} /> : <AlertTriangle size={24} />}
+      {
+        selectedAudit && (
+          <div className="fixed inset-0 z-[250] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
+              <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
+                <div className="flex items-center space-x-4">
+                  <div className={`p-3 rounded-2xl text-white shadow-xl ${selectedAudit.isPerfect ? 'bg-emerald-600 shadow-emerald-100' : 'bg-rose-600 shadow-rose-100'}`}>
+                    {selectedAudit.isPerfect ? <CheckCircle size={24} /> : <AlertTriangle size={24} />}
+                  </div>
+                  <div><h3 className="text-xl font-black text-slate-900 leading-tight">Auditoría Semestral</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{selectedAudit.instructorName}</p></div>
                 </div>
-                <div><h3 className="text-xl font-black text-slate-900 leading-tight">Auditoría Semestral</h3><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{selectedAudit.instructorName}</p></div>
+                <button onClick={() => setSelectedAudit(null)} className="p-3 hover:bg-slate-200 rounded-full transition-colors"><X size={24} className="text-slate-400" /></button>
               </div>
-              <button onClick={() => setSelectedAudit(null)} className="p-3 hover:bg-slate-200 rounded-full transition-colors"><X size={24} className="text-slate-400" /></button>
-            </div>
-            <div className="p-8 overflow-y-auto custom-scrollbar flex-1">
-              {selectedAudit.isPerfect ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
-                  <div className="p-6 bg-emerald-50 rounded-full text-emerald-600"><CheckCircle size={64} /></div>
-                  <h4 className="text-2xl font-black text-slate-900">¡Programación Impecable!</h4>
-                  <p className="text-xs text-slate-400">Nota: Auditoría limitada hasta el 28/06 y omitida en semanas con feriados.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {selectedAudit.discrepancies.map((d, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-5 bg-slate-50 border border-slate-100 rounded-3xl group hover:border-indigo-200 hover:bg-white transition-all shadow-sm">
-                      <div className="flex items-center space-x-4">
-                        <div className={`p-2 rounded-xl ${d.type === 'daily_excess' ? 'bg-rose-50 text-rose-500' : 'bg-slate-100 text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-600'} transition-colors`}>
-                          {d.type === 'daily_excess' ? <Clock size={18} /> : <Calendar size={18} />}
+              <div className="p-8 overflow-y-auto custom-scrollbar flex-1">
+                {selectedAudit.isPerfect ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
+                    <div className="p-6 bg-emerald-50 rounded-full text-emerald-600"><CheckCircle size={64} /></div>
+                    <h4 className="text-2xl font-black text-slate-900">¡Programación Impecable!</h4>
+                    <p className="text-xs text-slate-400">Nota: Auditoría limitada hasta el 28/06 y omitida en semanas con feriados.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {selectedAudit.discrepancies.map((d, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-5 bg-slate-50 border border-slate-100 rounded-3xl group hover:border-indigo-200 hover:bg-white transition-all shadow-sm">
+                        <div className="flex items-center space-x-4">
+                          <div className={`p-2 rounded-xl ${d.type === 'daily_excess' ? 'bg-rose-50 text-rose-500' : 'bg-slate-100 text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-600'} transition-colors`}>
+                            {d.type === 'daily_excess' ? <Clock size={18} /> : <Calendar size={18} />}
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-black uppercase text-slate-400">
+                              {d.type === 'daily_excess'
+                                ? d.weekStart.toLocaleDateString('es-ES', { weekday: 'long', day: '2-digit', month: 'short' })
+                                : `Semana ${d.weekStart.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}`}
+                            </p>
+                            <p className="text-xs font-black text-slate-700">
+                              {d.type === 'daily_excess' ? 'Exceso de Jornada' : 'Discrepancia de carga'}
+                            </p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="text-[10px] font-black uppercase text-slate-400">
+                        <div className="text-right">
+                          <div className={`text-[10px] font-black uppercase ${d.type === 'deficit' ? 'text-rose-600' : 'text-amber-600'}`}>
+                            {d.type === 'deficit' ? '-' : '+'}{d.diff.toFixed(2)}h
+                          </div>
+                          <div className="text-[9px] font-bold text-slate-400">
                             {d.type === 'daily_excess'
-                              ? d.weekStart.toLocaleDateString('es-ES', { weekday: 'long', day: '2-digit', month: 'short' })
-                              : `Semana ${d.weekStart.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}`}
-                          </p>
-                          <p className="text-xs font-black text-slate-700">
-                            {d.type === 'daily_excess' ? 'Exceso de Jornada' : 'Discrepancia de carga'}
-                          </p>
+                              ? `Total: ${d.real.toFixed(2)}h (Límite ${d.meta}h)`
+                              : `Real: ${d.real.toFixed(2)}h / Meta: ${d.meta.toFixed(2)}h`}
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className={`text-[10px] font-black uppercase ${d.type === 'deficit' ? 'text-rose-600' : 'text-amber-600'}`}>
-                          {d.type === 'deficit' ? '-' : '+'}{d.diff.toFixed(2)}h
-                        </div>
-                        <div className="text-[9px] font-bold text-slate-400">
-                          {d.type === 'daily_excess'
-                            ? `Total: ${d.real.toFixed(2)}h (Límite ${d.meta}h)`
-                            : `Real: ${d.real.toFixed(2)}h / Meta: ${d.meta.toFixed(2)}h`}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="p-8 border-t border-slate-100 bg-slate-50/50 flex justify-end">
-              <button onClick={() => setSelectedAudit(null)} className="px-10 py-3 bg-slate-900 text-white font-black rounded-2xl text-xs uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all">Entendido</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="p-8 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+                <button onClick={() => setSelectedAudit(null)} className="px-10 py-3 bg-slate-900 text-white font-black rounded-2xl text-xs uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all">Entendido</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )
+      }
+
+      {/* MODAL DETALLADO DE CONCILIACIÓN */}
+      {
+        selectedReconResult && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]">
+              <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0">
+                <div className="flex items-center space-x-4">
+                  <div className={`p-3 rounded-2xl text-white shadow-xl ${selectedReconResult.status === 'ok' ? 'bg-emerald-600 shadow-emerald-100' :
+                    selectedReconResult.status === 'discrepancy' ? 'bg-rose-600 shadow-rose-100' : 'bg-slate-600'
+                    }`}>
+                    {selectedReconResult.status === 'ok' ? <ClipboardCheck size={24} /> : <FileWarning size={24} />}
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 leading-tight">Detalle de Discrepancia</h3>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">NRC {selectedReconResult.nrc} | {selectedReconResult.reference?.dia} {selectedReconResult.reference?.hora_inicio}</p>
+                  </div>
+                </div>
+                <button onClick={() => setSelectedReconResult(null)} className="p-3 hover:bg-slate-100 rounded-full transition-colors"><X size={24} className="text-slate-400" /></button>
+              </div>
+
+              <div className="p-8 overflow-y-auto custom-scrollbar flex-1 bg-slate-50/30">
+                <div className="grid grid-cols-2 gap-8">
+                  {/* Referencia Sistema */}
+                  <div className="space-y-4">
+                    <div className="flex items-center space-x-2 text-[10px] font-black text-indigo-600 uppercase tracking-widest bg-indigo-50 px-3 py-1 rounded-full w-fit">
+                      <Database size={12} />
+                      <span>Reporte Institucional (Truth)</span>
+                    </div>
+                    <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm space-y-3">
+                      <div><p className="text-[9px] font-black text-slate-400 uppercase">Docente</p><p className="text-xs font-black text-slate-700">{selectedReconResult.reference?.instructor_nombre}</p><p className="text-[10px] font-bold text-slate-400">ID: {selectedReconResult.reference?.instructor_id}</p></div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div><p className="text-[9px] font-black text-slate-400 uppercase">Horario</p><p className="text-xs font-black text-slate-700">{selectedReconResult.reference?.hora_inicio} - {selectedReconResult.reference?.hora_fin}</p></div>
+                        <div><p className="text-[9px] font-black text-slate-400 uppercase">Día</p><p className="text-xs font-black text-slate-700">{selectedReconResult.reference?.dia}</p></div>
+                      </div>
+                      <div><p className="text-[9px] font-black text-slate-400 uppercase">Ubicación</p><p className="text-xs font-black text-slate-700">{selectedReconResult.reference?.edificio} - {selectedReconResult.reference?.salon}</p></div>
+                      <div><p className="text-[9px] font-black text-slate-400 uppercase">Vigencia</p><p className="text-xs font-black text-slate-700">{formatDisplayDate(selectedReconResult.reference?.fecha_inicio)} al {formatDisplayDate(selectedReconResult.reference?.fecha_fin)}</p></div>
+                    </div>
+                  </div>
+
+                  {/* Estado en la App */}
+                  <div className="space-y-4">
+                    <div className="flex items-center space-x-2 text-[10px] font-black text-slate-600 uppercase tracking-widest bg-slate-100 px-3 py-1 rounded-full w-fit">
+                      <Activity size={12} />
+                      <span>Estado en Aplicación</span>
+                    </div>
+                    {selectedReconResult.status === 'missing' ? (
+                      <div className="bg-rose-50 p-6 rounded-[32px] border border-rose-100 flex flex-col items-center justify-center text-center space-y-3 h-[250px]">
+                        <div className="p-3 bg-rose-100 text-rose-500 rounded-full"><SearchCode size={32} /></div>
+                        <h4 className="text-sm font-black text-rose-900 uppercase">No Programado</h4>
+                        <p className="text-[10px] font-bold text-rose-600">Esta sesión no existe en la base de datos de la App.</p>
+                      </div>
+                    ) : (
+                      <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm space-y-3">
+                        {(() => {
+                          const sched = schedules.find(s => s.id === selectedReconResult.id);
+                          if (!sched) return <p className="text-xs font-bold text-slate-400">Datos no disponibles</p>;
+                          return (
+                            <>
+                              <div><p className="text-[9px] font-black text-slate-400 uppercase">Docente en App</p><p className="text-xs font-black text-slate-700">{sched.instructor}</p><p className="text-[10px] font-bold text-slate-400">ID: {sched.instructorId}</p></div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div><p className="text-[9px] font-black text-slate-400 uppercase">Horario en App</p><p className="text-xs font-black text-slate-700">{sched.startTime} - {sched.endTime}</p></div>
+                                <div><p className="text-[9px] font-black text-slate-400 uppercase">Día</p><p className="text-xs font-black text-slate-700">{sched.days.join(', ')}</p></div>
+                              </div>
+                              <div><p className="text-[9px] font-black text-slate-400 uppercase">Ubicación en App</p><p className="text-xs font-black text-slate-700">{sched.building} - {sched.room}</p></div>
+                              <div><p className="text-[9px] font-black text-slate-400 uppercase">Vigencia en App</p><p className="text-xs font-black text-slate-700">{formatDisplayDate(sched.startDate)} al {formatDisplayDate(sched.endDate)}</p></div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Lista de Hallazgos */}
+                {selectedReconResult.errors.length > 0 && (
+                  <div className="mt-8 space-y-3">
+                    <h5 className="text-[10px] font-black text-rose-600 uppercase tracking-widest pl-2">Inconsistencias Detectadas</h5>
+                    <div className="grid grid-cols-1 gap-2">
+                      {selectedReconResult.errors.map((err, i) => (
+                        <div key={i} className="flex items-center space-x-3 p-4 bg-rose-50 border border-rose-100 rounded-2xl text-[11px] font-bold text-rose-700">
+                          <AlertTriangle size={16} />
+                          <span>{err}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-8 border-t border-slate-100 bg-white flex justify-between items-center">
+                <p className="text-[10px] font-bold text-slate-400 max-w-[400px]">Usa esta información para buscar el NRC en el horario y realizar los ajustes necesarios según el reporte oficial.</p>
+                <button
+                  onClick={() => setSelectedReconResult(null)}
+                  className="px-10 py-3 bg-slate-900 text-white font-black rounded-2xl text-xs uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all"
+                >
+                  Cerrar Detalle
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      }
+    </div >
   );
 };
 

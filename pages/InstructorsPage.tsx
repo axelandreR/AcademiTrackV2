@@ -2,15 +2,15 @@ import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Search, ArrowLeft, Plus, Edit2, Trash2, X } from 'lucide-react';
 import { useData } from '../context/DataContext';
-import { InstructorData } from '../types';
+import { Instructor } from '../types';
 
 const InstructorsPage: React.FC = () => {
     const navigate = useNavigate();
-    const { instructors, setInstructors } = useData();
+    const { instructors, saveInstructorCloud, deleteInstructorCloud } = useData();
 
     const [managementSearch, setManagementSearch] = useState('');
     const [isManagementModalOpen, setIsManagementModalOpen] = useState(false);
-    const [editingItem, setEditingItem] = useState<InstructorData | null>(null);
+    const [editingItem, setEditingItem] = useState<Instructor | null>(null);
 
     const filteredInstructors = useMemo(() =>
         instructors.filter(i =>
@@ -22,7 +22,7 @@ const InstructorsPage: React.FC = () => {
     const handleSaveInstructor = (e: React.FormEvent) => {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
-        const newInst: InstructorData = {
+        const newInst: Instructor = {
             id: formData.get('id') as string,
             name: formData.get('name') as string,
             type: formData.get('type') as 'TC' | 'TP',
@@ -33,16 +33,16 @@ const InstructorsPage: React.FC = () => {
         };
 
         if (editingItem) {
-            setInstructors(prev => prev.map(i => i.id === editingItem.id ? newInst : i));
+            saveInstructorCloud(newInst);
         } else {
-            setInstructors(prev => [...prev, newInst]);
+            saveInstructorCloud(newInst);
         }
         setIsManagementModalOpen(false);
     };
 
-    const handleDelete = (id: string) => {
+    const handleDelete = async (id: string) => {
         if (window.confirm('¿Está seguro de eliminar este instructor?')) {
-            setInstructors(prev => prev.filter(i => i.id !== id));
+            await deleteInstructorCloud(id);
         }
     };
 

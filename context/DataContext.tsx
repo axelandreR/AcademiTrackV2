@@ -1,22 +1,42 @@
-import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { ProcessedSchedule, RoomData, InstructorData, HolidayData } from '../types';
+import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
+import { ProcessedSchedule, RoomData, Instructor, HolidayData, InstitutionalReference } from '../types';
+import { AppSettings, DEFAULT_SETTINGS } from '../types/settings';
 import { supabase } from '../supabaseClient';
+
+const mapHolidayFromDB = (h: any): HolidayData => ({
+  date: parseLocalDBDate(h.date),
+  name: h.name,
+  description: h.description || h.type || ''
+});
+
+const mapRoomFromDB = (r: any): RoomData => ({
+  roomKey: r.room_key || `${r.building}-${r.name}`,
+  room: r.name || '',
+  building: r.building || '',
+  capacity: r.capacity || 0,
+  type: r.type || 'AULA',
+  career: '',
+  description: ''
+});
 
 interface DataContextType {
   schedules: ProcessedSchedule[];
   administrativeTasks: ProcessedSchedule[];
   rooms: RoomData[];
-  instructors: InstructorData[];
+  instructors: Instructor[];
   holidays: HolidayData[];
   isLoading: boolean;
   hasInitialData: boolean;
   error: string | null;
+  institutionalReferences: InstitutionalReference[];
+  settings: Record<string, string>;
+  loadSchedulesForFilter: (type: 'Instructor' | 'Aula' | 'Bloque', value: string) => Promise<void>;
 
   // Actions (Local state + Cloud sync wrappers would go here)
   setSchedules: React.Dispatch<React.SetStateAction<ProcessedSchedule[]>>;
   setAdministrativeTasks: React.Dispatch<React.SetStateAction<ProcessedSchedule[]>>;
   setRooms: React.Dispatch<React.SetStateAction<RoomData[]>>;
-  setInstructors: React.Dispatch<React.SetStateAction<InstructorData[]>>;
+  setInstructors: React.Dispatch<React.SetStateAction<Instructor[]>>;
   setHolidays: React.Dispatch<React.SetStateAction<HolidayData[]>>;
 
   // Helpers
@@ -24,10 +44,11 @@ interface DataContextType {
   refreshData: () => Promise<void>;
   uploadSchedulesToSupabase: (data: {
     schedules: ProcessedSchedule[];
-    instructors: InstructorData[];
+    instructors: Instructor[];
     rooms: RoomData[];
     holidays: HolidayData[];
   }, mode?: 'full' | 'delta') => Promise<void>;
+  uploadInstitutionalReference: (data: InstitutionalReference[]) => Promise<void>;
 
   exportedInstructors: Set<string>;
   toggleInstructorExported: (id: string) => void;
@@ -35,18 +56,32 @@ interface DataContextType {
   // Cloud CRUD
   saveScheduleCloud: (schedule: ProcessedSchedule | ProcessedSchedule[]) => Promise<void>;
   deleteScheduleCloud: (id: string | string[]) => Promise<void>;
+  saveInstructorCloud: (instructor: Instructor) => Promise<void>;
+  deleteInstructorCloud: (id: string) => Promise<void>;
+  updateInstructorAuditStatus: (instructorName: string, status: 'OK' | 'DEFICIT' | 'EXCESS', validationJson: any) => Promise<void>;
+
+  // Global Summary (DEPRECATED - Will reuse if needed but primary source is now auditStatus on instructor)
+  globalSchedulesSummary: ProcessedSchedule[];
 
   // Normalized
-  instructorsMap: Record<string, InstructorData>;
-  instructorsByNameMap: Record<string, InstructorData>;
+  instructorsMap: Record<string, Instructor>;
+  instructorsByNameMap: Record<string, Instructor>;
   roomsMap: Record<string, RoomData>;
   holidaysMap: Record<string, HolidayData>;
+
+  // Simulation Mode
+  isSimulationMode: boolean;
+  simulationConfig: any;
+  startSimulation: (instructorFilter?: string) => void;
+  endSimulation: () => void;
+  applySimulation: () => Promise<void>;
+  saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
+  loadScenario: (id: string) => Promise<any>;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
-// Helper para evitar desfase de zona horaria (UTC -> Local)
-const parseLocalDBDate = (dateStr: string | null | undefined): Date => {
+export const parseLocalDBDate = (dateStr: string | null | undefined): Date => {
   if (!dateStr) return new Date(NaN);
 
   // Extraemos solo la parte de la fecha (YYYY-MM-DD)
@@ -74,7 +109,7 @@ const formatDateToDB = (date: Date): string | null => {
   return `${year}-${month}-${day}`;
 };
 
-const mapSchedFromDB = (dbItem: any): ProcessedSchedule => ({
+export const mapSchedFromDB = (dbItem: any): ProcessedSchedule => ({
   id: dbItem.id,
   courseCode: dbItem.course_code || '',
   courseName: dbItem.course_name || '',
@@ -100,6 +135,30 @@ const mapSchedFromDB = (dbItem: any): ProcessedSchedule => ({
   category: dbItem.category,
   isAdministrative: Boolean(dbItem.is_administrative),
   modality: dbItem.modality
+});
+
+const mapInstructorToDB = (inst: Instructor) => ({
+  id: inst.id,
+  name: inst.name,
+  type: inst.type,
+  specialty: inst.specialty,
+  max_hours: inst.maxHours
+  // email: inst.email -- no existe en interface actual
+});
+
+const mapRoomToDB = (room: RoomData) => ({
+  room_key: room.roomKey,
+  name: room.room || '', // Usamos room como nombre
+  building: room.building,
+  capacity: room.capacity,
+  type: room.type
+  // resources: room.resources -- no existe en interface actual
+});
+
+const mapHolidayToDB = (holiday: HolidayData) => ({
+  date: formatDateToDB(holiday.date),
+  name: holiday.name,
+  type: holiday.description || 'Feriado' // Usamos description como type en DB
 });
 
 const mapSchedToDB = (appItem: ProcessedSchedule) => ({
@@ -130,36 +189,15 @@ const mapSchedToDB = (appItem: ProcessedSchedule) => ({
   modality: appItem.modality || null
 });
 
-const mapInstructorToDB = (inst: InstructorData) => ({
-  id: inst.id,
-  name: inst.name,
-  type: inst.type,
-  specialty: inst.specialty,
-  max_hours: inst.maxHours
-  // email: inst.email -- no existe en interface actual
-});
-
-const mapRoomToDB = (room: RoomData) => ({
-  room_key: room.roomKey,
-  name: room.room || '', // Usamos room como nombre
-  building: room.building,
-  capacity: room.capacity,
-  type: room.type
-  // resources: room.resources -- no existe en interface actual
-});
-
-const mapHolidayToDB = (holiday: HolidayData) => ({
-  date: formatDateToDB(holiday.date),
-  name: holiday.name,
-  type: holiday.description || 'Feriado' // Usamos description como type en DB
-});
-
 export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [schedules, setSchedules] = useState<ProcessedSchedule[]>([]);
+  const [globalSchedulesSummary, setGlobalSchedulesSummary] = useState<ProcessedSchedule[]>([]);
   const [administrativeTasks, setAdministrativeTasks] = useState<ProcessedSchedule[]>([]);
   const [rooms, setRooms] = useState<RoomData[]>([]);
-  const [instructors, setInstructors] = useState<InstructorData[]>([]);
+  const [instructors, setInstructors] = useState<Instructor[]>([]);
   const [holidays, setHolidays] = useState<HolidayData[]>([]);
+  const [institutionalReferences, setInstitutionalReferences] = useState<InstitutionalReference[]>([]);
+  const [settings, setSettings] = useState<Record<string, string>>(DEFAULT_SETTINGS);
   const [exportedInstructors, setExportedInstructors] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -185,47 +223,46 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [hasInitialData, setHasInitialData] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshData = async () => {
+  const refreshData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      // 1. Fetch ALL Schedules (handling pagination for > 1000 rows)
-      let allDbSchedules: any[] = [];
+      // 1. Fetch BASIC METADATA (Settings, Instructors, Rooms, Holidays, References)
+      // DO NOT FETCH SCHEDULES HERE to improve performance.
+
+      // Fetch App Settings
+      const { data: settingsData } = await supabase.from('app_settings').select('*');
+      if (settingsData && settingsData.length > 0) {
+        const newSettings = { ...DEFAULT_SETTINGS };
+        settingsData.forEach((s: AppSettings) => {
+          newSettings[s.key] = s.value;
+        });
+        setSettings(newSettings);
+      }
+
+      // Fetch Holidays
+      const { data: allDbHolidays, error: holError } = await supabase.from('holidays').select('*');
+      if (holError) throw holError;
+      if (allDbHolidays) {
+        setHolidays(allDbHolidays.map(mapHolidayFromDB));
+      }
+
+      // Fetch Rooms
+      const { data: allDbRooms, error: roomError } = await supabase.from('rooms').select('*');
+      if (roomError) throw roomError;
+      if (allDbRooms) {
+        setRooms(allDbRooms.map(mapRoomFromDB));
+      }
+
+      // Fetch Instructors
+      // Fetch Instructors
+      let allDbInstructors: any[] = [];
       let lastCount = 0;
       let offset = 0;
       const limit = 1000;
 
       do {
-        const { data, error: schedError } = await supabase
-          .from('schedules')
-          .select('*')
-          .range(offset, offset + limit - 1);
-
-        if (schedError) throw schedError;
-        if (data) {
-          allDbSchedules = [...allDbSchedules, ...data];
-          lastCount = data.length;
-          offset += limit;
-        } else {
-          lastCount = 0;
-        }
-      } while (lastCount === limit);
-
-      const processed: ProcessedSchedule[] = allDbSchedules.map(mapSchedFromDB);
-
-      const academic = processed.filter(s => !s.isAdministrative);
-      const admin = processed.filter(s => s.isAdministrative);
-
-      setSchedules(academic);
-      setAdministrativeTasks(admin);
-
-      if (processed.length > 0) setHasInitialData(true);
-
-      // 2. Fetch ALL Instructors
-      let allDbInstructors: any[] = [];
-      offset = 0; // Reset offset for new table
-      // limit is already defined
-      do {
+        // Fetch including audit status from live DB
         const { data, error: instError } = await supabase
           .from('instructors')
           .select('*')
@@ -240,41 +277,110 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           lastCount = 0;
         }
       } while (lastCount === limit);
+
       if (allDbInstructors) {
+        // Sort alphabetically by name to fix "desordenada" issue
+        allDbInstructors.sort((a, b) => a.name.localeCompare(b.name));
+
         setInstructors(allDbInstructors.map(i => ({
-          id: i.id, name: i.name, type: i.type as 'TC' | 'TP', specialty: i.specialty, maxHours: i.max_hours, campus: '', status: 'Activo'
+          id: i.id,
+          name: i.name,
+          type: i.type as 'TC' | 'TP',
+          specialty: i.specialty,
+          maxHours: i.max_hours,
+          campus: '',
+          status: 'Activo',
+          auditStatus: i.audit_status,
+          auditJson: i.audit_json
         })));
       }
 
-      // 3. Fetch Rooms
-      const { data: dbRooms, error: roomError } = await supabase.from('rooms').select('*');
-      if (roomError) throw roomError;
-      if (dbRooms) {
-        setRooms(dbRooms.map(r => ({
-          roomKey: r.room_key, room: r.name || '', building: r.building, capacity: r.capacity, type: r.type, career: '', description: ''
-        })));
+      // Fetch Institutional References
+      const { data: dbRefs, error: refError } = await supabase.from('institutional_reference').select('*');
+      if (!refError && dbRefs) {
+        setInstitutionalReferences(dbRefs as InstitutionalReference[]);
       }
 
-      // 4. Fetch Holidays
-      const { data: dbHolidays, error: holidayError } = await supabase.from('holidays').select('*');
-      if (holidayError) throw holidayError;
-      if (dbHolidays) {
-        setHolidays(dbHolidays.map(h => ({
-          date: parseLocalDBDate(h.date), name: h.name, description: h.type || ''
-        })));
-      }
+      // FULL LOAD: Fetch ALL Schedules
+      // Using chunked loading to handle large datasets effectively
+      let allSchedulesData: any[] = [];
+      let schedOffset = 0;
+      let schedLimit = 1000;
+      let schedLastCount = 0;
+
+      do {
+        const { data: schedData, error: schedError } = await supabase
+          .from('schedules')
+          .select('*')
+          .range(schedOffset, schedOffset + schedLimit - 1);
+
+        if (schedError) throw schedError;
+        if (schedData) {
+          allSchedulesData = [...allSchedulesData, ...schedData];
+          schedLastCount = schedData.length;
+          schedOffset += schedLimit;
+        } else {
+          schedLastCount = 0;
+        }
+      } while (schedLastCount === schedLimit);
+
+      const processedSchedules = allSchedulesData.map(mapSchedFromDB);
+
+      // Split into Academic and Administrative
+      const academic = processedSchedules.filter(s => !s.isAdministrative);
+      const admin = processedSchedules.filter(s => s.isAdministrative);
+
+      setSchedules(academic);
+      setAdministrativeTasks(admin);
+
+      // Keep globalSchedulesSummary as a complete reference for Sidebar/Progress
+      setGlobalSchedulesSummary(processedSchedules);
+
+      setGlobalSchedulesSummary(processedSchedules);
+
+      setHasInitialData(true);
+      setIsLoading(false);
 
     } catch (err: any) {
-      console.error("Error fetching data from Supabase:", err);
-      setError(err.message || 'Error de conexión');
-    } finally {
+      console.error('Error loading initial data:', err);
+      setError(err.message || 'Error al cargar datos iniciales');
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  const loadSchedulesForFilter = useCallback(async (type: 'Instructor' | 'Aula' | 'Bloque', value: string) => {
+    // In Full Load mode, filters are now handled client-side
+    return;
+  }, []);
+
+  const updateInstructorAuditStatus = useCallback(async (instructorName: string, status: 'OK' | 'DEFICIT' | 'EXCESS', validationJson: any) => {
+    const instructor = instructors.find(i => i.name === instructorName);
+    if (!instructor) return;
+
+    const { error } = await supabase
+      .from('instructors')
+      .update({
+        audit_status: status,
+        audit_json: validationJson
+      })
+      .eq('id', instructor.id);
+
+    if (error) {
+      console.error("Failed to update audit status cache:", error);
+      return;
+    }
+
+    setInstructors(prev => prev.map(inst => {
+      if (inst.id === instructor.id) {
+        return { ...inst, auditStatus: status, auditJson: JSON.stringify(validationJson) };
+      }
+      return inst;
+    }));
+  }, [instructors]);
 
   const uploadSchedulesToSupabase = async (data: {
     schedules: ProcessedSchedule[];
-    instructors: InstructorData[];
+    instructors: Instructor[];
     rooms: RoomData[];
     holidays: HolidayData[];
   }, mode: 'full' | 'delta' = 'full') => {
@@ -336,6 +442,26 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const uploadInstitutionalReference = async (data: InstitutionalReference[]) => {
+    setIsLoading(true);
+    try {
+      await supabase.from('institutional_reference').delete().neq('nrc', '_root_');
+      const chunkSize = 500;
+      for (let i = 0; i < data.length; i += chunkSize) {
+        const chunk = data.slice(i, i + chunkSize);
+        const { error } = await supabase.from('institutional_reference').insert(chunk);
+        if (error) throw error;
+      }
+      setInstitutionalReferences(data);
+      alert('Referencia institucional actualizada correctamente.');
+    } catch (err: any) {
+      console.error("Error uploading institutional reference:", err);
+      alert('Error: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const saveScheduleCloud = async (newData: ProcessedSchedule | ProcessedSchedule[]) => {
     // 1. Preparar items y payload
     const items = Array.isArray(newData) ? newData : [newData];
@@ -388,30 +514,277 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const saveInstructorCloud = async (inst: Instructor) => {
+    try {
+      const dbInst = mapInstructorToDB(inst);
+      const { error } = await supabase.from('instructors').upsert(dbInst);
+      if (error) throw error;
+
+      // Actualizar localmente
+      setInstructors(prev => {
+        const index = prev.findIndex(i => i.id === inst.id);
+        if (index >= 0) {
+          const next = [...prev];
+          next[index] = inst;
+          return next;
+        }
+        return [...prev, inst];
+      });
+    } catch (err: any) {
+      console.error("Error saving instructor to Supabase:", err);
+      alert('Error al guardar instructor: ' + err.message);
+    }
+  };
+
+  const deleteInstructorCloud = async (id: string) => {
+    try {
+      const { error } = await supabase.from('instructors').delete().eq('id', id);
+      if (error) throw error;
+
+      setInstructors(prev => prev.filter(i => i.id !== id));
+    } catch (err: any) {
+      console.error("Error deleting instructor from Supabase:", err);
+      alert('Error al eliminar instructor: ' + err.message);
+    }
+  };
+
   // Carga inicial
   useEffect(() => {
     refreshData();
   }, []);
 
-  const allSchedules = React.useMemo(() => {
-    return [...schedules, ...administrativeTasks];
+  // Simulation State
+  const [isSimulationMode, setIsSimulationMode] = useState(false);
+  const [simulationSchedules, setSimulationSchedules] = useState<ProcessedSchedule[]>([]);
+  const [simulationAdmin, setSimulationAdmin] = useState<ProcessedSchedule[]>([]);
+  const [simulationConfig, setSimulationConfig] = useState<any>({});
+
+  const startSimulation = useCallback((instructorFilter?: string) => {
+    console.log("Starting Simulation...");
+    try {
+      // Deep copy using JSON to break all references, then restore Dates
+      const clone = (items: ProcessedSchedule[]) => {
+        const deepCopy = JSON.parse(JSON.stringify(items));
+        return deepCopy.map((s: any) => ({
+          ...s,
+          startDate: new Date(s.startDate),
+          endDate: new Date(s.endDate)
+        }));
+      };
+
+      let schedulesToClone = schedules;
+      let adminToClone = administrativeTasks;
+
+      if (instructorFilter) {
+        // Filter data for specific instructor
+        schedulesToClone = schedules.filter(s => s.instructor === instructorFilter);
+        adminToClone = administrativeTasks.filter(s => s.instructor === instructorFilter);
+        // Set configuration to ignore audit alerts for this focused simulation
+        setSimulationConfig({ instructorFilter, ignoreAudit: true });
+      } else {
+        // Global simulation (standard behavior)
+        setSimulationConfig({ ignoreAudit: false });
+      }
+
+      setSimulationSchedules(clone(schedulesToClone));
+      setSimulationAdmin(clone(adminToClone));
+      setIsSimulationMode(true);
+    } catch (e: any) {
+      console.error("Error starting simulation:", e);
+      alert("Error al iniciar simulación: " + e.message);
+    }
   }, [schedules, administrativeTasks]);
+
+  const endSimulation = useCallback(() => {
+    setIsSimulationMode(false);
+    setSimulationSchedules([]);
+    setSimulationAdmin([]);
+  }, []);
+
+  const applySimulation = useCallback(async () => {
+    if (!window.confirm("¿Seguro que deseas aplicar los cambios de la simulación a la base de datos real? Esta acción es irreversible.")) return;
+
+    setIsLoading(true);
+    try {
+      // 1. Identify Changes (Diff Logic - simplified: Replace All or Upsert Changed)
+      // For safety in this MVP, we might want to just bulk update/upsert ALL simulated items that changed.
+      // Or simply: 
+      // A. Delete everything and re-insert? (Risky)
+      // B. Upsert everything? (Safe but heavy)
+      // C. Smart Diff? (Complex)
+
+      // Let's go with B: Upsert everything from simulation to DB.
+      // But we also need to handle DELETIONS.
+      // If an item exists in 'schedules' but not in 'simulationSchedules', it must be deleted.
+
+      const realIds = new Set([...schedules, ...administrativeTasks].map(s => s.id));
+      const simIds = new Set([...simulationSchedules, ...simulationAdmin].map(s => s.id));
+
+      const toDelete = [...realIds].filter(id => !simIds.has(id));
+      const toUpsert = [...simulationSchedules, ...simulationAdmin]; // We update EVERYTHING to be safe
+
+      // Execute Deletions
+      if (toDelete.length > 0) {
+        await supabase.from('schedules').delete().in('id', toDelete);
+      }
+
+      // Execute Upserts (Chunked)
+      const payload = toUpsert.map(mapSchedToDB);
+      const chunkSize = 500;
+      for (let i = 0; i < payload.length; i += chunkSize) {
+        const { error } = await supabase.from('schedules').upsert(payload.slice(i, i + chunkSize));
+        if (error) throw error;
+      }
+
+      // Update Local Real State
+      setSchedules(simulationSchedules);
+      setAdministrativeTasks(simulationAdmin);
+
+      // Exit Simulation
+      endSimulation();
+      alert("Simulación aplicada correctamente.");
+
+    } catch (e: any) {
+      console.error("Error applying simulation:", e);
+      alert("Error al aplicar simulación: " + e.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [schedules, administrativeTasks, simulationSchedules, simulationAdmin]);
+
+  // Intercept Cloud Functions
+  const saveScheduleCloudWrapper = async (items: ProcessedSchedule | ProcessedSchedule[]) => {
+    if (isSimulationMode) {
+      const newItems = Array.isArray(items) ? items : [items];
+      // Update Simulation State Only
+      // Split Academic / Admin
+      const newAcad = newItems.filter(i => !i.isAdministrative);
+      const newAdmin = newItems.filter(i => i.isAdministrative);
+
+      if (newAcad.length > 0) {
+        setSimulationSchedules(prev => {
+          const ids = new Set(newAcad.map(i => i.id));
+          return [...prev.filter(p => !ids.has(p.id)), ...newAcad];
+        });
+      }
+      if (newAdmin.length > 0) {
+        setSimulationAdmin(prev => {
+          const ids = new Set(newAdmin.map(i => i.id));
+          return [...prev.filter(p => !ids.has(p.id)), ...newAdmin];
+        });
+      }
+      return;
+    }
+    // Normal Mode
+    return saveScheduleCloud(items);
+  };
+
+  const deleteScheduleCloudWrapper = async (id: string | string[]) => {
+    if (isSimulationMode) {
+      const ids = new Set(Array.isArray(id) ? id : [id]);
+      setSimulationSchedules(prev => prev.filter(s => !ids.has(s.id)));
+      setSimulationAdmin(prev => prev.filter(s => !ids.has(s.id)));
+      return;
+    }
+    return deleteScheduleCloud(id);
+  };
+
+  const saveScenario = useCallback(async (name: string, description: string = '', metadata: any = null) => {
+    try {
+      const scenarioData = [...simulationSchedules, ...simulationAdmin];
+      const payload = {
+        schedules: scenarioData,
+        metadata,
+        simulationConfig // Save the current config (including ignoreAudit)
+      };
+
+      const { error } = await supabase.from('scenarios').insert({
+        name,
+        description,
+        data: payload,
+      });
+      if (error) throw error;
+      alert('Escenario guardado exitosamente.');
+    } catch (e: any) {
+      console.error('Error saving scenario:', e);
+      alert('Error al guardar escenario: ' + e.message);
+    }
+  }, [simulationSchedules, simulationAdmin, simulationConfig]);
+
+  const loadScenario = useCallback(async (scenarioId: string) => {
+    try {
+      const { data, error } = await supabase.from('scenarios').select('*').eq('id', scenarioId).single();
+      if (error) throw error;
+      if (data) {
+        let loadedSchedules: any[] = [];
+        let loadedConfig: any = { ignoreAudit: false };
+
+        if (Array.isArray(data.data)) {
+          loadedSchedules = data.data;
+        } else if (data.data && Array.isArray(data.data.schedules)) {
+          loadedSchedules = data.data.schedules;
+          if (data.data.simulationConfig) {
+            loadedConfig = data.data.simulationConfig;
+          }
+        }
+
+        const parsed = loadedSchedules.map((s: any) => ({
+          ...s,
+          startDate: new Date(s.startDate),
+          endDate: new Date(s.endDate)
+        }));
+
+        setSimulationSchedules(parsed.filter(s => !s.isAdministrative));
+        setSimulationAdmin(parsed.filter(s => s.isAdministrative));
+        setSimulationConfig(loadedConfig); // Restore config
+        setIsSimulationMode(true);
+        return data.data?.metadata;
+      }
+    } catch (e: any) {
+      console.error('Error loading scenario:', e);
+      alert('Error al cargar escenario: ' + e.message);
+    }
+  }, []);
+
+  const allSchedules = React.useMemo(() => {
+    if (isSimulationMode) return [...simulationSchedules, ...simulationAdmin];
+    return [...schedules, ...administrativeTasks];
+  }, [schedules, administrativeTasks, isSimulationMode, simulationSchedules, simulationAdmin]);
 
   return (
     <DataContext.Provider value={{
-      schedules, administrativeTasks, rooms, instructors, holidays,
+      // If Simulation Mode, we hijack the exposed state so standard components consume the simulation data.
+      schedules: isSimulationMode ? simulationSchedules : schedules,
+      administrativeTasks: isSimulationMode ? simulationAdmin : administrativeTasks,
+
+      rooms, instructors, holidays, institutionalReferences,
       isLoading, hasInitialData, error,
-      setSchedules, setAdministrativeTasks, setRooms, setInstructors, setHolidays,
-      refreshData, uploadSchedulesToSupabase, saveScheduleCloud, deleteScheduleCloud,
+
+      // We pass the SETTERS for real state, but components usually use the cloud wrappers.
+      // If a component calls setSchedules directly, it updates the REAL state in memory only (UI updates), 
+      // but usually 'saveScheduleCloud' handles persistence.
+      // Ideally, we should wrap setters too or instruct components to use cloud functions.
+      // For now, let's keep setters as is (they are mostly used for internal refresh), 
+      // but 'refreshData' overwrites them.
+      setSchedules, setAdministrativeTasks,
+
+      setRooms, setInstructors, setHolidays,
+      refreshData, uploadSchedulesToSupabase,
+
+      saveScheduleCloud: saveScheduleCloudWrapper,
+      deleteScheduleCloud: deleteScheduleCloudWrapper,
+
+      saveInstructorCloud, deleteInstructorCloud, updateInstructorAuditStatus,
+      uploadInstitutionalReference,
       allSchedules, exportedInstructors, toggleInstructorExported,
       // Estados normalizados para acceso O(1)
       instructorsMap: React.useMemo(() => {
-        const map: Record<string, InstructorData> = {};
+        const map: Record<string, Instructor> = {};
         instructors.forEach(inst => { map[inst.id] = inst; });
         return map;
       }, [instructors]),
       instructorsByNameMap: React.useMemo(() => {
-        const map: Record<string, InstructorData> = {};
+        const map: Record<string, Instructor> = {};
         instructors.forEach(inst => { map[inst.name.toLowerCase()] = inst; });
         return map;
       }, [instructors]),
@@ -424,7 +797,18 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const map: Record<string, HolidayData> = {};
         holidays.forEach(h => { map[h.date.toDateString()] = h; });
         return map;
-      }, [holidays])
+      }, [holidays]),
+      settings,
+      loadSchedulesForFilter,
+      globalSchedulesSummary: isSimulationMode ? allSchedules : globalSchedulesSummary,
+
+      isSimulationMode,
+      simulationConfig,
+      startSimulation,
+      endSimulation,
+      applySimulation,
+      saveScenario,
+      loadScenario
     }}>
       {children}
     </DataContext.Provider>

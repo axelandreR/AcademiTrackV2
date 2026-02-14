@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 // Fix: Added ShieldAlert to the import list from lucide-react
-import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert } from 'lucide-react';
+import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { ProcessedSchedule, ViewType } from '../types';
 import { DAYS_OF_WEEK, COLORS } from '../constants';
 
@@ -12,9 +12,10 @@ interface RecordModalProps {
   onNavigate?: (type: ViewType, filter: string) => void;
   initialData?: ProcessedSchedule | null;
   defaultInstructor?: string;
+  allSchedules?: ProcessedSchedule[];
 }
 
-const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, initialData, defaultInstructor }) => {
+const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, initialData, defaultInstructor, allSchedules = [] }) => {
   const [formData, setFormData] = useState<Partial<ProcessedSchedule>>({
     courseCode: '',
     courseName: '',
@@ -36,6 +37,7 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
   });
 
   const [error, setError] = useState<string | null>(null);
+  const [conflictWarning, setConflictWarning] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialData) {
@@ -66,7 +68,51 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
       });
     }
     setError(null);
+    setConflictWarning(null);
   }, [initialData, isOpen, defaultInstructor]);
+
+  // Lógica de Pre-visualización de Conflictos
+  useEffect(() => {
+    if (!isOpen || !formData.instructor || !formData.startTime || !formData.endTime || (formData.days || []).length === 0) {
+      setConflictWarning(null);
+      return;
+    }
+
+    const startMin = timeToMinutes(formData.startTime);
+    const endMin = timeToMinutes(formData.endTime);
+    const selectedDays = formData.days || [];
+
+    const conflict = allSchedules.find(s => {
+      // Ignorarse a sí mismo si es una edición
+      if (initialData && s.id === initialData.id) return false;
+
+      // Solo conflictos para el MISMO docente
+      if (s.instructor !== formData.instructor) return false;
+
+      // Misma ventana temporal (días)
+      const hasDayOverlap = s.days.some(d => selectedDays.includes(d));
+      if (!hasDayOverlap) return false;
+
+      // Mismo rango de fechas (vigencia)
+      const sStart = s.startDate.getTime();
+      const sEnd = s.endDate.getTime();
+      const formStart = formData.startDate?.getTime() || 0;
+      const formEnd = formData.endDate?.getTime() || 0;
+      const hasDateOverlap = Math.max(sStart, formStart) <= Math.min(sEnd, formEnd);
+      if (!hasDateOverlap) return false;
+
+      // Cruce de horas
+      const sStartMin = timeToMinutes(s.startTime);
+      const sEndMin = timeToMinutes(s.endTime);
+      return (startMin < sEndMin && endMin > sStartMin);
+    });
+
+    if (conflict) {
+      setConflictWarning(`Conflictos detectados con: ${conflict.courseName} (${conflict.startTime}-${conflict.endTime})`);
+    } else {
+      setConflictWarning(null);
+    }
+  }, [formData.startTime, formData.endTime, formData.days, formData.instructor, formData.startDate, formData.endDate, allSchedules, isOpen, initialData]);
 
   if (!isOpen) return null;
 
@@ -164,6 +210,12 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
           {error && (
             <div className="p-4 bg-rose-50 border border-rose-200 rounded-[24px] text-rose-700 text-xs font-black flex items-center gap-3 animate-in slide-in-from-top-2">
               <AlertCircle size={20} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          {conflictWarning && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-[24px] text-amber-700 text-xs font-black flex items-center gap-3 animate-pulse">
+              <AlertTriangle size={20} className="shrink-0" /> {conflictWarning}
             </div>
           )}
 

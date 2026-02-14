@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
-import { ProcessedSchedule, ViewType, InstructorData, HolidayData } from '../types';
-import { isOtherFunctionsCourse, isExcludedFromTotalLoad } from './businessRules';
+import { ProcessedSchedule, ViewType, Instructor, HolidayData } from '../types';
+import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, isContractualLoad } from './businessRules';
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 
 interface ExcelExportParams {
@@ -10,7 +10,7 @@ interface ExcelExportParams {
   scope: 'firstWeek' | 'allWeeks' | 'custom';
   customStartDate?: string;
   customEndDate?: string;
-  instructorInfo?: InstructorData;
+  instructorInfo?: Instructor;
   logo?: string;
   holidays?: HolidayData[];
 }
@@ -401,7 +401,7 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 };
 
-export const generateGlobalAuditExcel = async (instructors: InstructorData[], schedules: ProcessedSchedule[], holidays: HolidayData[]): Promise<Blob> => {
+export const generateGlobalAuditExcel = async (instructors: Instructor[], schedules: ProcessedSchedule[], holidays: HolidayData[]): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Auditoría Global');
 
@@ -454,26 +454,48 @@ export const generateGlobalAuditExcel = async (instructors: InstructorData[], sc
 
     weeks.forEach(w => {
       let wMeta = 0, wReal = 0;
+      const scanStart = w.start.getTime();
+      const scanEndAt = w.end.getTime();
+
+      // Meta Carga
+      if (inst.type === 'TC') {
+        wMeta = 46;
+      } else {
+        const fileSess = instAcademic.filter(s => s.startDate.getTime() <= scanEndAt && s.endDate.getTime() >= scanStart);
+        wMeta = fileSess.reduce((acc, s) => acc + s.weeklyHours, 0);
+
+        // Descontar feriados de la meta para TP
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(w.start); d.setDate(w.start.getDate() + i);
+          if (d > SEMESTER_END_DATE) continue;
+          const hol = holidays.find(h => h.date.toDateString() === d.toDateString());
+          if (hol) {
+            const dName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][d.getDay()];
+            const daySessions = instAcademic.filter(s => s.days.includes(dName) && d >= s.startDate && d <= s.endDate);
+            const lostMin = daySessions.reduce((acc, s) => acc + (timeToMin(s.endTime) - timeToMin(s.startTime)), 0);
+            wMeta -= (lostMin / 60);
+          }
+        }
+      }
+
+      // Ejecución Real
       for (let i = 0; i < 7; i++) {
         const d = new Date(w.start); d.setDate(w.start.getDate() + i);
         if (d > SEMESTER_END_DATE) continue;
 
         const dName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][d.getDay()];
         const hol = holidays.find(h => h.date.toDateString() === d.toDateString());
-        const fileSess = instAcademic.filter(s => s.days.includes(dName) && d >= s.startDate && d <= s.endDate);
-        fileSess.forEach(s => wMeta += s.weeklyHours);
-        if (hol && inst.type === 'TP') {
-          const lostMin = fileSess.reduce((acc, s) => acc + (timeToMin(s.endTime) - timeToMin(s.startTime)), 0);
-          wMeta -= (lostMin / 60);
-        }
+
         instSchedules.filter(s => s.days.includes(dName) && d >= s.startDate && d <= s.endDate).forEach(s => {
           const dur = (timeToMin(s.endTime) - timeToMin(s.startTime)) / 60;
-          const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-          if (!s.isAdministrative) { if (!hol) wReal += dur; }
-          else if (!hol && (isAuto || s.category === 'asincrona' || s.category === 'preparacion' || s.category === 'coordinador')) wReal += dur;
+          if (inst.type === 'TC') {
+            if (isContractualLoad(s) && !hol) wReal += dur;
+          } else {
+            if (isAcademicMetaLoad(s) && !hol) wReal += dur;
+          }
         });
       }
-      rowValues.push(Number(wMeta.toFixed(2)), Number(wReal.toFixed(2)));
+      rowValues.push(Number(Math.max(0, wMeta).toFixed(2)), Number(wReal.toFixed(2)));
     });
 
     const row = worksheet.addRow(rowValues);
@@ -497,6 +519,113 @@ export const generateGlobalAuditExcel = async (instructors: InstructorData[], sc
   worksheet.columns = [
     { width: 12 }, { width: 35 }, { width: 10 }, { width: 25 },
     ...weeks.flatMap(() => [{ width: 10 }, { width: 10 }])
+  ];
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+};
+
+export const generateAdminTasksExcel = async (instructorName: string, schedules: ProcessedSchedule[], instructorInfo?: Instructor): Promise<Blob> => {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Tareas Administrativas');
+
+  const instructorSchedules = schedules.filter(s => s.instructor === instructorName);
+  const adminSchedules = instructorSchedules.filter(s => s.isAdministrative);
+
+  // Cabecera de información del instructor
+  worksheet.getCell('A1').value = 'ID DOCENTE:';
+  worksheet.getCell('B1').value = instructorInfo?.id || 'N/A';
+  worksheet.getCell('A2').value = 'INSTRUCTOR:';
+  worksheet.getCell('B2').value = instructorName.toUpperCase();
+
+  ['A1', 'A2'].forEach(ref => {
+    const cell = worksheet.getCell(ref);
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+  });
+
+  const categories = [
+    { title: 'SESIONES ASÍNCRONAS', filter: (s: ProcessedSchedule) => s.category === 'asincrona' },
+    { title: 'PREPARACIÓN DE CLASE', filter: (s: ProcessedSchedule) => s.category === 'preparacion' },
+    { title: 'COORDINADOR DE CARRERA / OTRAS FUNCIONES', filter: (s: ProcessedSchedule) => s.category === 'coordinador' || isOtherFunctionsCourse(s) }
+  ];
+
+  let currentRow = 4;
+
+  const header = ['TIPO', 'FECHA', 'FECHA_FIN', 'DOM', 'LUN', 'MAR', 'MIER', 'JUE', 'VIE', 'SAB', 'HORA_INICIO', 'HORA_FIN', 'EDIFICIO'];
+
+  const timeToVal = (time: string, offset: number) => {
+    const [h, m] = time.split(':').map(Number);
+    const total = h * 60 + m + offset;
+    const fh = Math.floor(total / 60);
+    const fm = total % 60;
+    return `${String(fh).padStart(2, '0')}${String(fm).padStart(2, '0')}`;
+  };
+
+  categories.forEach(cat => {
+    const items = adminSchedules.filter(cat.filter);
+    if (items.length === 0) return;
+
+    const titleCell = worksheet.getCell(currentRow, 1);
+    titleCell.value = cat.title;
+    titleCell.font = { bold: true, size: 12 };
+    currentRow++;
+
+    const headerRow = worksheet.getRow(currentRow);
+    headerRow.values = header;
+    headerRow.eachCell(cell => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      cell.alignment = { horizontal: 'center' };
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    });
+    currentRow++;
+
+    items.forEach(item => {
+      const dayFlags = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'].map(d => item.days.includes(d) ? '1' : '');
+
+      // Lógica de adyacencia para ajuste de 1 minuto
+      const hasSessionBefore = instructorSchedules.some(s =>
+        s.id !== item.id &&
+        s.endTime === item.startTime &&
+        s.days.some(d => item.days.includes(d)) &&
+        s.startDate <= item.endDate && s.endDate >= item.startDate
+      );
+
+      const hasSessionAfter = instructorSchedules.some(s =>
+        s.id !== item.id &&
+        s.startTime === item.endTime &&
+        s.days.some(d => item.days.includes(d)) &&
+        s.startDate <= item.endDate && s.endDate >= item.startDate
+      );
+
+      const finalStart = hasSessionBefore ? timeToVal(item.startTime, 1) : item.startTime.replace(':', '');
+      const finalEnd = hasSessionAfter ? timeToVal(item.endTime, -1) : item.endTime.replace(':', '');
+
+      const rowData = [
+        item.modality === 'virtual' ? 'REMT' : 'CLAS',
+        item.startDate.toLocaleDateString('es-ES'),
+        item.endDate.toLocaleDateString('es-ES'),
+        ...dayFlags,
+        finalStart,
+        finalEnd,
+        item.modality === 'virtual' ? 'SV-EV' : '00-AC'
+      ];
+      const row = worksheet.addRow(rowData);
+      row.eachCell(cell => {
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
+      currentRow++;
+    });
+
+    currentRow += 2;
+  });
+
+  worksheet.columns = [
+    { width: 35 }, { width: 12 }, { width: 12 },
+    { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 },
+    { width: 12 }, { width: 12 }, { width: 12 }
   ];
 
   const buffer = await workbook.xlsx.writeBuffer();

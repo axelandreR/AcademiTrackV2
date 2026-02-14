@@ -3,7 +3,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
-import { ProcessedSchedule, ViewType, AvailabilityWindow, InstructorData, ScheduleCategory, AppMode, ModalityType, HolidayData } from '../types';
+import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE } from '../constants';
 import {
   Clock, MapPin, Hash, Video, LayoutDashboard, Table as TableIcon,
@@ -28,7 +28,7 @@ interface ScheduleGridProps {
   availability?: AvailabilityWindow;
   onNavigate?: (type: ViewType, filter: string) => void;
   onNavigateWeek?: (weeks: number) => void;
-  instructorsData?: InstructorData[];
+  instructorsData?: Instructor[];
   selectedFilterName?: string;
   onAddAdministrativeTask?: (day: string, startTime: string, duration: number, category: ScheduleCategory, modality: ModalityType) => void;
   holidays?: HolidayData[];
@@ -90,12 +90,13 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
   const isInstructorView = viewType === 'Instructor';
 
-  const { instructorsByNameMap } = useData();
+  const { instructorsByNameMap, simulationConfig } = useData();
 
   const currentInstructorMeta = useMemo(() => {
     if (!isInstructorView || !selectedFilterName) return null;
     return instructorsByNameMap[selectedFilterName.toLowerCase()] || null;
   }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
+
 
   useEffect(() => {
     if (currentInstructorMeta) {
@@ -211,16 +212,28 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
     // REGLA DE ORO: Si es TC, la alerta se dispara si NO cumple las 46h O si hay exceso diario.
     // La discrepancia académica se vuelve informativa (opcional).
-    const hasAuditWarning = (instructorType === 'TC' ? hasContractDiscrepancy : hasAcademicDiscrepancy) || hasDailyBreach;
+    let hasAuditWarning = (instructorType === 'TC' ? hasContractDiscrepancy : hasAcademicDiscrepancy) || hasDailyBreach;
+
+    // OVERRIDE: Si estamos en simulación enfocada (horas extras), desactivar alertas visuales
+    if (simulationConfig?.ignoreAudit) {
+      hasAuditWarning = false;
+      // Opcionalmente podemos forzar las discrepancias a false también si queremos ocultar los colores rojos en los textos,
+      // pero hasAuditWarning controla el modal y el punto rojo principal.
+      // Si queremos limpiar todo:
+      // hasContractDiscrepancy = false; // (const requires readjustment)
+    }
 
     return {
       syncHours: syncH, asyncHours: asyncH, prepHours: prepTotalMin / 60, otherHours: otherH,
       assignHours: assignTotalMin / 60, fileLoadHours, academicLoad, totalContractHours, targetLoadForWeek: fileLoadHours,
-      hasAcademicDiscrepancy, hasContractDiscrepancy, hasAuditWarning, hasDailyBreach,
-      isDeficit: !isHolidayInWeek && academicLoad < fileLoadHours - 0.01,
+      hasAcademicDiscrepancy: simulationConfig?.ignoreAudit ? false : hasAcademicDiscrepancy,
+      hasContractDiscrepancy: simulationConfig?.ignoreAudit ? false : hasContractDiscrepancy,
+      hasAuditWarning: simulationConfig?.ignoreAudit ? false : hasAuditWarning,
+      hasDailyBreach: simulationConfig?.ignoreAudit ? false : hasDailyBreach,
+      isDeficit: simulationConfig?.ignoreAudit ? false : (!isHolidayInWeek && academicLoad < fileLoadHours - 0.01),
       isHolidayInWeek, isWeekOutOfSemester
     };
-  }, [schedules, datesOfWeek, instructorType, holidays]);
+  }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig]);
 
   const auditObservations = useMemo(() => {
     const list: { date: Date; type: 'academic' | 'contractual' | 'daily'; meta: number; real: number }[] = [];
@@ -399,6 +412,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         instructorType={instructorType}
         activeModality={activeModality}
         setActiveModality={setActiveModality}
+        currentHours={instructorType === 'TC' ? stats.totalContractHours : stats.academicLoad}
+        maxHours={instructorType === 'TC' ? 46 : stats.fileLoadHours}
       />
 
       <div className="flex-1 flex flex-col min-h-0 relative">

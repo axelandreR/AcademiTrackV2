@@ -16,6 +16,8 @@ interface ScheduleSidebarProps {
     instructorType: 'TC' | 'TP';
     activeModality: ModalityType;
     setActiveModality: (modality: ModalityType) => void;
+    currentHours: number;
+    maxHours: number;
 }
 
 const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
@@ -30,6 +32,8 @@ const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
     instructorType,
     activeModality,
     setActiveModality,
+    currentHours,
+    maxHours,
 }) => {
     if (!isEditorMode) return null;
 
@@ -55,6 +59,44 @@ const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
           ${isResizing ? 'user-select-none' : ''}
         `}
             >
+                {/* Indicador de Carga Viva */}
+                <div className="mb-8 p-4 bg-white/5 rounded-3xl border border-white/10 shadow-2xl backdrop-blur-sm">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex flex-col">
+                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none mb-1">Carga Horaria</span>
+                            <h4 className="text-sm font-black text-white uppercase tracking-tight">Estado Actual</h4>
+                        </div>
+                        <div className="text-right">
+                            <span className={`text-lg font-black leading-none ${currentHours > maxHours ? 'text-rose-400' : currentHours === maxHours ? 'text-emerald-400' : 'text-blue-400'}`}>
+                                {currentHours.toFixed(1)}
+                            </span>
+                            <span className="text-[10px] font-black text-slate-500 ml-1">/ {maxHours}H</span>
+                        </div>
+                    </div>
+
+                    <div className="relative h-2.5 w-full bg-white/10 rounded-full overflow-hidden shadow-inner">
+                        <div
+                            className={`absolute top-0 left-0 h-full transition-all duration-500 ease-out rounded-full shadow-[0_0_15px_rgba(59,130,246,0.3)] ${currentHours > maxHours ? 'bg-gradient-to-r from-rose-500 to-red-600' :
+                                    currentHours === maxHours ? 'bg-gradient-to-r from-emerald-500 to-green-600' :
+                                        'bg-gradient-to-r from-blue-500 to-indigo-600'
+                                }`}
+                            style={{ width: `${Math.min((currentHours / maxHours) * 100, 100)}%` }}
+                        />
+                    </div>
+
+                    <div className="flex justify-between mt-3">
+                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">
+                            {currentHours > maxHours ? 'EXCESO DETECTADO' : currentHours === maxHours ? 'CARGA COMPLETA' : 'PENDIENTE'}
+                        </span>
+                        <div className="flex space-x-1">
+                            <div className={`w-1 h-1 rounded-full ${currentHours >= maxHours * 0.25 ? 'bg-blue-400 shadow-[0_0_5px_rgba(96,165,250,0.5)]' : 'bg-white/10'}`} />
+                            <div className={`w-1 h-1 rounded-full ${currentHours >= maxHours * 0.5 ? 'bg-blue-400 shadow-[0_0_5px_rgba(96,165,250,0.5)]' : 'bg-white/10'}`} />
+                            <div className={`w-1 h-1 rounded-full ${currentHours >= maxHours * 0.75 ? 'bg-blue-400 shadow-[0_0_5px_rgba(96,165,250,0.5)]' : 'bg-white/10'}`} />
+                            <div className={`w-1 h-1 rounded-full ${currentHours >= maxHours ? 'bg-emerald-400 shadow-[0_0_5px_rgba(52,211,153,0.5)]' : 'bg-white/10'}`} />
+                        </div>
+                    </div>
+                </div>
+
                 <div className="flex flex-col md:flex-row xl:flex-col gap-6 md:gap-10">
                     <div className="flex-1 space-y-4">
                         <div className="flex items-center justify-between">
