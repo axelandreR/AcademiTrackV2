@@ -60,6 +60,12 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
   const clipLimitMinutes = latestMinutes > 0 ? Math.min(timeToMin("23:15"), latestMinutes + 60) : timeToMin("22:30");
   const timeSlots = allTimeSlots.filter(slot => timeToMin(slot.label) <= clipLimitMinutes);
 
+  // VALIDACIÓN DE FECHAS
+  data.forEach(s => {
+    if (isNaN(s.startDate.getTime())) throw new Error(`Fecha Inicio Inválida en curso ${s.courseCode || 'N/A'} (NRC: ${s.nrc || 'N/A'}) - ID: ${s.id}`);
+    if (isNaN(s.endDate.getTime())) throw new Error(`Fecha Fin Inválida en curso ${s.courseCode || 'N/A'} (NRC: ${s.nrc || 'N/A'}) - ID: ${s.id}`);
+  });
+
   const allDates = data.map(d => d.startDate.getTime()).concat(data.map(d => d.endDate.getTime()));
   let startLimit: Date;
   let endLimit: Date;
@@ -251,7 +257,9 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
           const excelEndRow = startGridRow + endSlotIdx;
           const cell = worksheet.getCell(excelStartRow, colIndex);
           cell.value = `FERIADO NO LABORABLE\n${holiday.name.toUpperCase()} \n07: 45 - 17: 42`;
-          if (excelEndRow > excelStartRow) worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex);
+          if (excelEndRow > excelStartRow) {
+            try { worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex); } catch (e) { }
+          }
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
           cell.font = { size: 7, bold: true, color: { argb: 'FF991B1B' } };
           cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
@@ -287,7 +295,9 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
               cell.value = `${sched.nrc} - ${sched.block} \n${sched.courseName} \n${sched.activity} \n${instructorLine}${sched.building} -${sched.room} \n${sched.startTime} -${sched.endTime} `;
             }
 
-            if (excelEndRow > excelStartRow) worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex);
+            if (excelEndRow > excelStartRow) {
+              try { worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex); } catch (e) { }
+            }
 
             let hexColor = getHexColor(sched.color);
             const isAutoestudio = sched.meetingType === 'VAEE' || (sched.activity && sched.activity.toUpperCase().includes('AUTOESTUDIO'));
@@ -627,6 +637,68 @@ export const generateAdminTasksExcel = async (instructorName: string, schedules:
     { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 }, { width: 5 },
     { width: 12 }, { width: 12 }, { width: 12 }
   ];
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+};
+
+export const generateIdealStructureExport = async (schedules: ProcessedSchedule[], instructors: Instructor[]): Promise<Blob> => {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Data Ideal');
+
+  // Encabezados Estructura Ideal
+  const headers = [
+    'NRC', 'ID_INST', 'INSTRUCTOR', 'CURSO', 'TIPO_ACT', 'ACTIVIDAD', 'HORARIO',
+    'LUN', 'MAR', 'MIE', 'JUE', 'VIE', 'SAB', 'DOM',
+    'F_INICIO', 'F_FIN', 'EDIFICIO', 'AULA', 'IND_SESION'
+  ];
+
+  const headerRow = worksheet.getRow(1);
+  headerRow.values = headers;
+  headerRow.eachCell(cell => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+  });
+
+  // Mapeo días
+  const dayMap: Record<string, number> = {
+    'LUNES': 7, 'MARTES': 8, 'MIERCOLES': 9, 'JUEVES': 10, 'VIERNES': 11, 'SABADO': 12, 'DOMINGO': 13
+  };
+
+  schedules.forEach(s => {
+    // Formato horario: HH:MM - HH:MM
+    const horario = `${s.startTime} - ${s.endTime}`;
+
+    // Determinar flags de días (X)
+    const daysFlags = Array(7).fill('');
+    s.days.forEach(d => {
+      const idx = dayMap[d.toUpperCase()];
+      if (idx) daysFlags[idx - 7] = 'X';
+    });
+
+    // IND_SESION: Simulado 1 por ahora (un instructor por nrc en esta fila)
+    const indSesion = 1;
+
+    const rowData = [
+      s.nrc || '-',
+      s.instructorId || '',
+      s.instructor || '',
+      s.courseName || '',
+      s.meetingType || '', // TIPO_ACT
+      s.activity || '',    // ACTIVIDAD
+      horario,
+      ...daysFlags,
+      s.startDate.toLocaleDateString('es-ES'),
+      s.endDate.toLocaleDateString('es-ES'),
+      s.building || '',
+      s.room || '',
+      indSesion
+    ];
+
+    worksheet.addRow(rowData);
+  });
+
+  worksheet.columns.forEach(col => { col.width = 15; });
 
   const buffer = await workbook.xlsx.writeBuffer();
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

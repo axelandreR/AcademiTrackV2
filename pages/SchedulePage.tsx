@@ -388,6 +388,8 @@ const SchedulePage: React.FC = () => {
                             setActiveAuditFilter={setActiveAuditFilter}
                             isInfoAccordionExpanded={isInfoAccordionExpanded}
                             setIsInfoAccordionExpanded={setIsInfoAccordionExpanded}
+                            isSimulationMode={isSimulationMode}
+                            startSimulation={startSimulation}
                         />
 
                         <SimulationBar />

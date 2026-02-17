@@ -22,6 +22,9 @@ const mapRoomFromDB = (r: any): RoomData => ({
 interface DataContextType {
   schedules: ProcessedSchedule[];
   administrativeTasks: ProcessedSchedule[];
+  rawSchedules: ProcessedSchedule[]; // Raw data from DB (not simulation)
+  rawAdministrativeTasks: ProcessedSchedule[]; // Raw data from DB (not simulation)
+  searchSchedules: (query: string) => Promise<ProcessedSchedule[]>;
   rooms: RoomData[];
   instructors: Instructor[];
   holidays: HolidayData[];
@@ -59,6 +62,8 @@ interface DataContextType {
   saveInstructorCloud: (instructor: Instructor) => Promise<void>;
   deleteInstructorCloud: (id: string) => Promise<void>;
   updateInstructorAuditStatus: (instructorName: string, status: 'OK' | 'DEFICIT' | 'EXCESS', validationJson: any) => Promise<void>;
+  saveAttendanceTracking: (instructorId: string, month: number, year: number) => Promise<void>;
+  getAttendanceTracking: (month: number, year: number) => Promise<Set<string>>;
 
   // Global Summary (DEPRECATED - Will reuse if needed but primary source is now auditStatus on instructor)
   globalSchedulesSummary: ProcessedSchedule[];
@@ -74,12 +79,13 @@ interface DataContextType {
   simulationConfig: any;
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
+  importScheduleToSimulation: (scheduleId: string, targetInstructor: string) => void;
   applySimulation: () => Promise<void>;
   saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
   loadScenario: (id: string) => Promise<any>;
 }
 
-const DataContext = createContext<DataContextType | undefined>(undefined);
+export const DataContext = createContext<DataContextType | undefined>(undefined);
 
 export const parseLocalDBDate = (dateStr: string | null | undefined): Date => {
   if (!dateStr) return new Date(NaN);
@@ -295,11 +301,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         })));
       }
 
-      // Fetch Institutional References
-      const { data: dbRefs, error: refError } = await supabase.from('institutional_reference').select('*');
-      if (!refError && dbRefs) {
-        setInstitutionalReferences(dbRefs as InstitutionalReference[]);
-      }
+      // Load Local Institutional References (No DB)
+      try {
+        const cachedRefs = localStorage.getItem('cached_institutional_ref');
+        if (cachedRefs) {
+          setInstitutionalReferences(JSON.parse(cachedRefs));
+        }
+      } catch (e) { console.warn("Error loading cached refs", e); }
 
       // FULL LOAD: Fetch ALL Schedules
       // Using chunked loading to handle large datasets effectively
@@ -445,17 +453,18 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const uploadInstitutionalReference = async (data: InstitutionalReference[]) => {
     setIsLoading(true);
     try {
-      await supabase.from('institutional_reference').delete().neq('nrc', '_root_');
-      const chunkSize = 500;
-      for (let i = 0; i < data.length; i += chunkSize) {
-        const chunk = data.slice(i, i + chunkSize);
-        const { error } = await supabase.from('institutional_reference').insert(chunk);
-        if (error) throw error;
-      }
+      // Version Local: Guardamos en estado y en LocalStorage para persistencia básica sin BD
       setInstitutionalReferences(data);
-      alert('Referencia institucional actualizada correctamente.');
+      try {
+        // Intentamos guardar en localStorage (puede fallar si es muy grande, manejamos el error)
+        localStorage.setItem('cached_institutional_ref', JSON.stringify(data));
+      } catch (e) {
+        console.warn("No se pudo persistir en localStorage (posiblemente quota excedida), pero funcionará en esta sesión.");
+      }
+
+      alert('Referencia institucional cargada localmente para validación.');
     } catch (err: any) {
-      console.error("Error uploading institutional reference:", err);
+      console.error("Error setting institutional reference:", err);
       alert('Error: ' + err.message);
     } finally {
       setIsLoading(false);
@@ -548,6 +557,38 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const saveAttendanceTracking = useCallback(async (instructorId: string, month: number, year: number) => {
+    try {
+      const { error } = await supabase
+        .from('attendance_tracking')
+        .upsert({
+          instructor_id: instructorId,
+          period_month: month,
+          period_year: year
+        }, { onConflict: 'instructor_id,period_month,period_year' });
+
+      if (error) throw error;
+    } catch (err: any) {
+      console.error("Error saving attendance tracking:", err);
+    }
+  }, []);
+
+  const getAttendanceTracking = useCallback(async (month: number, year: number): Promise<Set<string>> => {
+    try {
+      const { data, error } = await supabase
+        .from('attendance_tracking')
+        .select('instructor_id')
+        .eq('period_month', month)
+        .eq('period_year', year);
+
+      if (error) throw error;
+      return new Set((data || []).map(item => item.instructor_id));
+    } catch (err: any) {
+      console.error("Error fetching attendance tracking:", err);
+      return new Set();
+    }
+  }, []);
+
   // Carga inicial
   useEffect(() => {
     refreshData();
@@ -583,7 +624,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setSimulationConfig({ instructorFilter, ignoreAudit: true });
       } else {
         // Global simulation (standard behavior)
-        setSimulationConfig({ ignoreAudit: false });
+        setSimulationConfig({ ignoreAudit: true });
       }
 
       setSimulationSchedules(clone(schedulesToClone));
@@ -600,6 +641,44 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setSimulationSchedules([]);
     setSimulationAdmin([]);
   }, []);
+
+  const importScheduleToSimulation = useCallback((scheduleId: string, targetInstructor: string) => {
+    // 1. Find in REAL data source (The Archive)
+    const source = [...schedules, ...administrativeTasks].find(s => s.id === scheduleId);
+    if (!source) {
+      alert("No se encontró el horario original en el archivo.");
+      return;
+    }
+
+    // 2. Get Target Instructor Metadata
+    const targetInstData = instructors.find(i => i.name === targetInstructor);
+    const targetId = targetInstData ? targetInstData.id : '';
+
+    // 3. Clone and Mutate
+    // Using deep copy to ensure no reference issues
+    const clone = JSON.parse(JSON.stringify(source));
+
+    // Assign new properties
+    const newSchedule: ProcessedSchedule = {
+      ...clone,
+      id: `sim-imported-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      instructor: targetInstructor,
+      instructorId: targetId,
+      // Ensure Dates are Date objects after JSON parse
+      startDate: new Date(source.startDate),
+      endDate: new Date(source.endDate)
+    };
+
+    // 4. Add to Simulation State
+    if (newSchedule.isAdministrative) {
+      setSimulationAdmin(prev => [...prev, newSchedule]);
+    } else {
+      setSimulationSchedules(prev => [...prev, newSchedule]);
+    }
+
+    // Feedback (Optional, maybe toast later)
+    // alert(`Curso ${newSchedule.courseCode} importado a ${targetInstructor}`);
+  }, [schedules, administrativeTasks, instructors]);
 
   const applySimulation = useCallback(async () => {
     if (!window.confirm("¿Seguro que deseas aplicar los cambios de la simulación a la base de datos real? Esta acción es irreversible.")) return;
@@ -746,6 +825,51 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
 
+  const searchSchedules = useCallback(async (query: string): Promise<ProcessedSchedule[]> => {
+    if (!query || query.length < 3) return [];
+
+    // We search only in 'schedules' table (academic). If needed, we could union with 'administrative_tasks' but usually people import courses.
+    const { data, error } = await supabase
+      .from('schedules')
+      .select('*')
+      .or(`nrc.ilike.%${query}%,course_name.ilike.%${query}%,course_code.ilike.%${query}%`)
+      .limit(30);
+
+    if (error) {
+      console.error("Error searching schedules", error);
+      return [];
+    }
+
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      nrc: row.nrc,
+      courseName: row.course_name,
+      courseCode: row.course_code,
+      days: row.days || [],
+      startTime: row.start_time,
+      endTime: row.end_time,
+      startDate: new Date(row.start_date),
+      endDate: new Date(row.end_date),
+      modality: row.modality,
+      instructor: row.instructor,
+      instructorId: row.instructor_id,
+      semester: row.semester,
+      campus: row.campus,
+      career: row.career,
+      building: row.building,
+      room: row.room,
+      block: row.block,
+      isAdministrative: false,
+      // Default / Derived fields
+      activity: 'DOCENCIA',
+      meetingType: row.modality === 'VIRTUAL' ? 'VIRTUAL' : 'PRESENCIAL',
+      color: 'bg-blue-100 border-blue-200 text-blue-700',
+      weeklyHours: 0, // Will be recalculated if needed, or I can calc it here
+      totalHours: 0,
+      dailyHours: 0
+    } as unknown as ProcessedSchedule));
+  }, []);
+
   const allSchedules = React.useMemo(() => {
     if (isSimulationMode) return [...simulationSchedules, ...simulationAdmin];
     return [...schedules, ...administrativeTasks];
@@ -756,6 +880,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // If Simulation Mode, we hijack the exposed state so standard components consume the simulation data.
       schedules: isSimulationMode ? simulationSchedules : schedules,
       administrativeTasks: isSimulationMode ? simulationAdmin : administrativeTasks,
+      // Provide raw access for search features
+      rawSchedules: schedules,
+      rawAdministrativeTasks: administrativeTasks,
+      searchSchedules,
 
       rooms, instructors, holidays, institutionalReferences,
       isLoading, hasInitialData, error,
@@ -775,6 +903,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       deleteScheduleCloud: deleteScheduleCloudWrapper,
 
       saveInstructorCloud, deleteInstructorCloud, updateInstructorAuditStatus,
+      saveAttendanceTracking, getAttendanceTracking,
       uploadInstitutionalReference,
       allSchedules, exportedInstructors, toggleInstructorExported,
       // Estados normalizados para acceso O(1)
@@ -806,6 +935,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       simulationConfig,
       startSimulation,
       endSimulation,
+      importScheduleToSimulation,
       applySimulation,
       saveScenario,
       loadScenario

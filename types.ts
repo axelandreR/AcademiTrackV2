@@ -163,6 +163,8 @@ export interface InstitutionalReference {
   salon: string;
   instructor_nombre: string;
   curso_nombre: string;
+  bloque?: string;
+  carrera?: string;
 }
 
 export interface ReconciliationResult {

@@ -2,14 +2,15 @@ import React, { useMemo, useState } from 'react';
 import {
   FileDown, Search, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, CheckCircle, ShieldAlert, Activity, ChevronRight, Download,
   ArrowLeft, BarChart4, UserCircle2, Minus, X, Calendar, AlertCircle, Info, Briefcase, Calendar as CalendarIcon, ShieldCheck,
-  Upload, Database, FileWarning, SearchCode, ClipboardCheck
+  Upload, Database, FileWarning, SearchCode, ClipboardCheck, Scale
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
 import { ProcessedSchedule, Instructor, HolidayData, InstitutionalReference, ReconciliationResult } from '../types';
-import { generateGlobalAuditExcel } from '../services/excelExporter';
+import { generateGlobalAuditExcel, generateIdealStructureExport } from '../services/excelExporter';
 import { parseInstitutionalReport } from '../services/excelParser';
+import ValidationPanel from './ValidationPanel';
 
 const SEMESTER_START_DATE = new Date(2026, 1, 16); // 16/02/2026
 const SEMESTER_END_DATE = new Date(2026, 5, 28);   // 28/06/2026
@@ -40,6 +41,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAudit, setSelectedAudit] = useState<DeepAuditResult | null>(null);
   const [selectedReconResult, setSelectedReconResult] = useState<ReconciliationResult | null>(null);
+  const [showValidationPanel, setShowValidationPanel] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [activeTab, setActiveTab] = useState<'audit' | 'conflicts'>('audit');
   const [currentPage, setCurrentPage] = useState(1);
@@ -499,6 +501,10 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
     perfectCycle: auditData.filter(i => i.deepAudit.isPerfect).length,
   };
 
+  if (showValidationPanel) {
+    return <ValidationPanel onBack={() => setShowValidationPanel(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col animate-in fade-in duration-500">
       <header className="bg-white border-b border-slate-200 px-8 py-6 flex items-center justify-between sticky top-0 z-[100] shadow-sm">
@@ -532,6 +538,13 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
               Conciliación
             </button>
             */}
+            <button
+              onClick={() => setShowValidationPanel(true)}
+              className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 text-slate-400 hover:text-indigo-600 hover:bg-white/50`}
+            >
+              <Scale size={14} />
+              <span>Validación Sistema</span>
+            </button>
           </div>
           {activeTab === 'audit' && (
             <>
@@ -546,6 +559,28 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
               >
                 {isExporting ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <FileDown size={18} />}
                 <span>{isExporting ? 'Generando...' : 'Excel Global'}</span>
+              </button>
+              <button
+                disabled={isExporting}
+                onClick={async () => {
+                  setIsExporting(true);
+                  try {
+                    const blob = await generateIdealStructureExport(schedules, instructors);
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `Data_Ideal_App_${new Date().toISOString().split('T')[0]}.xlsx`;
+                    a.click();
+                  } catch (e) {
+                    alert("Error al generar reporte de estructura ideal.");
+                  } finally {
+                    setIsExporting(false);
+                  }
+                }}
+                className="flex items-center space-x-2 px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 disabled:opacity-50"
+              >
+                <Download size={18} />
+                <span>Estructura Ideal</span>
               </button>
             </>
           )}

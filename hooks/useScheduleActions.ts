@@ -16,13 +16,14 @@ export const useScheduleActions = (
 ) => {
     const {
         allSchedules, administrativeTasks, instructorsByNameMap, holidays,
-        saveScheduleCloud, deleteScheduleCloud
+        saveScheduleCloud, deleteScheduleCloud, isSimulationMode
     } = useData();
 
     const lastTaskCreationRef = useRef<number>(0);
 
     const handleExport = async (config: ExportConfig) => {
-        if (config.type === 'Instructor' && config.mode === 'individual' && config.selectedItem && checkInstructorDiscrepancy(config.selectedItem)) {
+        // En simulación permitimos exportar con discrepancias
+        if (!isSimulationMode && config.type === 'Instructor' && config.mode === 'individual' && config.selectedItem && checkInstructorDiscrepancy(config.selectedItem)) {
             alert('ERROR: Horario con discrepancia de carga. Corrija las observaciones antes de exportar.');
             return;
         }
@@ -38,6 +39,7 @@ export const useScheduleActions = (
                     if (config.type === 'Instructor') return s.instructor === item;
                     return false;
                 });
+                console.log("EXPORT DEBUG: itemData", itemData);
                 const blob = await generateScheduleExcel({
                     data: itemData,
                     type: config.type,
@@ -87,8 +89,9 @@ export const useScheduleActions = (
                 a.download = `Reporte_${config.type}.zip`;
                 a.click();
             }
-        } catch (err) {
-            alert('Error al generar Excel.');
+        } catch (err: any) {
+            console.error("EXCEL GENERATION ERROR:", err);
+            alert(`Error al generar Excel: ${err?.message || err}`);
         }
     };
 

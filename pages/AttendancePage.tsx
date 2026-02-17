@@ -1,0 +1,315 @@
+
+import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+    ArrowLeft, FileText, Download, CheckCircle, Clock,
+    Search, Calendar, DownloadCloud, AlertCircle, MapPin
+} from 'lucide-react';
+import { useData } from '../context/DataContext';
+import { Instructor, ProcessedSchedule } from '../types';
+import {
+    getAttendancePeriodRange,
+    processAttendanceJourneys,
+    AttendanceSheetData
+} from '../services/attendanceService';
+import { generateAttendanceExcel } from '../services/attendanceExporter';
+import JSZip from 'jszip';
+
+const AttendancePage: React.FC = () => {
+    const navigate = useNavigate();
+    const {
+        instructors, allSchedules, isLoading,
+        getAttendanceTracking, saveAttendanceTracking
+    } = useData();
+
+    // Estados de filtro y periodo
+    const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
+    const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
+    const [searchTerm, setSearchTerm] = useState('');
+
+    // Estado de seguimiento (Nube)
+    const [generatedSheets, setGeneratedSheets] = useState<Set<string>>(new Set());
+
+    useEffect(() => {
+        const fetchTracking = async () => {
+            const tracking = await getAttendanceTracking(selectedMonth, selectedYear);
+            setGeneratedSheets(tracking);
+        };
+        fetchTracking();
+    }, [selectedMonth, selectedYear, getAttendanceTracking]);
+
+    const recordGeneratedStatus = async (instructorId: string) => {
+        // 1. Guardar en Nube
+        await saveAttendanceTracking(instructorId, selectedMonth, selectedYear);
+
+        // 2. Actualizar estado local para feedback inmediato
+        setGeneratedSheets(prev => {
+            const next = new Set(prev);
+            next.add(instructorId);
+            return next;
+        });
+    };
+
+    // 1. Filtrar instructores TP con al menos una carga presencial en el periodo
+    // REGLA: Solo aquellos que NO tengan observaciones de auditoría (auditStatus === 'OK')
+    const tpInstructorsWithPresencial = useMemo(() => {
+        const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
+
+        return instructors.filter(inst => {
+            // Solo TP
+            if (inst.type !== 'TP') return false;
+
+            // REGLA: Solo sin observaciones (AuditStatus OK)
+            if (inst.auditStatus !== 'OK') return false;
+
+            // Buscar si tiene carga presencial en el rango
+            const hasPresencial = allSchedules.some(s =>
+                s.instructorId === inst.id &&
+                s.modality === 'presencial' &&
+                !(s.endDate < startDate || s.startDate > endDate)
+            );
+
+            return hasPresencial;
+        }).filter(inst =>
+            inst.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            inst.id.includes(searchTerm)
+        );
+    }, [instructors, allSchedules, selectedMonth, selectedYear, searchTerm]);
+
+    const SENATI_LOGO_URL = 'https://afzgvqkiwlfqbidausyi.supabase.co/storage/v1/object/public/assets/LOGO_SENATI.png';
+
+    const handleDownloadIndividual = async (instructor: Instructor) => {
+        const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
+        const data = processAttendanceJourneys(instructor, allSchedules, startDate, endDate);
+
+        if (data.journeys.length === 0) {
+            alert("No hay jornadas presenciales en este periodo para este instructor.");
+            return;
+        }
+
+        try {
+            const blob = await generateAttendanceExcel(data, SENATI_LOGO_URL);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `FICHA_ASISTENCIA_${instructor.id}_${instructor.name.replace(/\s+/g, '_')}_${selectedMonth}_${selectedYear}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            await recordGeneratedStatus(instructor.id);
+        } catch (error) {
+            console.error("Excel generation error", error);
+            alert("Error al generar el archivo Excel.");
+        }
+    };
+
+    const handleDownloadMassive = async () => {
+        if (tpInstructorsWithPresencial.length === 0) return;
+
+        const confirmMassive = window.confirm(`Se generarán ${tpInstructorsWithPresencial.length} fichas. ¿Deseas continuar?`);
+        if (!confirmMassive) return;
+
+        const zip = new JSZip();
+        const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
+
+        for (const inst of tpInstructorsWithPresencial) {
+            const data = processAttendanceJourneys(inst, allSchedules, startDate, endDate);
+            if (data.journeys.length > 0) {
+                const blob = await generateAttendanceExcel(data, SENATI_LOGO_URL);
+                const fileName = `FICHA_${inst.id}_${inst.name.replace(/\s+/g, '_')}.xlsx`;
+                zip.file(fileName, blob);
+                await recordGeneratedStatus(inst.id);
+            }
+        }
+
+        const content = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(content);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `FICHAS_MASIVAS_${selectedMonth}_${selectedYear}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const months = [
+        { v: 1, n: 'Enero' }, { v: 2, n: 'Febrero' }, { v: 3, n: 'Marzo' },
+        { v: 4, n: 'Abril' }, { v: 5, n: 'Mayo' }, { v: 6, n: 'Junio' },
+        { v: 7, n: 'Julio' }, { v: 8, n: 'Agosto' }, { v: 9, n: 'Septiembre' },
+        { v: 10, n: 'Octubre' }, { v: 11, n: 'Noviembre' }, { v: 12, n: 'Diciembre' }
+    ];
+
+    return (
+        <div className="min-h-screen bg-slate-50 flex flex-col h-screen overflow-hidden">
+            <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between sticky top-0 z-[100] shadow-sm">
+                <div className="flex items-center space-x-6">
+                    <button onClick={() => navigate('/')} className="p-2.5 bg-slate-100 hover:bg-slate-200 rounded-xl text-slate-600 transition-all">
+                        <ArrowLeft size={20} />
+                    </button>
+                    <div className="flex items-center space-x-3">
+                        <div className="p-2 rounded-xl text-white bg-blue-600 shadow-lg shadow-blue-100">
+                            <FileText size={20} />
+                        </div>
+                        <div>
+                            <h1 className="text-xl font-black text-slate-900 uppercase tracking-tight">Fichas de Asistencia</h1>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">Control Docentes Tiempo Parcial</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex items-center space-x-4">
+                    <div className="flex items-center bg-slate-100 rounded-2xl p-1">
+                        <select
+                            value={selectedMonth}
+                            onChange={e => setSelectedMonth(Number(e.target.value))}
+                            className="bg-transparent border-none text-xs font-black uppercase px-4 py-2 focus:ring-0 cursor-pointer"
+                        >
+                            {months.map(m => <option key={m.v} value={m.v}>{m.n}</option>)}
+                        </select>
+                        <div className="w-px h-4 bg-slate-200 mx-1"></div>
+                        <input
+                            type="number"
+                            value={selectedYear}
+                            onChange={e => setSelectedYear(Number(e.target.value))}
+                            className="bg-transparent border-none text-xs font-black w-20 px-3 py-2 focus:ring-0"
+                        />
+                    </div>
+
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input
+                            type="text"
+                            placeholder="Buscar docente..."
+                            value={searchTerm}
+                            onChange={e => setSearchTerm(e.target.value)}
+                            className="pl-10 pr-4 py-2 bg-slate-100 border-none rounded-2xl text-sm font-bold w-64 focus:ring-2 focus:ring-blue-400 transition-all"
+                        />
+                    </div>
+
+                    <button
+                        onClick={handleDownloadMassive}
+                        disabled={tpInstructorsWithPresencial.length === 0}
+                        className="flex items-center space-x-2 px-6 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-xl shadow-slate-200"
+                    >
+                        <DownloadCloud size={16} />
+                        <span>Descarga Masiva ({tpInstructorsWithPresencial.length})</span>
+                    </button>
+                </div>
+            </header>
+
+            <main className="flex-1 overflow-hidden p-8 flex flex-col">
+                {/* Info Card - Period Range */}
+                <div className="mb-6 bg-white p-4 rounded-3xl border border-blue-50 flex items-center justify-between shadow-sm">
+                    <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600">
+                            <Calendar size={20} />
+                        </div>
+                        <div>
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Corte de Planilla</p>
+                            <p className="text-sm font-bold text-slate-900">
+                                {getAttendancePeriodRange(selectedMonth, selectedYear).startDate.toLocaleDateString('es-PE')}
+                                <span className="mx-2 text-slate-400">→</span>
+                                {getAttendancePeriodRange(selectedMonth, selectedYear).endDate.toLocaleDateString('es-PE')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex space-x-8">
+                        <div className="text-center">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Docentes TP Presencial</p>
+                            <p className="text-lg font-black text-slate-900">{tpInstructorsWithPresencial.length}</p>
+                        </div>
+                        <div className="text-center">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Fichas Generadas</p>
+                            <p className="text-lg font-black text-green-600">{generatedSheets.size}</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Tabla de Seguimiento */}
+                <div className="flex-1 bg-white rounded-[32px] shadow-2xl border border-slate-100 overflow-hidden flex flex-col">
+                    <div className="overflow-auto flex-1">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-50 border-b border-slate-100 sticky top-0 z-10">
+                                <tr>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Instructor</th>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Tipo</th>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estado</th>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Última Descarga</th>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {tpInstructorsWithPresencial.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={5} className="py-20 text-center">
+                                            <div className="flex flex-col items-center">
+                                                <AlertCircle size={48} className="text-slate-200 mb-4" />
+                                                <p className="text-slate-400 font-bold">No se encontraron docentes con carga presencial para este periodo.</p>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    tpInstructorsWithPresencial.map(inst => {
+                                        const isGenerated = generatedSheets.has(inst.id);
+                                        return (
+                                            <tr key={inst.id} className="hover:bg-slate-50 transition-colors group">
+                                                <td className="px-8 py-5">
+                                                    <div className="flex items-center space-x-3">
+                                                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-black text-slate-500">
+                                                            {inst.name.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-sm font-black text-slate-900 leading-none mb-1">{inst.name}</p>
+                                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">ID: {inst.id}</p>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="px-8 py-5 text-center">
+                                                    <span className="px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-amber-100">
+                                                        {inst.type}
+                                                    </span>
+                                                </td>
+                                                <td className="px-8 py-5 text-center">
+                                                    {isGenerated ? (
+                                                        <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-green-50 text-green-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-green-100">
+                                                            <CheckCircle size={10} />
+                                                            <span>Generada</span>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-slate-100 text-slate-400 rounded-full text-[10px] font-black uppercase tracking-widest">
+                                                            <Clock size={10} />
+                                                            <span>Pendiente</span>
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td className="px-8 py-5">
+                                                    <p className="text-xs font-bold text-slate-500">
+                                                        {isGenerated ? 'Descargado en esta sesión' : '-'}
+                                                    </p>
+                                                </td>
+                                                <td className="px-8 py-5 text-right">
+                                                    <button
+                                                        onClick={() => handleDownloadIndividual(inst)}
+                                                        className="inline-flex items-center space-x-2 px-4 py-2 hover:bg-blue-600 hover:text-white text-blue-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-blue-100 hover:border-blue-600"
+                                                    >
+                                                        <Download size={14} />
+                                                        <span>Descargar Ficha</span>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </div>
+    );
+};
+
+export default AttendancePage;

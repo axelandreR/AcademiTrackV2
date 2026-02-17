@@ -90,7 +90,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
   const isInstructorView = viewType === 'Instructor';
 
-  const { instructorsByNameMap, simulationConfig } = useData();
+  const { instructorsByNameMap, simulationConfig, isSimulationMode } = useData();
 
   const currentInstructorMeta = useMemo(() => {
     if (!isInstructorView || !selectedFilterName) return null;
@@ -223,11 +223,25 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       // hasContractDiscrepancy = false; // (const requires readjustment)
     }
 
+    // OVERRIDE FINAL: Si la configuración de simulación ignora auditoría, forzamos todo a false/clean.
+    if (simulationConfig?.ignoreAudit) {
+      return {
+        syncHours: syncH, asyncHours: asyncH, prepHours: prepTotalMin / 60, otherHours: otherH,
+        assignHours: assignTotalMin / 60, fileLoadHours, academicLoad, totalContractHours, targetLoadForWeek: fileLoadHours,
+        hasAcademicDiscrepancy: false,
+        hasContractDiscrepancy: false,
+        hasAuditWarning: false,
+        hasDailyBreach: false,
+        isDeficit: false,
+        isHolidayInWeek, isWeekOutOfSemester
+      };
+    }
+
     return {
       syncHours: syncH, asyncHours: asyncH, prepHours: prepTotalMin / 60, otherHours: otherH,
       assignHours: assignTotalMin / 60, fileLoadHours, academicLoad, totalContractHours, targetLoadForWeek: fileLoadHours,
-      hasAcademicDiscrepancy: simulationConfig?.ignoreAudit ? false : hasAcademicDiscrepancy,
-      hasContractDiscrepancy: simulationConfig?.ignoreAudit ? false : hasContractDiscrepancy,
+      hasAcademicDiscrepancy,
+      hasContractDiscrepancy: simulationConfig?.ignoreAudit ? false : hasContractDiscrepancy, // Redundant but safe
       hasAuditWarning: simulationConfig?.ignoreAudit ? false : hasAuditWarning,
       hasDailyBreach: simulationConfig?.ignoreAudit ? false : hasDailyBreach,
       isDeficit: simulationConfig?.ignoreAudit ? false : (!isHolidayInWeek && academicLoad < fileLoadHours - 0.01),
@@ -239,7 +253,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     const list: { date: Date; type: 'academic' | 'contractual' | 'daily'; meta: number; real: number }[] = [];
 
     // OPTIMIZACIÓN 1: Ejecución perezosa. Solo calculamos si el modal está abierto.
-    if (!showAuditModal || !isInstructorView || !selectedFilterName) return list;
+    if (!showAuditModal || !isInstructorView || !selectedFilterName || simulationConfig?.ignoreAudit) return list;
 
     const isTC = instructorType === 'TC';
     const dailyLimit = isTC ? 9.2 : 7.0;
@@ -414,6 +428,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         setActiveModality={setActiveModality}
         currentHours={instructorType === 'TC' ? stats.totalContractHours : stats.academicLoad}
         maxHours={instructorType === 'TC' ? 46 : stats.fileLoadHours}
+        suppressWarnings={isSimulationMode || simulationConfig?.ignoreAudit}
       />
 
       <div className="flex-1 flex flex-col min-h-0 relative">

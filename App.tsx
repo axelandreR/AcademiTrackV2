@@ -12,6 +12,7 @@ import InstructorsPage from './pages/InstructorsPage';
 import RoomsPage from './pages/RoomsPage';
 
 import ProgressPanel from './components/ProgressPanel';
+import AttendancePage from './pages/AttendancePage';
 
 // Componente Wrapper para manejar la carga de datos inicial
 const AppContent: React.FC = () => {
@@ -73,6 +74,7 @@ const AppContent: React.FC = () => {
         <Route path="/instructors" element={<InstructorsPage />} />
         <Route path="/rooms" element={<RoomsPage />} />
         <Route path="/progress" element={<ProgressPanel />} />
+        <Route path="/attendance" element={<AttendancePage />} />
         <Route path="/reports" element={
           // ReportsDashboard necesita props, idealmente también debería usar Context
           // Por ahora le pasamos los datos del context

@@ -18,6 +18,7 @@ interface ScheduleSidebarProps {
     setActiveModality: (modality: ModalityType) => void;
     currentHours: number;
     maxHours: number;
+    suppressWarnings?: boolean;
 }
 
 const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
@@ -34,8 +35,27 @@ const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
     setActiveModality,
     currentHours,
     maxHours,
+    suppressWarnings
 }) => {
     if (!isEditorMode) return null;
+
+    const getStatusColor = () => {
+        if (currentHours > maxHours) return suppressWarnings ? 'text-amber-400' : 'text-rose-400';
+        if (currentHours === maxHours) return 'text-emerald-400';
+        return 'text-blue-400';
+    };
+
+    const getBarGradient = () => {
+        if (currentHours > maxHours) return suppressWarnings ? 'bg-gradient-to-r from-amber-500 to-orange-600' : 'bg-gradient-to-r from-rose-500 to-red-600';
+        if (currentHours === maxHours) return 'bg-gradient-to-r from-emerald-500 to-green-600';
+        return 'bg-gradient-to-r from-blue-500 to-indigo-600';
+    };
+
+    const getStatusText = () => {
+        if (currentHours > maxHours) return suppressWarnings ? 'SIN LÍMITE (SIMULACIÓN)' : 'EXCESO DETECTADO';
+        if (currentHours === maxHours) return 'CARGA COMPLETA';
+        return 'PENDIENTE';
+    };
 
     return (
         <>
@@ -67,7 +87,7 @@ const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
                             <h4 className="text-sm font-black text-white uppercase tracking-tight">Estado Actual</h4>
                         </div>
                         <div className="text-right">
-                            <span className={`text-lg font-black leading-none ${currentHours > maxHours ? 'text-rose-400' : currentHours === maxHours ? 'text-emerald-400' : 'text-blue-400'}`}>
+                            <span className={`text-lg font-black leading-none ${getStatusColor()}`}>
                                 {currentHours.toFixed(1)}
                             </span>
                             <span className="text-[10px] font-black text-slate-500 ml-1">/ {maxHours}H</span>
@@ -76,17 +96,14 @@ const ScheduleSidebar: React.FC<ScheduleSidebarProps> = ({
 
                     <div className="relative h-2.5 w-full bg-white/10 rounded-full overflow-hidden shadow-inner">
                         <div
-                            className={`absolute top-0 left-0 h-full transition-all duration-500 ease-out rounded-full shadow-[0_0_15px_rgba(59,130,246,0.3)] ${currentHours > maxHours ? 'bg-gradient-to-r from-rose-500 to-red-600' :
-                                    currentHours === maxHours ? 'bg-gradient-to-r from-emerald-500 to-green-600' :
-                                        'bg-gradient-to-r from-blue-500 to-indigo-600'
-                                }`}
+                            className={`absolute top-0 left-0 h-full transition-all duration-500 ease-out rounded-full shadow-[0_0_15px_rgba(59,130,246,0.3)] ${getBarGradient()}`}
                             style={{ width: `${Math.min((currentHours / maxHours) * 100, 100)}%` }}
                         />
                     </div>
 
                     <div className="flex justify-between mt-3">
                         <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">
-                            {currentHours > maxHours ? 'EXCESO DETECTADO' : currentHours === maxHours ? 'CARGA COMPLETA' : 'PENDIENTE'}
+                            {getStatusText()}
                         </span>
                         <div className="flex space-x-1">
                             <div className={`w-1 h-1 rounded-full ${currentHours >= maxHours * 0.25 ? 'bg-blue-400 shadow-[0_0_5px_rgba(96,165,250,0.5)]' : 'bg-white/10'}`} />

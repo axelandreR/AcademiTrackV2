@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     BarChart4, LayoutDashboard, Edit3, Users, MapPin, ArrowRight,
     RefreshCw, AlertTriangle, Upload, TrendingUp, CheckCircle2,
-    Clock, Calendar, Activity, Database, ShieldCheck, CheckCircle
+    Clock, Calendar, Activity, Database, ShieldCheck, CheckCircle, FileText
 } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import FileUploader from '../components/FileUploader';
@@ -397,6 +397,13 @@ const LandingPage: React.FC = () => {
                             <h3 className="text-2xl font-black text-slate-900 mb-3">Auditoría Individual</h3>
                             <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Revisión profunda, generación de hojas de carga y exportación masiva.</p>
                             <div className="flex items-center space-x-2 text-emerald-600 font-black uppercase text-[10px] tracking-widest">Revisar Avance <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
+                        </button>
+
+                        <button onClick={() => navigate('/attendance')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-blue-600 group-hover:text-white transition-all"><FileText size={32} /></div>
+                            <h3 className="text-2xl font-black text-slate-900 mb-3">Fichas de Asistencia</h3>
+                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Gestión de jornadas TP presenciales y generación de documentos para planilla.</p>
+                            <div className="flex items-center space-x-2 text-blue-600 font-black uppercase text-[10px] tracking-widest">Generar Fichas <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
 
                         <button onClick={() => navigate('/reports')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">

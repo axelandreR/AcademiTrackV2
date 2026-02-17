@@ -8,23 +8,24 @@ import {
 } from 'lucide-react';
 import WeekPicker from './WeekPicker';
 import { ViewType, AppMode } from '../types';
+import ImportModal from './ImportModal';
 
 interface ScheduleToolbarProps {
     viewType: ViewType;
     selectedFilter: string;
     appMode: AppMode;
-    setAppMode: (mode: AppMode) => void;
-    contentMode: 'grid' | 'table';
-    setContentMode: (mode: 'grid' | 'table') => void;
-    currentWeekStart: Date;
-    setCurrentWeekStart: (date: Date) => void;
-    navigateWeek: (direction: number) => void;
-    semesterWeeks: { start: Date; label: string }[];
-    isWeekPickerOpen: boolean;
-    setIsWeekPickerOpen: (isOpen: boolean) => void;
-    weekPickerRef: React.RefObject<HTMLDivElement>;
-    setIsExportModalOpen: (isOpen: boolean) => void;
-    handleExportAdminTasks: () => void;
+    setAppMode: (mode: AppMode) => void; // Retained from original
+    contentMode: 'grid' | 'table'; // Retained from original
+    setContentMode: (mode: 'grid' | 'table') => void; // Retained from original
+    currentWeekStart: Date; // Retained from original
+    setCurrentWeekStart: (date: Date) => void; // Retained from original
+    navigateWeek: (direction: number) => void; // Retained from original
+    semesterWeeks: { start: Date; label: string }[]; // Retained from original
+    isWeekPickerOpen: boolean; // Retained from original
+    setIsWeekPickerOpen: (isOpen: boolean) => void; // Retained from original
+    weekPickerRef: React.RefObject<HTMLDivElement>; // Retained from original
+    setIsExportModalOpen: (isOpen: boolean) => void; // Retained from original
+    handleExportAdminTasks: () => void; // Retained from original
     showAuditPanel: boolean;
     setShowAuditPanel: (show: boolean) => void;
     currentWeekDeficit: boolean;
@@ -62,6 +63,8 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
     isSimulationMode,
     startSimulation
 }) => {
+    const [isImportModalOpen, setIsImportModalOpen] = React.useState(false);
+
     return (
         <div className="flex flex-col mb-4 shrink-0 bg-white p-0 rounded-[24px] lg:rounded-[32px] shadow-sm border border-slate-100 overflow-visible transition-all">
             <div
@@ -78,6 +81,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             <h2 className="text-xs sm:text-sm md:text-base lg:text-lg min-[1400px]:text-2xl font-black text-slate-900 tracking-tighter uppercase leading-tight whitespace-normal break-words line-clamp-2">
                                 {selectedFilter || 'Sin Selección'}
                             </h2>
+
                             {/* Botón Simular Individual */}
                             {viewType === 'Instructor' && selectedFilter && !isSimulationMode && startSimulation && (
                                 <button
@@ -88,9 +92,21 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                                     Simular
                                 </button>
                             )}
+
+                            {/* Botón Importar Carga (Solo en Simulación) */}
+                            {viewType === 'Instructor' && isSimulationMode && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); setIsImportModalOpen(true); }}
+                                    className="ml-2 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 text-[10px] font-black uppercase tracking-widest rounded-lg border border-amber-200 transition-colors flex items-center shadow-sm"
+                                    title="Buscar y agregar cursos de otros instructores"
+                                >
+                                    + Carga Externa
+                                </button>
+                            )}
                         </div>
                         <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mt-0.5 hidden min-[1030px]:block">
                             {viewType} • {appMode === 'editor' ? 'Edición Activa' : 'Visualización'}
+                            {isSimulationMode && <span className="text-indigo-600 ml-1"> • SIMULACIÓN ACTIVA</span>}
                         </p>
                     </div>
                     {/* Flecha Acordeón (Mobile) */}
@@ -118,7 +134,6 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             pickerRef={weekPickerRef}
                         />
                     </div>
-
                     <div className="h-8 w-px bg-slate-200 hidden lg:block" />
 
                     {/* Switch Grid/Table */}
@@ -151,15 +166,17 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             </button>
                         )}
 
-                        {/* Botón Auditoría */}
-                        <button
-                            onClick={() => setShowAuditPanel(!showAuditPanel)}
-                            className={`relative p-2.5 rounded-xl transition-all border ${showAuditPanel ? 'bg-orange-50 border-orange-200 text-orange-600' : 'bg-white border-slate-200 text-slate-400 hover:text-orange-500'}`}
-                            title="Panel de Auditoría"
-                        >
-                            <AlertTriangle size={16} />
-                            {currentWeekDeficit && <span className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white" />}
-                        </button>
+                        {/* Botón Auditoría - Oculto en Simulación */}
+                        {!isSimulationMode && (
+                            <button
+                                onClick={() => setShowAuditPanel(!showAuditPanel)}
+                                className={`relative p-2.5 rounded-xl transition-all border ${showAuditPanel ? 'bg-orange-50 border-orange-200 text-orange-600' : 'bg-white border-slate-200 text-slate-400 hover:text-orange-500'}`}
+                                title="Panel de Auditoría"
+                            >
+                                <AlertTriangle size={16} />
+                                {currentWeekDeficit && <span className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white" />}
+                            </button>
+                        )}
                     </div>
 
                     {/* Panel Flotante Auditoría */}
@@ -183,6 +200,15 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                     )}
                 </div>
             </div>
+
+            {/* Modal Importación */}
+            {viewType === 'Instructor' && (
+                <ImportModal
+                    isOpen={isImportModalOpen}
+                    onClose={() => setIsImportModalOpen(false)}
+                    targetInstructor={selectedFilter}
+                />
+            )}
         </div>
     );
 };

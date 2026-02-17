@@ -146,7 +146,7 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
             meetingType: String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || ''),
             block: String(mapFuzzy(item, ['BLOQUE', 'GRUPO']) || ''),
             instructor: normalizeName(String(mapFuzzy(item, ['INSTRUCTOR', 'DOCENTE', 'TRABAJADOR']) || '')),
-            instructorId: String(mapFuzzy(item, ['ID_INST', 'DOCENTE_ID']) || ''),
+            instructorId: String(mapFuzzy(item, ['ID_INST', 'DOCENTE_ID', 'ID']) || '').trim(),
             room: String(mapFuzzy(item, ['SALON', 'AULA', 'AMBIENTE']) || ''),
             building: String(mapFuzzy(item, ['EDIFICIO', 'EDIF']) || ''),
             days, startTime, endTime, startDate, endDate,
@@ -196,6 +196,8 @@ export const parseInstitutionalReport = async (file: File): Promise<Institutiona
           const cursoNombre = String(mapFuzzy(row, ['DESCRIPCIÓN_CURSO', 'CURSO', 'MATERIA', 'DESCRIPCION']) || '');
           const edif = String(mapFuzzy(row, ['EDIFICIO', 'EDIF']) || '');
           const salon = String(mapFuzzy(row, ['SALON', 'AULA', 'AMBIENTE']) || '');
+          const bloque = String(mapFuzzy(row, ['BLOQUE', 'GRUPO', 'SECCION_ACADEMICA']) || '');
+          const carrera = String(mapFuzzy(row, ['CARRERA', 'PROGRAMA', 'ESCUELA', 'DEPARTAMENTO']) || '');
 
           // Mapeo robusto de fechas de vigencia
           const fInicio = parseExcelDateFixed(mapFuzzy(row, ['FECHA_INICIO', 'INICIO', 'F_INICIO', 'D_INICIO', 'DESDE', 'START_DATE']));
@@ -223,7 +225,9 @@ export const parseInstitutionalReport = async (file: File): Promise<Institutiona
                 fecha_inicio: formatDateToDB(fInicio) || '',
                 fecha_fin: formatDateToDB(fFin) || '',
                 edificio: edif,
-                salon: salon
+                salon: salon,
+                bloque: bloque,
+                carrera: carrera
               });
             }
           });
