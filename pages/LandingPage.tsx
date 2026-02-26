@@ -430,7 +430,7 @@ const LandingPage: React.FC = () => {
                             <p className="text-slate-400 font-medium">Administre las entidades base del sistema o actualice la programación completa vía Excel.</p>
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full lg:w-auto">
+                        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-6 w-full">
                             <button onClick={() => navigate('/instructors')} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
                                 <Users size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Instructores</span>
@@ -439,11 +439,15 @@ const LandingPage: React.FC = () => {
                                 <MapPin size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Ambientes</span>
                             </button>
+                            <button onClick={() => navigate('/archive')} className="p-6 bg-slate-800 hover:bg-blue-600 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700 shadow-xl shadow-blue-900/10">
+                                <Database size={24} className="text-blue-400 group-hover:text-white group-hover:scale-110 transition-all" />
+                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-300 group-hover:text-white">Registro Base</span>
+                            </button>
                             <button onClick={() => setIsUpdating(true)} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
                                 <Upload size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Actualizar Excel</span>
                             </button>
-                            <button onClick={() => setShowRecoveryModal(true)} className="p-6 bg-emerald-600 hover:bg-emerald-500 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group shadow-xl shadow-emerald-900/40 border border-emerald-400">
+                            <button onClick={() => setShowRecoveryModal(true)} className="p-6 bg-emerald-600 hover:bg-emerald-500 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group shadow-xl shadow-emerald-900/40 border border-emerald-400 lg:col-span-1 sm:col-span-2">
                                 <RefreshCw size={24} className="text-white group-hover:rotate-180 transition-transform duration-500" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-white">Recuperar Tareas</span>
                             </button>

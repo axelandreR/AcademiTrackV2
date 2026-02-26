@@ -3,7 +3,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
-import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData } from '../types';
+import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData, ExtraHoursConfig } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE } from '../constants';
 import {
   Clock, MapPin, Hash, Video, LayoutDashboard, Table as TableIcon,
@@ -56,7 +56,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   contentMode
 }) => {
   const allTimeSlots = getTimeSlots();
-  const [instructorType, setInstructorType] = useState<InstructorType>('TC');
+  const { instructorsByNameMap, simulationConfig, isSimulationMode, extraHoursConfig } = useData();
+
   const [activeEditorTool, setActiveEditorTool] = useState<ScheduleCategory>('asincrona');
   const [activeModality, setActiveModality] = useState<ModalityType>('virtual');
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -65,44 +66,38 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [isResizing, setIsResizing] = useState(false);
 
+  const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
+  const isInstructorView = viewType === 'Instructor';
+
+  const instructorType = useMemo(() => {
+    if (!isInstructorView || !selectedFilterName) return 'TP';
+    const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+    const meta = instructorsByNameMap[normalize(selectedFilterName)];
+    return meta?.type || 'TP';
+  }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
+
+  const currentInstructorMeta = useMemo(() => {
+    if (!isInstructorView || !selectedFilterName) return null;
+    const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+    return instructorsByNameMap[normalize(selectedFilterName)] || null;
+  }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
+
   useEffect(() => {
     if (!isResizing) return;
     const handleMouseMove = (e: MouseEvent) => {
-      // Calculamos el nuevo ancho basándonos en el movimiento del mouse
-      // Limitamos el ancho entre 200px y 500px
       const newWidth = Math.min(Math.max(220, e.clientX - 20), 500);
       setSidebarWidth(newWidth);
     };
     const handleMouseUp = () => setIsResizing(false);
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-
-    // Evitar selección de texto durante el redimensionamiento
     document.body.style.userSelect = 'none';
-
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
       document.body.style.userSelect = 'auto';
     };
   }, [isResizing]);
-
-  const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
-  const isInstructorView = viewType === 'Instructor';
-
-  const { instructorsByNameMap, simulationConfig, isSimulationMode } = useData();
-
-  const currentInstructorMeta = useMemo(() => {
-    if (!isInstructorView || !selectedFilterName) return null;
-    return instructorsByNameMap[selectedFilterName.toLowerCase()] || null;
-  }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
-
-
-  useEffect(() => {
-    if (currentInstructorMeta) {
-      setInstructorType(currentInstructorMeta.type);
-    }
-  }, [currentInstructorMeta]);
 
   const HOUR_HEIGHT = 8;
   const SLOT_HEIGHT = HOUR_HEIGHT / 4;
@@ -399,6 +394,12 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     ? 'border-rose-600 ring-4 ring-rose-600 ring-opacity-50 border-[4px]'
     : 'border-slate-300';
 
+  const formatMinutesToTime = (totalMinutes: number) => {
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  };
+
   return (
     <div className={`flex flex-col xl:flex-row bg-white rounded-3xl shadow-xl border-2 relative w-full h-full overflow-hidden transition-all duration-500 ${gridBorderClass}`}>
       <style>{`
@@ -492,27 +493,83 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                         )}
 
                         {(() => {
-                          const dayTasks = schedules.filter(s => isScheduleActiveOnDate(s, day.date, day.key));
+                          const rawDayTasks = schedules.filter(s => isScheduleActiveOnDate(s, day.date, day.key));
+
+                          // --- Lógica de Split para Horas Extras ---
+                          let dayTasks: (ProcessedSchedule & { isExtra?: boolean })[] = [];
+
+                          const checkExtra = isSimulationMode && extraHoursConfig && !holiday &&
+                            (!extraHoursConfig.startDate || new Date(day.date) >= new Date(extraHoursConfig.startDate)) &&
+                            (!extraHoursConfig.endDate || new Date(day.date) <= new Date(extraHoursConfig.endDate));
+
+                          if (checkExtra) {
+                            const dayShifts = extraHoursConfig!.shifts[day.key];
+                            rawDayTasks.forEach(task => {
+                              const taskStart = timeToMinutes(task.startTime);
+                              const taskEnd = timeToMinutes(task.endTime);
+                              let fragments: { start: number; end: number; extra: boolean }[] = [];
+
+                              // We merge morning and afternoon shifts if they overlap or are contiguous (though usually they aren't)
+                              // For simplicity, let's treat them separately
+                              const extraWindows: { start: number; end: number }[] = [];
+                              if (dayShifts?.morning?.start && dayShifts?.morning?.end) {
+                                extraWindows.push({ start: timeToMinutes(dayShifts.morning.start), end: timeToMinutes(dayShifts.morning.end) });
+                              }
+                              if (dayShifts?.afternoon?.start && dayShifts?.afternoon?.end) {
+                                extraWindows.push({ start: timeToMinutes(dayShifts.afternoon.start), end: timeToMinutes(dayShifts.afternoon.end) });
+                              }
+
+                              // Find split points
+                              let splitPoints = new Set<number>([taskStart, taskEnd]);
+                              extraWindows.forEach(win => {
+                                if (win.start > taskStart && win.start < taskEnd) splitPoints.add(win.start);
+                                if (win.end > taskStart && win.end < taskEnd) splitPoints.add(win.end);
+                              });
+
+                              const sortedPoints = Array.from(splitPoints).sort((a, b) => a - b);
+                              for (let i = 0; i < sortedPoints.length - 1; i++) {
+                                const s = sortedPoints[i];
+                                const e = sortedPoints[i + 1];
+                                const mid = (s + e) / 2;
+                                const isExtra = extraWindows.some(win => mid >= win.start && mid <= win.end);
+                                fragments.push({ start: s, end: e, extra: isExtra });
+                              }
+
+                              fragments.forEach(frag => {
+                                dayTasks.push({
+                                  ...task,
+                                  startTime: formatMinutesToTime(frag.start),
+                                  endTime: formatMinutesToTime(frag.end),
+                                  isExtra: frag.extra
+                                });
+                              });
+                            });
+                          } else {
+                            dayTasks = rawDayTasks;
+                          }
+
                           const overlappingIds = new Set<string>();
 
-                          for (let i = 0; i < dayTasks.length; i++) {
-                            for (let j = i + 1; j < dayTasks.length; j++) {
-                              const s1 = dayTasks[i];
-                              const s2 = dayTasks[j];
-                              const start1 = timeToMinutes(s1.startTime);
-                              const end1 = timeToMinutes(s1.endTime);
-                              const start2 = timeToMinutes(s2.startTime);
-                              const end2 = timeToMinutes(s2.endTime);
-                              if (start1 < end2 && start2 < end1) {
-                                overlappingIds.add(s1.id);
-                                overlappingIds.add(s2.id);
+                          if (!(isSimulationMode && simulationConfig?.ignoreAudit)) {
+                            for (let i = 0; i < dayTasks.length; i++) {
+                              for (let j = i + 1; j < dayTasks.length; j++) {
+                                const s1 = dayTasks[i];
+                                const s2 = dayTasks[j];
+                                const start1 = timeToMinutes(s1.startTime);
+                                const end1 = timeToMinutes(s1.endTime);
+                                const start2 = timeToMinutes(s2.startTime);
+                                const end2 = timeToMinutes(s2.endTime);
+                                if (start1 < end2 && start2 < end1) {
+                                  overlappingIds.add(s1.id);
+                                  overlappingIds.add(s2.id);
+                                }
                               }
                             }
                           }
 
-                          return dayTasks.map((sched) => (
+                          return dayTasks.map((sched, idx) => (
                             <ScheduleCard
-                              key={`${sched.id}-${day.key}`}
+                              key={`${sched.id}-${day.key}-${idx}`}
                               sched={sched}
                               day={day}
                               isHolidayDay={!!holiday}
@@ -524,6 +581,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                               onDeleteRecord={onDeleteRecord}
                               onIndividualizeTask={onIndividualizeTask}
                               onNavigate={onNavigate}
+                              isExtra={sched.isExtra}
                             />
                           ));
                         })()}

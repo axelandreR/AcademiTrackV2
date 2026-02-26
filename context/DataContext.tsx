@@ -1,7 +1,10 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
-import { ProcessedSchedule, RoomData, Instructor, HolidayData, InstitutionalReference } from '../types';
+import { ProcessedSchedule, RoomData, Instructor, HolidayData, InstitutionalReference, ExtraHoursConfig } from '../types';
 import { AppSettings, DEFAULT_SETTINGS } from '../types/settings';
 import { supabase } from '../supabaseClient';
+import { validateInstructorWeek } from '../services/auditService';
+import { SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
+import { isFuzzyNameMatch } from '../services/businessRules';
 
 const mapHolidayFromDB = (h: any): HolidayData => ({
   date: parseLocalDBDate(h.date),
@@ -77,12 +80,16 @@ interface DataContextType {
   // Simulation Mode
   isSimulationMode: boolean;
   simulationConfig: any;
+  extraHoursConfig: ExtraHoursConfig | null;
+  setExtraHoursConfig: (config: ExtraHoursConfig | null) => void;
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
   importScheduleToSimulation: (scheduleId: string, targetInstructor: string) => void;
   applySimulation: () => Promise<void>;
   saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
   loadScenario: (id: string) => Promise<any>;
+  recalculateInstructorAudit: (instructorName: string, currentSchedules: ProcessedSchedule[], instructorsList?: Instructor[]) => Promise<void>;
+  syncInstructorIdInSchedules: (instructor: Instructor) => Promise<void>;
 }
 
 export const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -148,8 +155,9 @@ const mapInstructorToDB = (inst: Instructor) => ({
   name: inst.name,
   type: inst.type,
   specialty: inst.specialty,
-  max_hours: inst.maxHours
-  // email: inst.email -- no existe en interface actual
+  max_hours: inst.maxHours,
+  audit_status: inst.auditStatus,
+  audit_json: inst.auditJson
 });
 
 const mapRoomToDB = (room: RoomData) => ({
@@ -229,6 +237,108 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [hasInitialData, setHasInitialData] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const recalculateInstructorAudit = useCallback(async (instructorName: string, currentSchedules: ProcessedSchedule[], instructorsList?: Instructor[]) => {
+    const listToUse = instructorsList || instructors;
+    const inst = listToUse.find(i => i.name === instructorName || i.id === instructorName);
+    if (!inst || inst.name.startsWith('INST.')) return;
+
+    // Generar semanas del semestre
+    const semesterWeeks: Date[] = [];
+    let current = new Date(SEMESTER_START_DATE);
+    const day = current.getDay();
+    const diff = current.getDate() - day + (day === 0 ? -6 : 1);
+    current.setDate(diff);
+    current.setHours(0, 0, 0, 0);
+    while (current <= SEMESTER_END_DATE) {
+      semesterWeeks.push(new Date(current));
+      current.setDate(current.getDate() + 7);
+    }
+
+    const norm = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.,]/g, "").toUpperCase();
+
+    // Mejoramos el filtrado con match por ID (prioridad) o Fuzzy Name
+    const instSchedules = currentSchedules.filter(s => {
+      const isMySchedule = (s.instructorId && inst.id && norm(s.instructorId) === norm(inst.id)) ||
+        isFuzzyNameMatch(inst.name, s.instructor);
+      return isMySchedule;
+    });
+    let totalWeeksChecked = 0;
+    let weeksOk = 0;
+    const auditIssues: { week: string, reasons: string[] }[] = [];
+
+    for (const weekStart of semesterWeeks) {
+      let hasHoliday = false;
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+        if (holidays.some(h => h.date.toDateString() === d.toDateString())) { hasHoliday = true; break; }
+      }
+      if (hasHoliday) continue;
+
+      const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays);
+      totalWeeksChecked++;
+      if (validation.isValid) {
+        weeksOk++;
+      } else {
+        const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
+        auditIssues.push({ week: weekLabel, reasons: validation.reasons });
+      }
+    }
+
+    const isAuditOk = totalWeeksChecked === 0 || (weeksOk === totalWeeksChecked);
+    const status = isAuditOk ? 'OK' : (auditIssues.length > 0 ? 'DEFICIT' : 'PENDING');
+
+    // Update in Supabase
+    await supabase.from('instructors').update({
+      audit_status: status,
+      audit_json: JSON.stringify(auditIssues)
+    }).eq('id', inst.id);
+
+    // Update in local state
+    setInstructors(prev => prev.map(i => i.id === inst.id ? { ...i, auditStatus: status, auditJson: JSON.stringify(auditIssues) } : i));
+  }, [instructors, holidays]);
+
+  /**
+   * Sincroniza el ID del instructor en todos los bloques del archivo base
+   * basándose en coincidencia de nombres (Fuzzy). Esto corrige la "mala mezcla"
+   * de datos cuando se agregan instructores nuevos o se corrigen nombres.
+   */
+  const syncInstructorIdInSchedules = useCallback(async (instructor: Instructor) => {
+    // 1. Encontrar bloques que coincidan por nombre pero tengan ID diferente o vacío
+    const affectedSchedules = [...schedules, ...administrativeTasks].filter(s => {
+      const nameMatch = isFuzzyNameMatch(instructor.name, s.instructor);
+      const idMismatch = s.instructorId !== instructor.id;
+      return nameMatch && idMismatch;
+    });
+
+    if (affectedSchedules.length === 0) return;
+
+    console.log(`Syncing ID ${instructor.id} for ${affectedSchedules.length} blocks of ${instructor.name}`);
+
+    try {
+      const updatedSchedules = affectedSchedules.map(s => ({
+        ...s,
+        instructor: instructor.name, // Unificamos también el nombre al oficial
+        instructorId: instructor.id
+      }));
+
+      // Update in Supabase
+      const payload = updatedSchedules.map(mapSchedToDB);
+      const { error } = await supabase.from('schedules').upsert(payload);
+      if (error) throw error;
+
+      // Update Local State
+      const idSet = new Set(updatedSchedules.map(s => s.id));
+      setSchedules(prev => prev.map(s => idSet.has(s.id) ? { ...s, instructor: instructor.name, instructorId: instructor.id } : s));
+      setAdministrativeTasks(prev => prev.map(s => idSet.has(s.id) ? { ...s, instructor: instructor.name, instructorId: instructor.id } : s));
+
+      // Recalcular auditoría tras el cambio
+      recalculateInstructorAudit(instructor.name, [...schedules, ...administrativeTasks]);
+
+    } catch (err: any) {
+      console.error("Error syncing IDs:", err);
+    }
+  }, [schedules, administrativeTasks, recalculateInstructorAudit]);
+
   const refreshData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -301,27 +411,16 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         })));
       }
 
-      // Load Local Institutional References (No DB)
-      try {
-        const cachedRefs = localStorage.getItem('cached_institutional_ref');
-        if (cachedRefs) {
-          setInstitutionalReferences(JSON.parse(cachedRefs));
-        }
-      } catch (e) { console.warn("Error loading cached refs", e); }
-
-      // FULL LOAD: Fetch ALL Schedules
-      // Using chunked loading to handle large datasets effectively
+      // LOAD SCHEDULES FIRST to have them for audit trigger
       let allSchedulesData: any[] = [];
       let schedOffset = 0;
       let schedLimit = 1000;
       let schedLastCount = 0;
-
       do {
         const { data: schedData, error: schedError } = await supabase
           .from('schedules')
           .select('*')
           .range(schedOffset, schedOffset + schedLimit - 1);
-
         if (schedError) throw schedError;
         if (schedData) {
           allSchedulesData = [...allSchedulesData, ...schedData];
@@ -333,28 +432,51 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } while (schedLastCount === schedLimit);
 
       const processedSchedules = allSchedulesData.map(mapSchedFromDB);
-
-      // Split into Academic and Administrative
-      const academic = processedSchedules.filter(s => !s.isAdministrative);
-      const admin = processedSchedules.filter(s => s.isAdministrative);
-
-      setSchedules(academic);
-      setAdministrativeTasks(admin);
-
-      // Keep globalSchedulesSummary as a complete reference for Sidebar/Progress
+      setSchedules(processedSchedules.filter(s => !s.isAdministrative));
+      setAdministrativeTasks(processedSchedules.filter(s => s.isAdministrative));
       setGlobalSchedulesSummary(processedSchedules);
 
-      setGlobalSchedulesSummary(processedSchedules);
+      // Load Local Institutional References (No DB)
+      try {
+        const cachedRefs = localStorage.getItem('cached_institutional_ref');
+        if (cachedRefs) {
+          setInstitutionalReferences(JSON.parse(cachedRefs));
+        }
+      } catch (e) { console.warn("Error loading cached refs", e); }
 
       setHasInitialData(true);
       setIsLoading(false);
+
+      const instructorsMapped: Instructor[] = allDbInstructors.map(i => ({
+        id: i.id,
+        name: i.name,
+        type: i.type as 'TC' | 'TP',
+        specialty: i.specialty,
+        maxHours: i.max_hours,
+        campus: '',
+        status: 'Activo',
+        auditStatus: i.audit_status,
+        auditJson: i.audit_json
+      }));
+
+      setInstructors(instructorsMapped);
+
+      setHasInitialData(true);
+      setIsLoading(false);
+
+      // Trigger Audit Sync for all if needed - PASANDO LA LISTA RECIÉN MAPADA
+      const pendingNames = allDbInstructors.filter(i => !i.audit_status || i.audit_status === 'PENDING').map(i => i.name);
+      pendingNames.forEach(name => {
+        recalculateInstructorAudit(name, processedSchedules, instructorsMapped);
+      });
 
     } catch (err: any) {
       console.error('Error loading initial data:', err);
       setError(err.message || 'Error al cargar datos iniciales');
       setIsLoading(false);
     }
-  }, []);
+  }, [recalculateInstructorAudit]); // Asegurar que use la versión más reciente
+
 
   const loadSchedulesForFilter = useCallback(async (type: 'Instructor' | 'Aula' | 'Bloque', value: string) => {
     // In Full Load mode, filters are now handled client-side
@@ -421,9 +543,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       // 3. Inserciones Masivas
       if (mode === 'full') {
-        if (instPayload.length > 0) await supabase.from('instructors').insert(instPayload);
-        if (roomPayload.length > 0) await supabase.from('rooms').insert(roomPayload);
-        if (holidayPayload.length > 0) await supabase.from('holidays').insert(holidayPayload);
+        if (instPayload.length > 0) await supabase.from('instructors').upsert(instPayload);
+        if (roomPayload.length > 0) await supabase.from('rooms').upsert(roomPayload);
+        if (holidayPayload.length > 0) await supabase.from('holidays').upsert(holidayPayload);
       } else {
         // En modo delta, solo añadimos instructores/salas si no existen (Upsert por ID/Key)
         if (instPayload.length > 0) await supabase.from('instructors').upsert(instPayload, { onConflict: 'id' });
@@ -435,9 +557,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const chunkSize = 500;
       for (let i = 0; i < schedPayload.length; i += chunkSize) {
         const chunk = schedPayload.slice(i, i + chunkSize);
-        const { error: batchError } = await supabase.from('schedules').insert(chunk);
+        const { error: batchError } = await supabase.from('schedules').upsert(chunk);
         if (batchError) throw batchError;
       }
+
 
       // 4. Actualizar Estado Local
       await refreshData();
@@ -501,6 +624,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
 
       setHasInitialData(true);
+
+      // Auto-Audit Trigger
+      const affectedInstructors = new Set(items.map(i => i.instructor));
+      affectedInstructors.forEach(name => {
+        recalculateInstructorAudit(name, [...schedules, ...administrativeTasks, ...items]);
+      });
     } catch (err: any) {
       console.error("Error saving to Supabase:", err);
       alert('Error al guardar en la nube: ' + err.message);
@@ -515,8 +644,16 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       // Actualizar estado local eliminando los IDs
       const idSet = new Set(ids);
+      const affectedInstructors = new Set([...schedules, ...administrativeTasks].filter(s => idSet.has(s.id)).map(s => s.instructor));
+
       setSchedules(prev => prev.filter(s => !idSet.has(s.id)));
       setAdministrativeTasks(prev => prev.filter(s => !idSet.has(s.id)));
+
+      // Trigger recalculation after state update (using current snapshots)
+      const remainingSchedules = [...schedules, ...administrativeTasks].filter(s => !idSet.has(s.id));
+      affectedInstructors.forEach(name => {
+        recalculateInstructorAudit(name, remainingSchedules);
+      });
     } catch (err: any) {
       console.error("Error deleting from Supabase:", err);
       alert('Error al eliminar de la nube: ' + err.message);
@@ -539,6 +676,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         return [...prev, inst];
       });
+
+      // SINCRONIZACIÓN AUTOMÁTICA: Si el instructor es guardado/actualizado, buscamos su carga
+      // Esto soluciona la "mala mezcla" de datos de instructores nuevos
+      await syncInstructorIdInSchedules(inst);
+
     } catch (err: any) {
       console.error("Error saving instructor to Supabase:", err);
       alert('Error al guardar instructor: ' + err.message);
@@ -589,6 +731,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
 
+
   // Carga inicial
   useEffect(() => {
     refreshData();
@@ -599,6 +742,31 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [simulationSchedules, setSimulationSchedules] = useState<ProcessedSchedule[]>([]);
   const [simulationAdmin, setSimulationAdmin] = useState<ProcessedSchedule[]>([]);
   const [simulationConfig, setSimulationConfig] = useState<any>({});
+  const [extraHoursConfig, setExtraHoursConfig] = useState<ExtraHoursConfig | null>(null);
+
+  // Persistencia de HE aislada por instructor
+  useEffect(() => {
+    if (isSimulationMode && simulationConfig?.instructorFilter) {
+      const instructor = simulationConfig.instructorFilter;
+      const savedHE = localStorage.getItem(`extraHoursConfig_${instructor}`);
+      if (savedHE) {
+        try {
+          setExtraHoursConfig(JSON.parse(savedHE));
+        } catch (e) {
+          console.error(`Error loading HE for ${instructor}:`, e);
+          setExtraHoursConfig(null);
+        }
+      } else {
+        setExtraHoursConfig(null);
+      }
+    }
+  }, [isSimulationMode, simulationConfig?.instructorFilter]);
+
+  useEffect(() => {
+    if (isSimulationMode && simulationConfig?.instructorFilter && extraHoursConfig) {
+      localStorage.setItem(`extraHoursConfig_${simulationConfig.instructorFilter}`, JSON.stringify(extraHoursConfig));
+    }
+  }, [extraHoursConfig, isSimulationMode, simulationConfig?.instructorFilter]);
 
   const startSimulation = useCallback((instructorFilter?: string) => {
     console.log("Starting Simulation...");
@@ -640,6 +808,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setIsSimulationMode(false);
     setSimulationSchedules([]);
     setSimulationAdmin([]);
+    setExtraHoursConfig(null);
+    setSimulationConfig({});
   }, []);
 
   const importScheduleToSimulation = useCallback((scheduleId: string, targetInstructor: string) => {
@@ -774,7 +944,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const payload = {
         schedules: scenarioData,
         metadata,
-        simulationConfig // Save the current config (including ignoreAudit)
+        simulationConfig, // Save the current config (including ignoreAudit)
+        extraHoursConfig // Save extra hours config
       };
 
       const { error } = await supabase.from('scenarios').insert({
@@ -816,6 +987,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setSimulationSchedules(parsed.filter(s => !s.isAdministrative));
         setSimulationAdmin(parsed.filter(s => s.isAdministrative));
         setSimulationConfig(loadedConfig); // Restore config
+        if (data.data?.extraHoursConfig) {
+          setExtraHoursConfig(data.data.extraHoursConfig);
+        }
         setIsSimulationMode(true);
         return data.data?.metadata;
       }
@@ -914,7 +1088,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }, [instructors]),
       instructorsByNameMap: React.useMemo(() => {
         const map: Record<string, Instructor> = {};
-        instructors.forEach(inst => { map[inst.name.toLowerCase()] = inst; });
+        const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+        instructors.forEach(inst => {
+          map[normalize(inst.name)] = inst;
+        });
         return map;
       }, [instructors]),
       roomsMap: React.useMemo(() => {
@@ -933,12 +1110,16 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       isSimulationMode,
       simulationConfig,
+      extraHoursConfig,
+      setExtraHoursConfig,
       startSimulation,
       endSimulation,
       importScheduleToSimulation,
       applySimulation,
       saveScenario,
-      loadScenario
+      loadScenario,
+      recalculateInstructorAudit,
+      syncInstructorIdInSchedules
     }}>
       {children}
     </DataContext.Provider>

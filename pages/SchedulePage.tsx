@@ -141,8 +141,14 @@ const SchedulePage: React.FC = () => {
     };
 
     useEffect(() => {
+        if (isSimulationMode) {
+            setShowAuditPanel(false);
+            setActiveAuditFilter('none');
+        }
+    }, [isSimulationMode]);
+
+    useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Esc: Cerrar todo y limpiar
             if (e.key === 'Escape') {
                 if (isModalOpen) setIsModalOpen(false);
                 else if (isPaletteOpen) setIsPaletteOpen(false);
@@ -150,20 +156,14 @@ const SchedulePage: React.FC = () => {
                 else if (isWeekPickerOpen) setIsWeekPickerOpen(false);
                 else if (sidebarSearchTerm) setSidebarSearchTerm('');
             }
-
-            // Flechas: Navegar semanas
             if (e.key === 'ArrowLeft') navigateWeek(-1);
             if (e.key === 'ArrowRight') navigateWeek(1);
-
-            // Atajos con Alt o Ctrl (para no interferir con escritura)
             if (e.altKey) {
                 if (e.key.toLowerCase() === 't') setContentMode(prev => prev === 'grid' ? 'table' : 'grid');
                 if (e.key.toLowerCase() === 'e' && viewType === 'Instructor' && selectedFilter) {
                     setAppMode(prev => prev === 'schedule' ? 'editor' : 'schedule');
                 }
             }
-
-            // Ctrl + K: Abrir Command Palette
             if (e.ctrlKey && e.key.toLowerCase() === 'k') {
                 e.preventDefault();
                 setIsPaletteOpen(true);
@@ -182,12 +182,7 @@ const SchedulePage: React.FC = () => {
             window.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('mousedown', handleClickOutside);
         };
-    }, [isModalOpen, isExportModalOpen, isWeekPickerOpen, sidebarSearchTerm, viewType, selectedFilter]);
-
-    // --- Lógica de Semanas ---
-
-
-
+    }, [isModalOpen, isExportModalOpen, isWeekPickerOpen, sidebarSearchTerm, viewType, selectedFilter, navigateWeek, setIsWeekPickerOpen, setContentMode, setAppMode, setIsModalOpen, setIsPaletteOpen, setIsExportModalOpen]);
 
     const groupedSidebarOptions = useMemo(() => {
         const groups: GroupedOption[] = [];

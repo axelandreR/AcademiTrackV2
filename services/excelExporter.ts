@@ -13,6 +13,7 @@ interface ExcelExportParams {
   instructorInfo?: Instructor;
   logo?: string;
   holidays?: HolidayData[];
+  extraHoursConfig?: any;
 }
 
 const SEMESTER_LIMIT_START = SEMESTER_START_DATE;
@@ -35,6 +36,12 @@ const formatTimeLabel = (h: number) => {
   return `${hh} h:${String(mm).padStart(2, '0')} m`;
 };
 
+const formatMinutesToTime = (totalMinutes: number) => {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+};
+
 const findClosestSlotIdx = (timeStr: string, timeSlots: any[]): number => {
   const targetMin = timeToMin(timeStr);
   if (targetMin === -1) return -1;
@@ -51,7 +58,107 @@ const findClosestSlotIdx = (timeStr: string, timeSlots: any[]): number => {
   return minDiff < 15 ? closestIdx : -1;
 };
 
-export const generateScheduleExcel = async ({ data, type, itemName, scope, customStartDate, customEndDate, instructorInfo, logo, holidays = [] }: ExcelExportParams): Promise<Blob> => {
+const parseLocalDBDateInternal = (dateString: string): Date => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(year, month - 1, day);
+};
+
+export const generateHESummaryExcel = async (config: any, holidays: any[] = [], instructorName?: string): Promise<Blob> => {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Resumen HE');
+
+  worksheet.mergeCells('A1:C1');
+  const titleCell = worksheet.getCell('A1');
+  titleCell.value = 'REPORTE DE PROGRAMACIÓN DE HORAS EXTRAS';
+  titleCell.font = { bold: true, size: 14, color: { argb: 'FF1E3A8A' } };
+  titleCell.alignment = { horizontal: 'center' };
+
+  let dataStartRow = 3; // Default starting row for data if no instructor name
+
+  if (instructorName) {
+    worksheet.getCell('A2').value = 'Instructor:';
+    worksheet.getCell('B2').value = instructorName.toUpperCase();
+    worksheet.getCell('B2').font = { bold: true };
+    dataStartRow = 4; // Shift data down by one row if instructor name is present
+  }
+
+  worksheet.getCell(`A${dataStartRow}`).value = 'Periodo:';
+  worksheet.getCell(`B${dataStartRow}`).value = `${config.startDate || 'No definida'} a ${config.endDate || 'No definida'}`;
+  worksheet.getCell(`A${dataStartRow + 1}`).value = 'Repetición Semanal:';
+  worksheet.getCell(`B${dataStartRow + 1}`).value = config.repeatWeekly ? 'SÍ' : 'NO';
+
+  const headers = ['FECHA', 'DÍA', 'TURNO', 'INICIO', 'FIN', 'TOTAL HORAS'];
+  const headerRow = worksheet.getRow(dataStartRow + 3); // Headers will be 3 rows below the 'Periodo' row
+  headerRow.values = headers;
+  headerRow.eachCell(c => {
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+    c.alignment = { horizontal: 'center' };
+  });
+
+  let currentRow = dataStartRow + 4;
+  let grandTotal = 0;
+
+  // Helper para parsear YYYY-MM-DD forzando medianoche local
+  const toLocalDate = (s: string) => {
+    if (!s) return null;
+    const parts = s.split('-').map(Number);
+    if (parts.length !== 3) return null;
+    const d = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const start = toLocalDate(config.startDate);
+  const end = toLocalDate(config.endDate);
+
+  if (start && end) {
+    const scanner = new Date(start);
+    while (scanner <= end) {
+      const dayIdx = scanner.getDay();
+      const dayLabels = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
+      const dayKey = dayLabels[dayIdx];
+      const displayDay = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIdx];
+
+      // Verificar feriado comparando solo día/mes/año
+      const isHol = holidays.some(h => {
+        const hDate = new Date(h.date);
+        return hDate.getDate() === scanner.getDate() &&
+          hDate.getMonth() === scanner.getMonth() &&
+          hDate.getFullYear() === scanner.getFullYear();
+      });
+
+      if (!isHol) {
+        const shifts = config.shifts?.[dayKey] || {};
+        ['morning', 'afternoon'].forEach(type => {
+          const shift = (shifts as any)[type];
+          if (shift?.start && shift?.end) {
+            const h = (timeToMin(shift.end) - timeToMin(shift.start)) / 60;
+            const dateStr = `${String(scanner.getDate()).padStart(2, '0')}/${String(scanner.getMonth() + 1).padStart(2, '0')}/${scanner.getFullYear()}`;
+            worksheet.addRow([dateStr, displayDay, type === 'morning' ? 'MAÑANA' : 'TARDE', shift.start, shift.end, Number(h.toFixed(2))]);
+            grandTotal += h;
+            currentRow++;
+          }
+        });
+      }
+
+      scanner.setDate(scanner.getDate() + 1);
+    }
+  }
+
+  const totalRow = worksheet.getRow(currentRow + 1);
+  totalRow.getCell(5).value = 'TOTAL GENERAL:';
+  totalRow.getCell(6).value = grandTotal.toFixed(2) + ' hrs';
+  totalRow.eachCell(c => c.font = { bold: true });
+
+  worksheet.columns = [
+    { width: 12 }, { width: 12 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 15 }
+  ];
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+};
+
+export const generateScheduleExcel = async ({ data, type, itemName, scope, customStartDate, customEndDate, instructorInfo, logo, holidays = [], extraHoursConfig }: ExcelExportParams): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Horario');
   const allTimeSlots = getTimeSlots();
@@ -282,37 +389,84 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
           const endSlotIdx = findClosestSlotIdx(sched.endTime, timeSlots) - 1;
 
           if (startSlotIdx !== -1 && endSlotIdx >= startSlotIdx) {
-            const excelStartRow = startGridRow + startSlotIdx;
-            const excelEndRow = startGridRow + endSlotIdx;
-            const cell = worksheet.getCell(excelStartRow, colIndex);
+            const extraWindows: { start: number; end: number }[] = [];
+            let isExtraEnabled = false;
 
-            if (sched.isAdministrative) {
-              const taskName = sched.category === 'refrigerio' ? 'REFRIGERIO' : (sched.category === 'preparacion' ? 'PREPARACIÓN DE CLASE' : (sched.category === 'asincrona' ? 'ASÍNCRONA' : (sched.category === 'por_asignar' ? 'HORAS POR ASIGNAR' : (sched.category === 'coordinador' ? 'COORDINADOR CARRERA' : sched.courseName))));
-              const modalitySuffix = sched.modality ? ` ${sched.modality.toUpperCase()} ` : '';
-              cell.value = `${taskName}${modalitySuffix} \n${sched.startTime} - ${sched.endTime} `;
-            } else {
-              const instructorLine = type === 'Instructor' ? '' : `Docente: ${sched.instructor} \n`;
-              cell.value = `${sched.nrc} - ${sched.block} \n${sched.courseName} \n${sched.activity} \n${instructorLine}${sched.building} -${sched.room} \n${sched.startTime} -${sched.endTime} `;
+            if (extraHoursConfig && !isHolidayDate(actualDate) &&
+              (!extraHoursConfig.startDate || actualDate >= new Date(extraHoursConfig.startDate)) &&
+              (!extraHoursConfig.endDate || actualDate <= new Date(extraHoursConfig.endDate))) {
+              isExtraEnabled = true;
+              const dayShifts = extraHoursConfig.shifts[DAYS_OF_WEEK[dIdx].key];
+              if (dayShifts?.morning?.start && dayShifts?.morning?.end) {
+                extraWindows.push({ start: timeToMin(dayShifts.morning.start), end: timeToMin(dayShifts.morning.end) });
+              }
+              if (dayShifts?.afternoon?.start && dayShifts?.afternoon?.end) {
+                extraWindows.push({ start: timeToMin(dayShifts.afternoon.start), end: timeToMin(dayShifts.afternoon.end) });
+              }
             }
 
-            if (excelEndRow > excelStartRow) {
-              try { worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex); } catch (e) { }
+            const taskStartMin = timeToMin(sched.startTime);
+            const taskEndMin = timeToMin(sched.endTime);
+
+            // Calculate fragments for this task based on extra time windows
+            let splitPoints = new Set<number>([taskStartMin, taskEndMin]);
+            if (isExtraEnabled) {
+              extraWindows.forEach(win => {
+                if (win.start > taskStartMin && win.start < taskEndMin) splitPoints.add(win.start);
+                if (win.end > taskStartMin && win.end < taskEndMin) splitPoints.add(win.end);
+              });
             }
 
-            let hexColor = getHexColor(sched.color);
-            const isAutoestudio = sched.meetingType === 'VAEE' || (sched.activity && sched.activity.toUpperCase().includes('AUTOESTUDIO'));
+            const sortedPoints = Array.from(splitPoints).sort((a, b) => a - b);
 
-            if (sched.category === 'asincrona') hexColor = 'E4F4DD';
-            else if (sched.category === 'preparacion') hexColor = sched.modality === 'presencial' ? 'EABC2D' : 'FFFA48';
-            else if (sched.category === 'refrigerio') hexColor = 'FFEDD5';
-            else if (sched.category === 'por_asignar') hexColor = 'F5F3FF';
-            else if (!sched.isAdministrative) hexColor = isAutoestudio ? 'E2E8F0' : 'D9FFFF';
+            for (let i = 0; i < sortedPoints.length - 1; i++) {
+              const fragStart = sortedPoints[i];
+              const fragEnd = sortedPoints[i + 1];
+              const mid = (fragStart + fragEnd) / 2;
+              const isExtra = isExtraEnabled && extraWindows.some(win => mid >= win.start && mid <= win.end);
 
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + hexColor } };
-            cell.font = { size: 7, bold: true, color: { argb: 'FF000000' } };
-            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+              const sIdx = findClosestSlotIdx(formatMinutesToTime(fragStart), timeSlots);
+              let eIdx = findClosestSlotIdx(formatMinutesToTime(fragEnd), timeSlots) - 1;
 
-            const duration = (timeToMin(sched.endTime) - timeToMin(sched.startTime)) / 60;
+              if (sIdx !== -1 && eIdx >= sIdx) {
+                const excelStartRow = startGridRow + sIdx;
+                const excelEndRow = startGridRow + eIdx;
+                const cell = worksheet.getCell(excelStartRow, colIndex);
+
+                let displayStartTime = formatMinutesToTime(fragStart);
+                let displayEndTime = formatMinutesToTime(fragEnd);
+
+                if (sched.isAdministrative) {
+                  const taskName = sched.category === 'refrigerio' ? 'REFRIGERIO' : (sched.category === 'preparacion' ? 'PREPARACIÓN DE CLASE' : (sched.category === 'asincrona' ? 'ASÍNCRONA' : (sched.category === 'por_asignar' ? 'HORAS POR ASIGNAR' : (sched.category === 'coordinador' ? 'COORDINADOR CARRERA' : sched.courseName))));
+                  const modalitySuffix = sched.modality ? ` ${sched.modality.toUpperCase()} ` : '';
+                  cell.value = `${taskName}${modalitySuffix}${isExtra ? '\n(EXTRAS)' : ''}\n${displayStartTime} - ${displayEndTime}`;
+                } else {
+                  const instructorLine = type === 'Instructor' ? '' : `Docente: ${sched.instructor} \n`;
+                  cell.value = `${sched.nrc} - ${sched.block} \n${sched.courseName}${isExtra ? ' (EXTRAS)' : ''} \n${sched.activity} \n${instructorLine}${sched.building} -${sched.room} \n${displayStartTime} -${displayEndTime} `;
+                }
+
+                if (excelEndRow > excelStartRow) {
+                  try { worksheet.mergeCells(excelStartRow, colIndex, excelEndRow, colIndex); } catch (e) { }
+                }
+
+                let hexColor = isExtra ? 'E5E7EB' : getHexColor(sched.color);
+
+                if (!isExtra) {
+                  const isAutoestudio = sched.meetingType === 'VAEE' || (sched.activity && sched.activity.toUpperCase().includes('AUTOESTUDIO'));
+                  if (sched.category === 'asincrona') hexColor = 'E4F4DD';
+                  else if (sched.category === 'preparacion') hexColor = sched.modality === 'presencial' ? 'EABC2D' : 'FFFA48';
+                  else if (sched.category === 'refrigerio') hexColor = 'FFEDD5';
+                  else if (sched.category === 'por_asignar') hexColor = 'F5F3FF';
+                  else if (!sched.isAdministrative) hexColor = isAutoestudio ? 'E2E8F0' : 'D9FFFF';
+                }
+
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + hexColor } };
+                cell.font = { size: 7, bold: true, color: { argb: 'FF000000' } };
+                cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+              }
+            }
+
+            const duration = (taskEndMin - taskStartMin) / 60;
             if (sched.category === 'asincrona') wAsync += duration;
             else if (sched.category === 'preparacion') wPC += duration;
             else if (sched.category === 'coordinador') wCoord += duration;

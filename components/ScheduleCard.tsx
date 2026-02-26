@@ -16,6 +16,7 @@ interface ScheduleCardProps {
     onDeleteRecord?: (id: string) => void;
     onIndividualizeTask?: (id: string, targetDate: Date) => void;
     onNavigate?: (type: ViewType, filter: string) => void;
+    isExtra?: boolean;
 }
 
 const ScheduleCard: React.FC<ScheduleCardProps> = ({
@@ -30,6 +31,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
     onDeleteRecord,
     onIndividualizeTask,
     onNavigate,
+    isExtra,
 }) => {
     const timeToMinutes = (t: string) => {
         if (!t) return 0;
@@ -38,6 +40,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
     };
 
     const getCategoryStyles = (sched: ProcessedSchedule, isHolidayDay: boolean) => {
+        if (isExtra) return 'bg-slate-200 border-slate-300 text-slate-500';
         const { category, modality, meetingType, activity } = sched;
         const isAutoestudio = meetingType === 'VAEE' || (activity && activity.toUpperCase().includes('AUTOESTUDIO'));
         if (sched.isAdministrative && isHolidayDay) return 'bg-rose-50 border-rose-300 border-dashed text-rose-700 opacity-60';
@@ -78,7 +81,11 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
                 <>
                     <div className="flex justify-between items-center font-black uppercase text-[8px] opacity-80 mb-1 shrink-0">
                         <span onClick={(e) => { e.stopPropagation(); onNavigate?.('Bloque', sched.block); }} className="flex items-center hover:underline"><Hash size={8} className="mr-1" />NRC: {sched.nrc} • {sched.block}</span>
-                        <div className="flex items-center space-x-1">{sched.modality === 'presencial' ? <MapPin size={9} /> : <Video size={9} />}<span>{sched.modality?.toUpperCase()}</span></div>
+                        <div className="flex items-center space-x-1">
+                            {isExtra && <span className="bg-slate-900 text-white px-1 rounded mr-1">EXTRAS</span>}
+                            {sched.modality === 'presencial' ? <MapPin size={9} /> : <Video size={9} />}
+                            <span>{sched.modality?.toUpperCase()}</span>
+                        </div>
                     </div>
                     <div className="flex flex-col flex-1 min-h-0 overflow-hidden mb-1">
                         <h4 onClick={(e) => { e.stopPropagation(); onNavigate?.('Bloque', sched.block); }} className={`font-black leading-tight text-slate-900 whitespace-normal break-words hover:underline xl:text-sm lg:text-[11px] text-[10px]`}>
@@ -108,6 +115,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
             ) : (
                 <div className="flex flex-col h-full items-center justify-center text-center px-1">
                     <h4 className="font-black leading-tight uppercase text-[10px] whitespace-normal break-words">{getShortLabel(sched.courseName)} {sched.category !== 'coordinador' && sched.category !== 'refrigerio' ? `- ${sched.modality?.toUpperCase()}` : ''}</h4>
+                    {isExtra && <span className="text-[8px] font-black bg-slate-900/10 px-1 rounded mt-0.5">EXTRAS</span>}
                     <div className="font-black border-t border-black/5 w-full pt-1 mt-1 text-[10px]">{sched.startTime} - {sched.endTime}</div>
                 </div>
             )}

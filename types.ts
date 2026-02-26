@@ -175,10 +175,32 @@ export interface ReconciliationResult {
   reference?: InstitutionalReference;
 }
 
+export interface ExtraHoursShift {
+  start: string;
+  end: string;
+}
+
+export interface ExtraHoursConfig {
+  startDate: string;
+  endDate: string;
+  repeatWeekly: boolean;
+  shifts: {
+    [day: string]: {
+      morning?: ExtraHoursShift;
+      afternoon?: ExtraHoursShift;
+    };
+  };
+}
+
 export interface Scenario {
   id: string;
   name: string;
   description?: string;
   created_at: string;
-  data: any;
+  data: {
+    schedules: ProcessedSchedule[];
+    metadata?: any;
+    simulationConfig?: any;
+    extraHoursConfig?: ExtraHoursConfig;
+  };
 }

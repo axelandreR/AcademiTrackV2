@@ -56,3 +56,51 @@ export const isExcludedFromTotalLoad = (sched: ProcessedSchedule): boolean => {
     const cName = (sched.courseName || '').toUpperCase();
     return cName.includes('REFRIGERIO') || sched.category === 'refrigerio';
 };
+
+/**
+ * Determina si un bloque es de modalidad presencial o asincrona computable (VAEE/Autoestudio)
+ * que debe aparecer en la ficha de asistencia.
+ */
+export const isPresencialOrComputableAsinc = (sched: ProcessedSchedule): boolean => {
+    const mod = (sched.modality || '').toUpperCase();
+    const meet = (sched.meetingType || '').toUpperCase();
+    const name = (sched.courseName || '').toUpperCase();
+    const activity = (sched.activity || '').toUpperCase();
+
+    const isVirtual = mod.includes('VIRTUAL') || meet.includes('VIRTUAL') || meet.includes('REMT');
+    const isAsynchronous = name.includes('ASINCRONA') || meet.includes('VAEE') || activity.includes('AUTOESTUDIO') || sched.category === 'asincrona';
+
+    return !isVirtual || isAsynchronous;
+};
+
+export const isFuzzyNameMatch = (nameA: string, nameB: string): boolean => {
+    const norm = (s: string) => (s || '').toString().trim()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[.,]/g, " ")
+        .replace(/\s+/g, " ")
+        .toUpperCase();
+
+    const nA = norm(nameA);
+    const nB = norm(nameB);
+
+    if (!nA || !nB) return false;
+    if (nA === nB) return true;
+
+    // Check if one is a substring of another (handle missing middle names)
+    if (nA.length > 3 && nB.length > 3) {
+        if (nA.includes(nB) || nB.includes(nA)) return true;
+    }
+
+    // Split and check segments (handle different order or abbreviated names)
+    const segsA = nA.split(' ').filter(s => s.length > 2);
+    const segsB = nB.split(' ').filter(s => s.length > 2);
+
+    if (segsA.length === 0 || segsB.length === 0) return false;
+
+    // If most segments match, consider it a match (at least 2 segments or all if only 1-2 segments)
+    const matches = segsA.filter(s => segsB.includes(s));
+    const minMatches = Math.min(segsA.length, segsB.length, 2);
+
+    return matches.length >= minMatches;
+};
+

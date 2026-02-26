@@ -1,5 +1,5 @@
-
 import { ProcessedSchedule, Instructor } from '../types';
+import { isPresencialOrComputableAsinc, isFuzzyNameMatch } from './businessRules';
 
 export interface DailyJourney {
     date: Date;
@@ -79,10 +79,12 @@ export const processAttendanceJourneys = (
 
     const targetId = normalize(instructor.id);
 
-    // 1. Filtrar horarios del instructor en el rango de fechas y que NO sean virtuales
     const instructorScheds = allSchedules.filter(s => {
-        // Coincidencia de ID robusta
-        if (normalize(s.instructorId) !== targetId) return false;
+        // Coincidencia con Match por ID (Prioridad) o Nombre (Fuzzy)
+        const isMySchedule = (s.instructorId && instructor.id && normalize(s.instructorId) === normalize(instructor.id)) ||
+            isFuzzyNameMatch(instructor.name, s.instructor);
+
+        if (!isMySchedule) return false;
 
         // Rango de fechas (solapamiento)
         // Usamos timestamps para evitar problemas de horas
@@ -92,13 +94,8 @@ export const processAttendanceJourneys = (
         const pEnd = endDate.getTime();
         if (sEnd < pStart || sStart > pEnd) return false;
 
-        // Regla de presencialidad:
-        // Solo excluimos si dice explícitamente VIRTUAL o REMT
-        const mod = normalize(s.modality || '');
-        const meet = normalize(s.meetingType || '');
-        const isVirtual = mod.includes('VIRTUAL') || meet.includes('VIRTUAL') || meet.includes('REMT');
-
-        return !isVirtual;
+        // USA REGLA CENTRALIZADA
+        return isPresencialOrComputableAsinc(s);
     });
 
     // 2. Generar un mapa de jornadas diarias

@@ -3,7 +3,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, FileText, Download, CheckCircle, Clock,
-    Search, Calendar, DownloadCloud, AlertCircle, MapPin
+    Search, Calendar, DownloadCloud, AlertCircle, MapPin,
+    ShieldCheck, AlertTriangle, RefreshCw, X
 } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { Instructor, ProcessedSchedule } from '../types';
@@ -12,6 +13,7 @@ import {
     processAttendanceJourneys,
     AttendanceSheetData
 } from '../services/attendanceService';
+import { isPresencialOrComputableAsinc, isFuzzyNameMatch } from '../services/businessRules';
 import { generateAttendanceExcel } from '../services/attendanceExporter';
 import JSZip from 'jszip';
 
@@ -19,7 +21,8 @@ const AttendancePage: React.FC = () => {
     const navigate = useNavigate();
     const {
         instructors, allSchedules, isLoading,
-        getAttendanceTracking, saveAttendanceTracking
+        getAttendanceTracking, saveAttendanceTracking,
+        syncInstructorIdInSchedules
     } = useData();
 
     // Estados de filtro y periodo
@@ -29,6 +32,7 @@ const AttendancePage: React.FC = () => {
 
     // Estado de seguimiento (Nube)
     const [generatedSheets, setGeneratedSheets] = useState<Set<string>>(new Set());
+    const [viewingAudit, setViewingAudit] = useState<Instructor | null>(null);
 
     useEffect(() => {
         const fetchTracking = async () => {
@@ -50,30 +54,45 @@ const AttendancePage: React.FC = () => {
         });
     };
 
-    // 1. Filtrar instructores TP con al menos una carga presencial en el periodo
-    // REGLA: Solo aquellos que NO tengan observaciones de auditoría (auditStatus === 'OK')
+    // 1. Filtrar instructores TP (Criterio relidado para que aparezcan aunque no tengan carga aún)
     const tpInstructorsWithPresencial = useMemo(() => {
         const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
 
         return instructors.filter(inst => {
-            // Solo TP
+            // 1. Solo TP
             if (inst.type !== 'TP') return false;
 
-            // REGLA: Solo sin observaciones (AuditStatus OK)
-            if (inst.auditStatus !== 'OK') return false;
+            // 2. Omitir placeholders (como en ProgressPanel)
+            if (inst.name.toUpperCase().startsWith('INST.')) return false;
 
-            // Buscar si tiene carga presencial en el rango
-            const hasPresencial = allSchedules.some(s =>
-                s.instructorId === inst.id &&
-                s.modality === 'presencial' &&
-                !(s.endDate < startDate || s.startDate > endDate)
-            );
+            // 3. REGLA: Solo sin observaciones críticas
+            // Permitimos que aparezcan todos, pero el botón de descarga masiva los filtrará
+            const status = (inst.auditStatus || '').toString().trim().toUpperCase();
+            const isRestricted = status === 'DEFICIT' || status === 'EXCESS'; // Solo bloqueamos si hay error explícito
 
-            return hasPresencial;
-        }).filter(inst =>
-            inst.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            inst.id.includes(searchTerm)
-        );
+            // Si tiene búsqueda, filtramos por nombre/id
+            const matchesSearch = inst.name.toLowerCase().includes(searchTerm.toLowerCase()) || inst.id.includes(searchTerm);
+            if (!matchesSearch) return false;
+
+            return true;
+        }).map(inst => {
+            // Calculamos si tiene carga presencial para mostrar aviso
+            const hasPresencial = allSchedules.some(s => {
+                const norm = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.,]/g, "").toUpperCase();
+
+                // Match por ID (exacto) o Nombre (Fuzzy)
+                const isMySchedule = (norm(inst.id) === norm(s.instructorId)) || isFuzzyNameMatch(inst.name, s.instructor);
+                if (!isMySchedule) return false;
+
+                // Rango relaxado al año seleccionado para detectar carga futura/pasada
+                const scheduleYear = s.startDate.getFullYear();
+                if (scheduleYear !== selectedYear && s.endDate.getFullYear() !== selectedYear) return false;
+
+                return isPresencialOrComputableAsinc(s);
+            });
+
+            return { ...inst, hasPresencial };
+        });
     }, [instructors, allSchedules, selectedMonth, selectedYear, searchTerm]);
 
     const SENATI_LOGO_URL = 'https://afzgvqkiwlfqbidausyi.supabase.co/storage/v1/object/public/assets/LOGO_SENATI.png';
@@ -105,16 +124,28 @@ const AttendancePage: React.FC = () => {
         }
     };
 
-    const handleDownloadMassive = async () => {
-        if (tpInstructorsWithPresencial.length === 0) return;
+    const handleSync = async (e: React.MouseEvent, instructor: Instructor) => {
+        e.stopPropagation();
+        if (window.confirm(`¿Sincronizar carga para ${instructor.name}? Se buscarán clases por coincidencia de nombre y se les asignará su ID oficial.`)) {
+            await syncInstructorIdInSchedules(instructor);
+        }
+    };
 
-        const confirmMassive = window.confirm(`Se generarán ${tpInstructorsWithPresencial.length} fichas. ¿Deseas continuar?`);
+    const handleDownloadMassive = async () => {
+        const readyInstructors = tpInstructorsWithPresencial.filter(inst => (inst.auditStatus || '').toUpperCase() === 'OK');
+
+        if (readyInstructors.length === 0) {
+            alert("No hay instructores con estado de auditoría 'OK' para descarga masiva.");
+            return;
+        }
+
+        const confirmMassive = window.confirm(`Se descargarán ${readyInstructors.length} fichas (solo aquellas con auditoría OK). ¿Deseas continuar?`);
         if (!confirmMassive) return;
 
         const zip = new JSZip();
         const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
 
-        for (const inst of tpInstructorsWithPresencial) {
+        for (const inst of readyInstructors) {
             const data = processAttendanceJourneys(inst, allSchedules, startDate, endDate);
             if (data.journeys.length > 0) {
                 const blob = await generateAttendanceExcel(data, SENATI_LOGO_URL);
@@ -134,6 +165,10 @@ const AttendancePage: React.FC = () => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     };
+
+    const readyToDownloadCount = useMemo(() => {
+        return tpInstructorsWithPresencial.filter(inst => (inst.auditStatus || '').toUpperCase() === 'OK').length;
+    }, [tpInstructorsWithPresencial]);
 
     const months = [
         { v: 1, n: 'Enero' }, { v: 2, n: 'Febrero' }, { v: 3, n: 'Marzo' },
@@ -191,11 +226,11 @@ const AttendancePage: React.FC = () => {
 
                     <button
                         onClick={handleDownloadMassive}
-                        disabled={tpInstructorsWithPresencial.length === 0}
+                        disabled={readyToDownloadCount === 0}
                         className="flex items-center space-x-2 px-6 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-xl shadow-slate-200"
                     >
                         <DownloadCloud size={16} />
-                        <span>Descarga Masiva ({tpInstructorsWithPresencial.length})</span>
+                        <span>Descarga Masiva ({readyToDownloadCount})</span>
                     </button>
                 </div>
             </header>
@@ -236,7 +271,8 @@ const AttendancePage: React.FC = () => {
                                 <tr>
                                     <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Instructor</th>
                                     <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Tipo</th>
-                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estado</th>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estado Ficha</th>
+                                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Auditoría</th>
                                     <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Última Descarga</th>
                                     <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Acciones</th>
                                 </tr>
@@ -263,7 +299,23 @@ const AttendancePage: React.FC = () => {
                                                         </div>
                                                         <div>
                                                             <p className="text-sm font-black text-slate-900 leading-none mb-1">{inst.name}</p>
-                                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">ID: {inst.id}</p>
+                                                            <div className="flex items-center space-x-2">
+                                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">ID: {inst.id}</p>
+                                                                {!inst.hasPresencial && (
+                                                                    <span className="text-[8px] font-black text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-tighter">
+                                                                        Sin Carga Presencial
+                                                                    </span>
+                                                                )}
+                                                                {(!inst.hasPresencial || inst.auditStatus === 'PENDING') && (
+                                                                    <button
+                                                                        onClick={(e) => handleSync(e, inst)}
+                                                                        title="Sincronizar carga por Nombre/ID"
+                                                                        className="text-blue-500 hover:text-blue-700 p-1 hover:bg-blue-50 rounded-full transition-colors ml-1"
+                                                                    >
+                                                                        <RefreshCw size={10} className={isLoading ? 'animate-spin' : ''} />
+                                                                    </button>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </td>
@@ -285,6 +337,27 @@ const AttendancePage: React.FC = () => {
                                                         </div>
                                                     )}
                                                 </td>
+                                                <td className="px-8 py-5 text-center">
+                                                    {(inst.auditStatus || '').toUpperCase() === 'OK' ? (
+                                                        <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-emerald-100">
+                                                            <ShieldCheck size={10} />
+                                                            <span>Óptimo</span>
+                                                        </div>
+                                                    ) : (inst.auditStatus === 'DEFICIT' || inst.auditStatus === 'EXCESS') ? (
+                                                        <div
+                                                            onClick={() => setViewingAudit(inst)}
+                                                            className="inline-flex items-center space-x-1.5 px-3 py-1 bg-rose-50 text-rose-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-rose-100 cursor-pointer hover:bg-rose-100 transition-colors"
+                                                        >
+                                                            <AlertTriangle size={10} />
+                                                            <span>Observado</span>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-slate-100 text-slate-400 rounded-full text-[10px] font-black uppercase tracking-widest border border-slate-200">
+                                                            <Clock size={10} />
+                                                            <span>Pendiente</span>
+                                                        </div>
+                                                    )}
+                                                </td>
                                                 <td className="px-8 py-5">
                                                     <p className="text-xs font-bold text-slate-500">
                                                         {isGenerated ? 'Descargado en esta sesión' : '-'}
@@ -293,7 +366,8 @@ const AttendancePage: React.FC = () => {
                                                 <td className="px-8 py-5 text-right">
                                                     <button
                                                         onClick={() => handleDownloadIndividual(inst)}
-                                                        className="inline-flex items-center space-x-2 px-4 py-2 hover:bg-blue-600 hover:text-white text-blue-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-blue-100 hover:border-blue-600"
+                                                        disabled={!inst.hasPresencial}
+                                                        className="inline-flex items-center space-x-2 px-4 py-2 hover:bg-blue-600 hover:text-white text-blue-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-blue-100 hover:border-blue-600 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-blue-600 disabled:border-slate-100"
                                                     >
                                                         <Download size={14} />
                                                         <span>Descargar Ficha</span>
@@ -308,6 +382,75 @@ const AttendancePage: React.FC = () => {
                     </div>
                 </div>
             </main>
+
+            {/* Modal de Detalle de Auditoría */}
+            {viewingAudit && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-[32px] w-full max-w-lg overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+                        <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-rose-50/30">
+                            <div className="flex items-center space-x-4">
+                                <div className="w-12 h-12 rounded-2xl bg-rose-100 flex items-center justify-center text-rose-600 shadow-inner">
+                                    <AlertTriangle size={24} />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-black text-slate-900 leading-tight">Observaciones de Auditoría</h3>
+                                    <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">{viewingAudit.name}</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setViewingAudit(null)}
+                                className="w-10 h-10 rounded-xl hover:bg-white flex items-center justify-center text-slate-400 hover:text-slate-900 transition-all shadow-sm active:scale-95"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        <div className="p-8 max-h-[60vh] overflow-y-auto">
+                            {viewingAudit.auditJson ? (() => {
+                                try {
+                                    const issues = JSON.parse(viewingAudit.auditJson);
+                                    if (!Array.isArray(issues) || issues.length === 0) {
+                                        return <p className="text-sm font-bold text-slate-400 text-center py-8 italic">No se encontraron detalles específicos del error.</p>;
+                                    }
+                                    return (
+                                        <div className="space-y-6">
+                                            {issues.map((issue: any, idx: number) => (
+                                                <div key={idx} className="bg-slate-50 rounded-2xl p-4 border border-slate-100 hover:border-rose-100 transition-colors group">
+                                                    <div className="flex items-center space-x-2 mb-3">
+                                                        <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
+                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">Semana del {issue.week}</p>
+                                                    </div>
+                                                    <ul className="space-y-2">
+                                                        {(issue.reasons || []).map((reason: string, rIdx: number) => (
+                                                            <li key={rIdx} className="flex items-start space-x-3">
+                                                                <div className="mt-1.5 w-1 h-1 rounded-full bg-rose-400 shrink-0" />
+                                                                <p className="text-xs font-bold text-slate-700 leading-relaxed">{reason}</p>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                } catch (e) {
+                                    return <p className="text-sm font-bold text-slate-400">Error al procesar detalles: {viewingAudit.auditJson}</p>;
+                                }
+                            })() : (
+                                <p className="text-sm font-bold text-slate-400 text-center py-8">Pendiente de detalle técnico...</p>
+                            )}
+                        </div>
+
+                        <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end">
+                            <button
+                                onClick={() => setViewingAudit(null)}
+                                className="px-8 py-3 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all active:scale-95 shadow-lg shadow-slate-200"
+                            >
+                                Cerrar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

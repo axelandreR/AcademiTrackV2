@@ -16,7 +16,7 @@ export const useScheduleActions = (
 ) => {
     const {
         allSchedules, administrativeTasks, instructorsByNameMap, holidays,
-        saveScheduleCloud, deleteScheduleCloud, isSimulationMode
+        saveScheduleCloud, deleteScheduleCloud, isSimulationMode, extraHoursConfig
     } = useData();
 
     const lastTaskCreationRef = useRef<number>(0);
@@ -49,7 +49,8 @@ export const useScheduleActions = (
                     customEndDate: config.customEndDate,
                     instructorInfo: instructorsByNameMap[item.toLowerCase()],
                     logo: config.logo,
-                    holidays
+                    holidays,
+                    extraHoursConfig: isSimulationMode ? extraHoursConfig : null
                 });
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -78,7 +79,8 @@ export const useScheduleActions = (
                         scope: config.scope,
                         instructorInfo: instructorsByNameMap[item.toLowerCase()],
                         logo: config.logo,
-                        holidays
+                        holidays,
+                        extraHoursConfig: isSimulationMode ? extraHoursConfig : null
                     });
                     zip.file(`${item}.xlsx`, blob);
                 }

@@ -40,6 +40,12 @@ export const SEMESTER_START_DATE = new Date(2026, 1, 16); // 16/02/2026
 export const SEMESTER_END_DATE = new Date(2026, 5, 28);   // 28/06/2026
 export const CUT_OFF_DATE = new Date(2026, 5, 7);      // 07/06/2026
 
+export const LOAD_LIMITS = {
+  DAILY_TC: 9.2,
+  DAILY_TP: 7.0,
+  WEEKLY_TC: 46.0
+};
+
 export const TASK_ABBREVIATIONS: Record<string, string> = {
   'Horas Asíncronas': 'Hor Asinc',
   'Asíncrona': 'Asinc',

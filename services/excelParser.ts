@@ -101,6 +101,8 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
           return nrcColorMap.get(cleanNrc)!;
         };
 
+        const nrcSessionCounter = new Map<string, number>();
+
         const schedules = schedJson.map((item, index) => {
           const days: string[] = [];
           const isMarked = (key: string) => {
@@ -138,15 +140,20 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
 
           const nrcValue = String(mapFuzzy(item, ['SECCION', 'NRC', 'ID_NRC', 'SEC', 'ID_SECCION']) || '-');
 
+          // Generar ID determinístico basado en NRC para evitar conflictos en Delta Updates
+          const currentCount = nrcSessionCounter.get(nrcValue) || 0;
+          nrcSessionCounter.set(nrcValue, currentCount + 1);
+          const stableId = `sched-${nrcValue}-${currentCount}`;
+
           return {
-            id: `row-${index}-${mapFuzzy(item, ['ID', 'INDICE']) || Date.now()}`,
+            id: stableId,
             courseCode: String(mapFuzzy(item, ['CODIGO', 'CURSO_ID', 'MAT-CUR', 'MAT_CUR', 'MATRICULA_CURSO']) || ''),
             courseName: String(mapFuzzy(item, ['DESCRIPCION_CURSO', 'MATERIA', 'CURSO']) || ''),
             activity: String(mapFuzzy(item, ['ACTIVIDAD', 'TIPO_ACT']) || ''),
             meetingType: String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || ''),
             block: String(mapFuzzy(item, ['BLOQUE', 'GRUPO']) || ''),
             instructor: normalizeName(String(mapFuzzy(item, ['INSTRUCTOR', 'DOCENTE', 'TRABAJADOR']) || '')),
-            instructorId: String(mapFuzzy(item, ['ID_INST', 'DOCENTE_ID', 'ID']) || '').trim(),
+            instructorId: String(mapFuzzy(item, ['ID_INST', 'DOCENTE_ID', 'ID', 'ID DOCENTE', 'CODIGO DOCENTE', 'ID_DOCENTE']) || '').trim(),
             room: String(mapFuzzy(item, ['SALON', 'AULA', 'AMBIENTE']) || ''),
             building: String(mapFuzzy(item, ['EDIFICIO', 'EDIF']) || ''),
             days, startTime, endTime, startDate, endDate,
@@ -154,13 +161,17 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
             nrc: nrcValue, color: getOrCreateColor(nrcValue),
             weeklyHours, aforo: parseNumberRobust(mapFuzzy(item, ['AFORO', 'CAPACIDAD'])),
             periodo: String(mapFuzzy(item, ['PERIODO', 'CICLO']) || ''),
-            semestre: String(mapFuzzy(item, ['SEMESTRE', 'NIVEL']) || '')
+            semestre: String(mapFuzzy(item, ['SEMESTRE', 'NIVEL']) || ''),
+            modality: (String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || '').toUpperCase().includes('VIRTUAL') ||
+              String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || '').toUpperCase().includes('REMT'))
+              ? 'virtual' : 'presencial' as ModalityType
           };
         }).filter(item =>
           // RELAJAMOS EL FILTRO: Solo exigimos que tenga horas para no perder carga
           (item.weeklyHours > 0 || (item.days.length > 0 && item.startTime)) &&
           item.startDate instanceof Date && !isNaN(item.startDate.getTime())
         );
+
 
         resolve({ schedules, rooms, instructors, holidays });
       } catch (err) { reject(err); }
