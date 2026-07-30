@@ -36,9 +36,14 @@ export const COLORS = [
 
 export const CONTRACT_HOURS_TC = 46.0;
 
-export const SEMESTER_START_DATE = new Date(2026, 1, 16); // 16/02/2026
-export const SEMESTER_END_DATE = new Date(2026, 5, 28);   // 28/06/2026
-export const CUT_OFF_DATE = new Date(2026, 5, 7);      // 07/06/2026
+// Periodo activo: la app solo trabaja con horarios de este periodo (se actualiza al
+// iniciar cada semestre). Otros periodos (ej. 202610) quedan en Supabase pero no se
+// cargan en memoria, para no arrastrar datos ni lentitud de semestres cerrados.
+export const ACTIVE_PERIODO = '202620';
+
+export const SEMESTER_START_DATE = new Date(2026, 7, 17);  // 17/08/2026
+export const SEMESTER_END_DATE = new Date(2027, 0, 17);    // 17/01/2027
+export const CUT_OFF_DATE = new Date(2026, 11, 31);    // 31/12/2026
 
 export const LOAD_LIMITS = {
   DAILY_TC: 9.2,

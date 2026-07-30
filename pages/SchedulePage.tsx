@@ -9,10 +9,11 @@ import RecordModal from '../components/RecordModal';
 import ExportModal from '../components/ExportModal';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule, ViewType, AppMode, ScheduleCategory, ModalityType, ExportConfig } from '../types';
-import { isAcademicMetaLoad, isContractualLoad } from '../services/businessRules';
+import { isAcademicMetaLoad, isContractualLoad, normalizeNameKey, belongsToInstructor, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName } from '../services/businessRules';
 import { DAYS_OF_WEEK, SEMESTER_START_DATE, SEMESTER_END_DATE, CUT_OFF_DATE } from '../constants';
 import SkeletonGrid from '../components/SkeletonGrid';
 import CommandPalette, { SearchItem } from '../components/CommandPalette';
+import ConfirmDialog from '../components/ConfirmDialog';
 
 import { useScheduleNavigation } from '../hooks/useScheduleNavigation';
 import { useScheduleCalculations } from '../hooks/useScheduleCalculations';
@@ -26,9 +27,14 @@ import AuditAlert from '../components/AuditAlert';
 import SimulationBar from '../components/SimulationBar';
 import SimulationsList from '../components/SimulationsList';
 
+interface SidebarItem {
+    label: string;
+    id?: string; // ID del instructor (solo viewType Instructor); ausente para Bloque/Aula
+}
+
 interface GroupedOption {
     groupName: string;
-    items: string[];
+    items: SidebarItem[];
 }
 
 const SchedulePage: React.FC = () => {
@@ -36,8 +42,8 @@ const SchedulePage: React.FC = () => {
     const [searchParams, setSearchParams] = useSearchParams();
     const {
         allSchedules, data, administrativeTasks, rooms, instructors, holidays,
-        setSchedules, setAdministrativeTasks, saveScheduleCloud, deleteScheduleCloud,
-        instructorsByNameMap, roomsMap, settings, loadSchedulesForFilter, globalSchedulesSummary,
+        saveScheduleCloud, deleteScheduleCloud, saveRoomCloud,
+        instructorsByNameMap, instructorsMap, roomsMap, settings, loadSchedulesForFilter, globalSchedulesSummary,
         startSimulation, isSimulationMode
     } = useData();
 
@@ -49,8 +55,14 @@ const SchedulePage: React.FC = () => {
     const { checkInstructorDiscrepancy } = useScheduleCalculations(currentWeekStart);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+    // Borrado de una tarea de la grilla: se confirma con ConfirmDialog antes de tocar la nube.
+    const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
     // Sincronizar URL con estado
     const selectedFilter = searchParams.get('filter') || '';
+    // ID del instructor seleccionado (solo relevante en viewType Instructor). Es el
+    // identificador "real" — el nombre en selectedFilter queda solo para mostrar en
+    // pantalla (título, breadcrumb, buscador), nunca para decidir de quién se trata.
+    const selectedInstructorId = viewType === 'Instructor' ? (searchParams.get('id') || '') : '';
 
 
     const {
@@ -63,7 +75,8 @@ const SchedulePage: React.FC = () => {
         selectedFilter,
         viewType,
         setIsExportModalOpen,
-        checkInstructorDiscrepancy
+        checkInstructorDiscrepancy,
+        selectedInstructorId
     );
 
     const [isWeekPickerOpen, setIsWeekPickerOpen] = useState(false);
@@ -78,6 +91,35 @@ const SchedulePage: React.FC = () => {
     const [activeAuditFilter, setActiveAuditFilter] = useState<'none' | 'deficit' | 'perfect'>('none');
 
     const weekPickerRef = useRef<HTMLDivElement>(null);
+
+    // Al entrar SIN parámetros en la URL (ej. volviendo desde Avance de Horarios o el menú),
+    // restaura la última selección para no obligar a re-navegar el árbol de la sidebar.
+    // Una URL con parámetros (link profundo) siempre manda sobre lo guardado.
+    useEffect(() => {
+        if (searchParams.get('view') || searchParams.get('filter')) return;
+        try {
+            const saved = sessionStorage.getItem('schedulePageSelection');
+            if (!saved) return;
+            const { view, filter, id } = JSON.parse(saved) as { view?: string; filter?: string; id?: string };
+            if (!view && !filter) return;
+            setSearchParams(prev => {
+                if (view) prev.set('view', view);
+                if (filter) prev.set('filter', filter);
+                if (id) prev.set('id', id);
+                return prev;
+            }, { replace: true });
+        } catch { /* selección guardada corrupta: se ignora */ }
+    }, []);
+
+    // Persistir la selección actual (view/filter/id) para la restauración de arriba.
+    useEffect(() => {
+        const view = searchParams.get('view');
+        const filter = searchParams.get('filter');
+        if (!view && !filter) return;
+        try {
+            sessionStorage.setItem('schedulePageSelection', JSON.stringify({ view, filter, id: searchParams.get('id') }));
+        } catch { /* sessionStorage lleno o bloqueado: no es crítico */ }
+    }, [searchParams]);
 
     useEffect(() => {
         const view = searchParams.get('view') as ViewType;
@@ -100,7 +142,7 @@ const SchedulePage: React.FC = () => {
         if (!selectedFilter) return;
 
         if (viewType === 'Instructor') {
-            const meta = instructorsByNameMap[selectedFilter.toLowerCase()];
+            const meta = selectedInstructorId ? instructorsMap[selectedInstructorId] : resolveInstructorByName(selectedFilter, instructorsByNameMap, instructors);
             if (meta) {
                 const groupName = meta.type === 'TC' ? 'TIEMPO COMPLETO (TC)' : 'TIEMPO PARCIAL (TP)';
                 setExpandedGroups(prev => {
@@ -131,11 +173,13 @@ const SchedulePage: React.FC = () => {
                 });
             }
         }
-    }, [selectedFilter, viewType, instructorsByNameMap, roomsMap, globalSchedulesSummary, allSchedules]);
+    }, [selectedFilter, selectedInstructorId, viewType, instructorsMap, instructorsByNameMap, instructors, roomsMap, globalSchedulesSummary, allSchedules]);
 
-    const setSelectedFilter = (filter: string) => {
+    const setSelectedFilter = (filter: string, instructorId?: string) => {
         setSearchParams(prev => {
             prev.set('filter', filter);
+            if (instructorId) prev.set('id', instructorId);
+            else prev.delete('id');
             return prev;
         });
     };
@@ -184,12 +228,22 @@ const SchedulePage: React.FC = () => {
         };
     }, [isModalOpen, isExportModalOpen, isWeekPickerOpen, sidebarSearchTerm, viewType, selectedFilter, navigateWeek, setIsWeekPickerOpen, setContentMode, setAppMode, setIsModalOpen, setIsPaletteOpen, setIsExportModalOpen]);
 
-    const groupedSidebarOptions = useMemo(() => {
-        const groups: GroupedOption[] = [];
-        const term = sidebarSearchTerm.toLowerCase();
+    // Use summary if available, otherwise current view (fallback)
+    const sourceData = useMemo(() =>
+        globalSchedulesSummary.length > 0 ? globalSchedulesSummary : allSchedules,
+        [globalSchedulesSummary, allSchedules]
+    );
 
-        // Use summary if available, otherwise current view (fallback)
-        const sourceData = globalSchedulesSummary.length > 0 ? globalSchedulesSummary : allSchedules;
+    // Índice O(n) instructorId -> horarios, para no repetir un scan O(instructores × horarios)
+    // por cada instructor al armar la lista lateral (con ~260 instructores × ~3400 horarios
+    // ese scan tomaba cientos de ms en cada tecla escrita en el buscador).
+    const instructorScheduleIndex = useMemo(() => buildInstructorScheduleIndex<ProcessedSchedule>(sourceData), [sourceData]);
+
+    // Estructura "cruda" de la lista lateral, SIN aplicar el término de búsqueda — así
+    // escribir en el buscador no repite el trabajo pesado de agrupar/emparejar, solo filtra
+    // sobre listas ya armadas (ver el memo de abajo).
+    const rawSidebarGroups = useMemo(() => {
+        const groups: GroupedOption[] = [];
 
         if (viewType === 'Bloque') {
             const careerMap = new Map<string, Set<string>>();
@@ -201,8 +255,7 @@ const SchedulePage: React.FC = () => {
                 }
             });
             careerMap.forEach((blocks: Set<string>, career: string) => {
-                const filtered = [...blocks].filter(b => b.toLowerCase().includes(term)).sort();
-                if (filtered.length > 0) groups.push({ groupName: career, items: filtered });
+                groups.push({ groupName: career, items: [...blocks].sort().map(label => ({ label })) });
             });
         } else if (viewType === 'Aula') {
             const typeMap = new Map<string, Set<string>>();
@@ -217,7 +270,7 @@ const SchedulePage: React.FC = () => {
 
             // Iterate ROOMS metadata, but only include those that are active
             rooms.forEach(r => {
-                // Filter: Must be active (present in schedules) OR user explicitly wants all? 
+                // Filter: Must be active (present in schedules) OR user explicitly wants all?
                 // User said: "before... those who did not have any load assigned did not appear".
                 if (!activeRoomKeys.has(r.roomKey)) return;
 
@@ -227,51 +280,66 @@ const SchedulePage: React.FC = () => {
             });
 
             typeMap.forEach((roomsInType: Set<string>, type: string) => {
-                const filtered = [...roomsInType].filter(r => r.toLowerCase().includes(term)).sort();
-                if (filtered.length > 0) groups.push({ groupName: type, items: filtered });
+                groups.push({ groupName: type, items: [...roomsInType].sort().map(label => ({ label })) });
             });
         } else {
-            const tcSet = new Set<string>();
-            const tpSet = new Set<string>();
+            // name -> id, para que la lista lateral lleve el ID del instructor y la
+            // selección deje de depender de que el nombre coincida palabra por palabra.
+            const tcMap = new Map<string, string>();
+            const tpMap = new Map<string, string>();
 
-            // Get active instructor names from summary
-            const activeInstructors = new Set<string>();
-            sourceData.forEach(s => {
-                if (s.instructor) activeInstructors.add(s.instructor);
-            });
-
-            // Iterate INSTRUCTORS metadata, only include active
+            // Iterate INSTRUCTORS metadata: ¿tiene algún horario? (por ID, con fallback a
+            // nombre solo para bloques legados sin ID — ver belongsToInstructor/índice). Antes
+            // esto comparaba el nombre completo del catálogo contra el texto crudo del Excel
+            // (ej. "MENDIETA ALARCON LUIS OSCAR" vs "MENDIETA ALARCON, LUIS"), que casi nunca
+            // coincide exacto y hacía que instructores TC reales cayeran al bloque de abajo
+            // y se listaran como TP por defecto.
+            // "Reclamamos" cada horario que matchea a un instructor real, para que su texto
+            // crudo (ej. "MENDIETA ALARCON LUIS" sin "OSCAR") no vuelva a aparecer como si
+            // fuera un docente distinto y desconocido en el bloque de abajo.
+            const claimedSchedules = new Set<ProcessedSchedule>();
             instructors.forEach(meta => {
-                if (!activeInstructors.has(meta.name)) return;
+                const matching = getInstructorSchedules<ProcessedSchedule>(meta, instructorScheduleIndex);
+                if (matching.length === 0) return;
+                matching.forEach(s => claimedSchedules.add(s));
 
                 if (activeAuditFilter !== 'none') {
                     // Check discrepancy using summary data (which useScheduleCalculations now supports)
-                    const hasDisc = checkInstructorDiscrepancy(meta.name);
+                    const hasDisc = checkInstructorDiscrepancy(meta.name, meta.id);
                     if (activeAuditFilter === 'deficit' && !hasDisc) return;
                     if (activeAuditFilter === 'perfect' && hasDisc) return;
                 }
 
-                if (meta.type === 'TC') tcSet.add(meta.name); else tpSet.add(meta.name);
+                if (meta.type === 'TC') tcMap.set(meta.name, meta.id); else tpMap.set(meta.name, meta.id);
             });
 
-            // Handle instructors in data but not in metadata
-            activeInstructors.forEach(name => {
-                // If it's already in tcSet or tpSet, skip
-                if (tcSet.has(name) || tpSet.has(name)) return;
-
-                if (!instructorsByNameMap[name.toLowerCase()] && name !== 'Sin asignar') {
-                    if (activeAuditFilter === 'none') tpSet.add(name);
-                }
+            // Instructores verdaderamente desconocidos: aparecen en horarios que ningún
+            // instructor del catálogo reclamó (ni por ID ni por nombre fuzzy) — sin ID.
+            sourceData.forEach(s => {
+                if (claimedSchedules.has(s)) return;
+                if (!s.instructor || s.instructor === 'Sin asignar') return;
+                if (activeAuditFilter === 'none') tpMap.set(s.instructor, '');
             });
 
-            const filteredTc = [...tcSet].filter(i => i.toLowerCase().includes(term)).sort();
-            const filteredTp = [...tpSet].filter(i => i.toLowerCase().includes(term)).sort();
+            const toSortedItems = (m: Map<string, string>) => Array.from(m.entries())
+                .map(([label, id]) => ({ label, id: id || undefined }))
+                .sort((a, b) => a.label.localeCompare(b.label));
 
-            if (filteredTc.length > 0) groups.push({ groupName: 'TIEMPO COMPLETO (TC)', items: filteredTc });
-            if (filteredTp.length > 0) groups.push({ groupName: 'TIEMPO PARCIAL (TP)', items: filteredTp });
+            if (tcMap.size > 0) groups.push({ groupName: 'TIEMPO COMPLETO (TC)', items: toSortedItems(tcMap) });
+            if (tpMap.size > 0) groups.push({ groupName: 'TIEMPO PARCIAL (TP)', items: toSortedItems(tpMap) });
         }
         return viewType === 'Instructor' ? groups : groups.sort((a, b) => a.groupName.localeCompare(b.groupName));
-    }, [globalSchedulesSummary, allSchedules, viewType, sidebarSearchTerm, rooms, instructors, activeAuditFilter, checkInstructorDiscrepancy, instructorsByNameMap]);
+    }, [sourceData, viewType, rooms, instructors, activeAuditFilter, checkInstructorDiscrepancy, instructorScheduleIndex]);
+
+    // Filtro de texto: barato, solo recorre las listas ya agrupadas — esto es lo único que
+    // debe repetirse en cada tecla escrita en el buscador.
+    const groupedSidebarOptions = useMemo(() => {
+        const term = sidebarSearchTerm.toLowerCase();
+        if (!term) return rawSidebarGroups;
+        return rawSidebarGroups
+            .map(g => ({ ...g, items: g.items.filter(i => i.label.toLowerCase().includes(term)) }))
+            .filter(g => g.items.length > 0);
+    }, [rawSidebarGroups, sidebarSearchTerm]);
 
     const toggleGroup = (groupName: string) => { const newExpanded = new Set(expandedGroups); if (newExpanded.has(groupName)) newExpanded.delete(groupName); else newExpanded.add(groupName); setExpandedGroups(newExpanded); };
 
@@ -295,27 +363,44 @@ const SchedulePage: React.FC = () => {
 
 
 
-    const handleNavigate = (type: ViewType, filter: string) => {
+    const handleNavigate = (type: ViewType, filter: string, instructorId?: string) => {
         // Redirigir a la misma página pero cambiando los parámetros
         // Esto permite que el historial del navegador funcione correctamente
-        setSearchParams({ view: type, filter });
+        setSearchParams(prev => {
+            const next = new URLSearchParams();
+            next.set('view', type);
+            next.set('filter', filter);
+            if (type === 'Instructor' && instructorId) next.set('id', instructorId);
+            return next;
+        });
         // Auto-expandir grupos relacionados
         if (type === 'Bloque') { const schedule = allSchedules.find(s => s.block === filter); if (schedule) setExpandedGroups(new Set([schedule.career])); }
         else if (type === 'Aula') { const room = roomsMap[filter]; if (room) setExpandedGroups(new Set([room.type])); }
-        else if (type === 'Instructor') { const meta = instructorsByNameMap[filter.toLowerCase()]; if (meta) setExpandedGroups(new Set([meta.type === 'TC' ? 'TIEMPO COMPLETO (TC)' : 'TIEMPO PARCIAL (TP)'])); }
+        else if (type === 'Instructor') {
+            const meta = instructorId ? instructorsMap[instructorId] : resolveInstructorByName(filter, instructorsByNameMap, instructors);
+            if (meta) setExpandedGroups(new Set([meta.type === 'TC' ? 'TIEMPO COMPLETO (TC)' : 'TIEMPO PARCIAL (TP)']));
+        }
         setIsSidebarVisible(true);
     };
 
     const filteredData = useMemo(() => {
         if (!selectedFilter) return [];
+        // Para Instructor: el ID (cuando viene) manda — lookup exacto O(1) contra
+        // instructorsMap. Solo cae a resolver por nombre (con su respaldo fuzzy) cuando no
+        // hay ID disponible en la selección actual. Antes esto SIEMPRE resolvía por nombre,
+        // aunque selectedFilter fuera el nombre canónico del catálogo — si el texto crudo
+        // del horario en el Excel no coincidía palabra por palabra, la grilla quedaba vacía.
+        const selectedInstructor = viewType === 'Instructor'
+            ? (selectedInstructorId ? instructorsMap[selectedInstructorId] : resolveInstructorByName(selectedFilter, instructorsByNameMap, instructors))
+            : undefined;
         return allSchedules.filter(s => {
             if (s.isAdministrative && viewType !== 'Instructor') return false;
             if (viewType === 'Bloque') return s.block === selectedFilter;
             if (viewType === 'Aula') return `${s.building} - ${s.room}` === selectedFilter;
-            if (viewType === 'Instructor') return s.instructor === selectedFilter;
+            if (viewType === 'Instructor') return selectedInstructor ? belongsToInstructor(selectedInstructor, s) : s.instructor === selectedFilter;
             return false;
         });
-    }, [allSchedules, viewType, selectedFilter]);
+    }, [allSchedules, viewType, selectedFilter, selectedInstructorId, instructorsMap, instructorsByNameMap, instructors]);
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col h-screen overflow-hidden">
@@ -400,11 +485,7 @@ const SchedulePage: React.FC = () => {
                                     schedules={filteredData}
                                     weekStartDate={currentWeekStart}
                                     onEditRecord={(r) => { setEditingRecord(r); setIsModalOpen(true); }}
-                                    onDeleteRecord={(id) => {
-                                        deleteScheduleCloud(id);
-                                        setSchedules(prev => prev.filter(r => r.id !== id));
-                                        setAdministrativeTasks(prev => prev.filter(r => r.id !== id));
-                                    }}
+                                    onDeleteRecord={(id) => setPendingDeleteId(id)}
                                     onIndividualizeTask={handleIndividualizeTask}
                                     onAddAdministrativeTask={handleAddAdministrativeTask}
                                     onNavigate={handleNavigate}
@@ -413,6 +494,7 @@ const SchedulePage: React.FC = () => {
                                     appMode={appMode}
                                     instructorsData={instructors}
                                     selectedFilterName={selectedFilter}
+                                    selectedInstructorId={selectedInstructorId}
                                     holidays={holidays}
                                     onDeficitStatusChange={setCurrentWeekDeficit}
                                     contentMode={contentMode}
@@ -429,11 +511,28 @@ const SchedulePage: React.FC = () => {
                 isOpen={isModalOpen}
                 onClose={() => { setIsModalOpen(false); setEditingRecord(null); }}
                 onSave={(r) => {
+                    // Auto-registrar el ambiente si Edificio+Aula no está en el catálogo
+                    // (el selector permite escribir uno nuevo, no solo elegir uno existente).
+                    if (r.building && r.room) {
+                        const roomKey = `${r.building} - ${r.room}`;
+                        if (!roomsMap[roomKey]) {
+                            saveRoomCloud({
+                                roomKey,
+                                building: r.building,
+                                room: r.room,
+                                career: r.career || '',
+                                description: '',
+                                type: 'AULA',
+                                capacity: 0
+                            });
+                        }
+                    }
                     saveScheduleCloud(r);
                     setIsModalOpen(false);
                 }}
                 initialData={editingRecord}
                 allSchedules={allSchedules}
+                rooms={rooms}
             />
 
             <CommandPalette
@@ -450,7 +549,7 @@ const SchedulePage: React.FC = () => {
                         setExpandedGroups(new Set(['TIEMPO COMPLETO (TC)', 'TIEMPO PARCIAL (TP)']));
                     } else {
                         if (item.viewType) setViewType(item.viewType);
-                        if (item.filterValue) setSelectedFilter(item.filterValue);
+                        if (item.filterValue) setSelectedFilter(item.filterValue, item.instructorId);
                         setActiveAuditFilter('none');
                     }
                     setIsPaletteOpen(false);
@@ -464,6 +563,21 @@ const SchedulePage: React.FC = () => {
                 currentViewType={viewType}
                 currentSelectedItem={selectedFilter}
                 onExport={handleExport}
+            />
+
+            <ConfirmDialog
+                isOpen={pendingDeleteId !== null}
+                title="Eliminar tarea"
+                message="Se eliminará esta tarea del horario de forma permanente. Esta acción no se puede deshacer."
+                confirmLabel="Eliminar"
+                variant="danger"
+                onCancel={() => setPendingDeleteId(null)}
+                onConfirm={() => {
+                    // deleteScheduleCloud ya actualiza el estado local (real o de simulación,
+                    // según corresponda) SOLO si el borrado en la nube tiene éxito.
+                    if (pendingDeleteId) deleteScheduleCloud(pendingDeleteId);
+                    setPendingDeleteId(null);
+                }}
             />
         </div >
     );

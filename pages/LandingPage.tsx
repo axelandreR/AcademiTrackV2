@@ -7,17 +7,39 @@ import {
 } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import FileUploader from '../components/FileUploader';
+import { generateProgramacionTemplate } from '../services/templateGenerator';
+import { findMissingCatalogReferences, resolveInstructorForRecord } from '../services/businessRules';
+import { ACTIVE_PERIODO } from '../constants';
 
 const LandingPage: React.FC = () => {
     const navigate = useNavigate();
     const {
         uploadSchedulesToSupabase, schedules, instructors,
         isLoading, allSchedules, exportedInstructors, rooms,
-        saveInstructorCloud, saveScheduleCloud, refreshData,
-        instructorsByNameMap
+        saveInstructorCloud, saveRoomCloud, saveScheduleCloud, refreshData,
+        careersMap
     } = useData();
 
     const [isUpdating, setIsUpdating] = React.useState(false);
+    const [isDownloadingTemplate, setIsDownloadingTemplate] = React.useState(false);
+
+    const handleDownloadTemplate = async () => {
+        setIsDownloadingTemplate(true);
+        try {
+            const blob = await generateProgramacionTemplate(careersMap);
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'AcademiTrack_Plantilla_Programacion.xlsx';
+            a.click();
+            window.URL.revokeObjectURL(url);
+        } catch (e: any) {
+            console.error('Error generando plantilla:', e);
+            alert('Error al generar la plantilla: ' + e.message);
+        } finally {
+            setIsDownloadingTemplate(false);
+        }
+    };
     const [showRecoveryModal, setShowRecoveryModal] = React.useState(false);
     const [recoveryType, setRecoveryType] = React.useState<'admin' | 'visual' | null>(null);
     const [isRecovering, setIsRecovering] = React.useState(false);
@@ -38,7 +60,7 @@ const LandingPage: React.FC = () => {
             if (recovered.length > 0) {
                 // VINCULACIÓN INTELIGENTE PARA PREVIEW
                 const processed = recovered.map(task => {
-                    const official = instructorsByNameMap[task.instructor.toLowerCase()];
+                    const official = resolveInstructorForRecord(task, instructors);
                     if (official) {
                         return { ...task, instructor: official.name, instructorId: official.id };
                     }
@@ -80,10 +102,11 @@ const LandingPage: React.FC = () => {
 
     // Estados para el flujo de sincronización del Excel
     const [pendingData, setPendingData] = React.useState<any>(null);
-    const [syncMode, setSyncMode] = React.useState<'full' | 'delta'>('full');
+    const [syncMode, setSyncMode] = React.useState<'full' | 'delta' | 'new_period'>('full');
     const [showSelection, setShowSelection] = React.useState(false);
     const [showConfirmation, setShowConfirmation] = React.useState(false);
     const [missingInstructors, setMissingInstructors] = React.useState<any[]>([]);
+    const [missingRooms, setMissingRooms] = React.useState<any[]>([]);
     const [showMissingModal, setShowMissingModal] = React.useState(false);
 
     // Estadísticas en tiempo real para el Dashboard
@@ -103,6 +126,12 @@ const LandingPage: React.FC = () => {
         };
     }, [allSchedules, instructors, rooms, exportedInstructors]);
 
+    // Periodo(s) detectado(s) en el archivo cargado, para mostrarlo antes de sincronizar
+    const filePeriodos = useMemo(() => {
+        if (!pendingData) return [];
+        return Array.from(new Set(pendingData.schedules.map((s: any) => s.periodo).filter(Boolean)));
+    }, [pendingData]);
+
     // Cálculos de impacto para la sincronización
     const syncStats = useMemo(() => {
         if (!pendingData) return { toDelete: 0, toAdd: 0 };
@@ -110,6 +139,13 @@ const LandingPage: React.FC = () => {
             return {
                 toDelete: schedules.length + instructors.length,
                 toAdd: pendingData.schedules.length + pendingData.instructors.length
+            };
+        } else if (syncMode === 'new_period') {
+            const periodosDelArchivo = new Set(pendingData.schedules.map((s: any) => s.periodo));
+            const matchingExisting = schedules.filter(s => periodosDelArchivo.has(s.periodo) && !s.isAdministrative);
+            return {
+                toDelete: matchingExisting.length,
+                toAdd: pendingData.schedules.length
             };
         } else {
             const newNrcs = new Set(pendingData.schedules.map((s: any) => s.nrc));
@@ -121,38 +157,35 @@ const LandingPage: React.FC = () => {
         }
     }, [pendingData, syncMode, schedules, instructors]);
 
-    const findMissingInstructors = (data: any) => {
-        const existingIds = new Set(instructors.map(i => String(i.id).trim()));
-        const existingNames = new Set(instructors.map(i => i.name.toLowerCase().trim()));
-
-        const uniqueInFile = new Map();
-        data.instructors.forEach((inst: any) => {
-            const id = String(inst.id || '').trim();
-            const name = String(inst.name || '').trim().toLowerCase();
-
-            if (name && !existingNames.has(name) && (!id || !existingIds.has(id))) {
-                if (!uniqueInFile.has(name)) {
-                    uniqueInFile.set(name, {
-                        id: id || `NEW-${Math.random().toString(36).substr(2, 5).toUpperCase()}`,
-                        name: inst.name.trim(),
-                        type: 'TP',
-                        specialty: 'Por definir',
-                        campus: 'Principal',
-                        status: 'Activo'
-                    });
-                }
-            }
-        });
-
-        return Array.from(uniqueInFile.values());
-    };
-
     const handleConfirmSync = async () => {
         if (!pendingData) return;
 
-        const missing = findMissingInstructors(pendingData);
-        if (missing.length > 0) {
-            setMissingInstructors(missing);
+        // Referencias detectadas DENTRO de Programación (por ID/nombre de instructor y por
+        // Edificio+Aula) que no existen todavía en los catálogos actuales. A diferencia del
+        // chequeo anterior, esto funciona aunque el archivo no traiga hojas de Instructores/Aula.
+        const { missingInstructors: missingInst, missingRooms: missingRm } = findMissingCatalogReferences(
+            pendingData.schedules, instructors, rooms
+        );
+
+        if (missingInst.length > 0 || missingRm.length > 0) {
+            setMissingInstructors(missingInst.map(m => ({
+                id: m.id || `NEW-${Math.random().toString(36).substr(2, 5).toUpperCase()}`,
+                name: m.name || 'Sin nombre',
+                type: 'TP',
+                maxHours: 40,
+                specialty: 'Por definir',
+                campus: 'Principal',
+                status: 'Activo'
+            })));
+            setMissingRooms(missingRm.map(m => ({
+                roomKey: m.roomKey,
+                building: m.building,
+                room: m.room,
+                career: '',
+                description: '',
+                type: 'AULA',
+                capacity: 0
+            })));
             setShowMissingModal(true);
             return;
         }
@@ -167,8 +200,13 @@ const LandingPage: React.FC = () => {
         for (const inst of missingInstructors) {
             await saveInstructorCloud(inst);
         }
+        for (const room of missingRooms) {
+            await saveRoomCloud(room);
+        }
 
         setShowMissingModal(false);
+        setMissingInstructors([]);
+        setMissingRooms([]);
         await uploadSchedulesToSupabase(pendingData, syncMode);
         setPendingData(null);
         setShowConfirmation(false);
@@ -194,10 +232,20 @@ const LandingPage: React.FC = () => {
                         </div>
                     </div>
                     {!pendingData && (
-                        <FileUploader onDataLoaded={(result) => {
-                            setPendingData(result);
-                            setShowSelection(true);
-                        }} />
+                        <>
+                            <FileUploader onDataLoaded={(result) => {
+                                setPendingData(result);
+                                setShowSelection(true);
+                            }} />
+                            <button
+                                onClick={handleDownloadTemplate}
+                                disabled={isDownloadingTemplate}
+                                className="mt-6 flex items-center justify-center space-x-2 mx-auto px-6 py-3 bg-white border border-slate-200 text-slate-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:border-indigo-400 hover:text-indigo-600 hover:shadow-lg transition-all disabled:opacity-50"
+                            >
+                                <FileText size={16} />
+                                <span>{isDownloadingTemplate ? 'Generando...' : 'Descargar Plantilla de Programación'}</span>
+                            </button>
+                        </>
                     )}
                 </div>
 
@@ -210,14 +258,33 @@ const LandingPage: React.FC = () => {
                                 <h3 className="text-3xl font-black text-slate-900 tracking-tight">Método de Integración</h3>
                                 <p className="text-slate-500 font-medium">Seleccione cómo desea procesar los nuevos datos.</p>
                             </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                            <div className={`flex items-center justify-center space-x-2 px-4 py-3 rounded-2xl text-xs font-black uppercase tracking-widest ${filePeriodos.length === 1 && filePeriodos[0] === ACTIVE_PERIODO
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                                : 'bg-amber-50 text-amber-700 border border-amber-100'
+                                }`}>
+                                <Calendar size={16} />
+                                <span>
+                                    {filePeriodos.length === 0
+                                        ? 'El archivo no trae periodo identificado'
+                                        : `Periodo en el archivo: ${filePeriodos.join(', ')}`}
+                                    {filePeriodos.length === 1 && filePeriodos[0] !== ACTIVE_PERIODO && ` (el periodo activo es ${ACTIVE_PERIODO})`}
+                                </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                 <button onClick={() => { setSyncMode('delta'); setShowSelection(false); setShowConfirmation(true); }} className="p-8 border-2 border-slate-50 bg-slate-50 rounded-[32px] text-left hover:border-blue-500 hover:bg-white hover:shadow-2xl hover:shadow-blue-100 transition-all group">
                                     <div className="font-black text-slate-900 mb-2 group-hover:text-blue-600 uppercase text-sm tracking-tight">Delta (Por NRC)</div>
-                                    <p className="text-xs text-slate-500 leading-relaxed">Reemplaza solo los cursos específicos que han cambiado. Ideal para ajustes semanales.</p>
+                                    <p className="text-xs text-slate-500 leading-relaxed">Reemplaza solo los NRC que trae el archivo, sin tocar el resto. Ideal para correcciones puntuales sobre un periodo ya cargado.</p>
+                                </button>
+                                <button onClick={() => { setSyncMode('new_period'); setShowSelection(false); setShowConfirmation(true); }} className="p-8 border-2 border-emerald-100 bg-emerald-50/50 rounded-[32px] text-left hover:border-emerald-500 hover:bg-white hover:shadow-2xl hover:shadow-emerald-100 transition-all group relative">
+                                    <div className="absolute top-4 right-4 text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-100 px-2 py-1 rounded-full">Recomendado</div>
+                                    <div className="font-black text-slate-900 mb-2 group-hover:text-emerald-600 uppercase text-sm tracking-tight">Información Nuevo Periodo</div>
+                                    <p className="text-xs text-slate-500 leading-relaxed">Reemplaza TODA la programación académica del periodo que trae el archivo (sin dejar NRC huérfanos), sin tocar instructores, aulas, feriados ni tareas administrativas. Úselo para la primera carga de un semestre nuevo.</p>
                                 </button>
                                 <button onClick={() => { setSyncMode('full'); setShowSelection(false); setShowConfirmation(true); }} className="p-8 border-2 border-slate-50 bg-slate-50 rounded-[32px] text-left hover:border-amber-500 hover:bg-white hover:shadow-2xl hover:shadow-amber-100 transition-all group">
                                     <div className="font-black text-slate-900 mb-2 group-hover:text-amber-600 uppercase text-sm tracking-tight">Carga Completa</div>
-                                    <p className="text-xs text-slate-500 leading-relaxed">Borra la base actual y carga todo desde cero. Úselo al inicio de cada semestre.</p>
+                                    <p className="text-xs text-slate-500 leading-relaxed">Además del periodo, reemplaza instructores, aulas y feriados si el archivo los trae. Úselo solo si también vas a reemplazar esos catálogos.</p>
                                 </button>
                             </div>
                             <button onClick={() => { setPendingData(null); setShowSelection(false); }} className="w-full py-4 text-slate-400 font-bold hover:text-rose-500 transition-colors uppercase text-xs tracking-widest">Cancelar</button>
@@ -238,70 +305,114 @@ const LandingPage: React.FC = () => {
                                 <div className="flex justify-between items-center"><span className="text-slate-400 text-[10px] font-black uppercase">Remover</span><span className="text-rose-600 font-black text-xl">-{syncStats.toDelete}</span></div>
                                 <div className="flex justify-between items-center"><span className="text-slate-400 text-[10px] font-black uppercase">Insertar</span><span className="text-emerald-600 font-black text-xl">+{syncStats.toAdd}</span></div>
                                 <div className="pt-4 border-t border-slate-200 text-center">
-                                    <div className={`px-4 py-2 rounded-xl inline-block font-black text-[10px] uppercase tracking-widest ${syncMode === 'full' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>
-                                        MODO: {syncMode === 'full' ? 'FULL REPLACEMENT' : 'DELTA (SMART)'}
+                                    <div className={`px-4 py-2 rounded-xl inline-block font-black text-[10px] uppercase tracking-widest ${syncMode === 'full' ? 'bg-amber-100 text-amber-700' : syncMode === 'new_period' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
+                                        MODO: {syncMode === 'full' ? 'FULL REPLACEMENT' : syncMode === 'new_period' ? 'NUEVO PERIODO' : 'DELTA (SMART)'}
                                     </div>
                                 </div>
                             </div>
                             <div className="space-y-3">
-                                <button onClick={handleConfirmSync} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 uppercase tracking-widest text-xs">Confirmar y Sincronizar</button>
+                                <button onClick={handleConfirmSync} disabled={isLoading} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 uppercase tracking-widest text-xs disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                    {isLoading && <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+                                    {isLoading ? 'Sincronizando...' : 'Confirmar y Sincronizar'}
+                                </button>
                                 <button onClick={() => setShowConfirmation(false)} className="w-full py-4 text-slate-400 font-bold hover:text-slate-600 transition-colors uppercase text-xs tracking-widest">Revisar de nuevo</button>
                             </div>
                         </div>
                     </div>
                 )}
 
-                {/* MODAL 3: Registro de Docentes Nuevos (EL SEGURO) */}
+                {/* MODAL 3: Registro de Referencias Pendientes (docentes/aulas nuevas detectadas en Programación) */}
                 {showMissingModal && (
                     <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-6">
                         <div className="bg-white rounded-[40px] shadow-2xl max-w-2xl w-full flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in duration-300">
                             <div className="p-10 border-b border-slate-100 bg-slate-50/50">
                                 <div className="flex items-center space-x-4 mb-2">
-                                    <div className="p-3 bg-amber-100 text-amber-600 rounded-2xl"><Users size={24} /></div>
-                                    <h3 className="text-2xl font-black text-slate-900">Docentes Nuevos Detectados</h3>
+                                    <div className="p-3 bg-amber-100 text-amber-600 rounded-2xl"><AlertTriangle size={24} /></div>
+                                    <h3 className="text-2xl font-black text-slate-900">Referencias Nuevas Detectadas</h3>
                                 </div>
-                                <p className="text-slate-500 text-sm font-medium">Hay {missingInstructors.length} docentes en el archivo que no están en la Base de Datos. Defina su tipo para continuar.</p>
+                                <p className="text-slate-500 text-sm font-medium">
+                                    El archivo referencia {missingInstructors.length} instructor(es) y {missingRooms.length} aula(s) que no están en la Base de Datos. Complete los datos para registrarlos antes de sincronizar.
+                                </p>
                             </div>
 
-                            <div className="p-10 overflow-y-auto space-y-6">
-                                {missingInstructors.map((inst, idx) => (
-                                    <div key={idx} className="flex items-center justify-between p-6 bg-slate-50 rounded-3xl border border-slate-100">
-                                        <div className="space-y-1">
-                                            <p className="font-black text-slate-900">{inst.name}</p>
-                                            <div className="flex items-center space-x-3">
-                                                <input
-                                                    placeholder="ID (Opcional)"
-                                                    value={inst.id.startsWith('NEW-') ? '' : inst.id}
-                                                    onChange={(e) => {
-                                                        const copy = [...missingInstructors];
-                                                        copy[idx].id = e.target.value || inst.id;
-                                                        setMissingInstructors(copy);
-                                                    }}
-                                                    className="text-[10px] font-bold bg-white px-2 py-1 rounded-md border border-slate-200 w-24"
-                                                />
-                                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{inst.id}</span>
+                            <div className="p-10 overflow-y-auto space-y-8">
+                                {missingInstructors.length > 0 && (
+                                    <div className="space-y-4">
+                                        <div className="flex items-center space-x-2 text-slate-400"><Users size={16} /><h4 className="text-[10px] font-black uppercase tracking-widest">Instructores Nuevos</h4></div>
+                                        {missingInstructors.map((inst, idx) => (
+                                            <div key={idx} className="flex items-center justify-between p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                                                <div className="space-y-1">
+                                                    <p className="font-black text-slate-900">{inst.name}</p>
+                                                    <div className="flex items-center space-x-3">
+                                                        <input
+                                                            placeholder="ID (Opcional)"
+                                                            value={inst.id.startsWith('NEW-') ? '' : inst.id}
+                                                            onChange={(e) => {
+                                                                const copy = [...missingInstructors];
+                                                                copy[idx].id = e.target.value || inst.id;
+                                                                setMissingInstructors(copy);
+                                                            }}
+                                                            className="text-[10px] font-bold bg-white px-2 py-1 rounded-md border border-slate-200 w-24"
+                                                        />
+                                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{inst.id}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex bg-white p-1.5 rounded-2xl border border-slate-200">
+                                                    <button
+                                                        onClick={() => {
+                                                            const copy = [...missingInstructors];
+                                                            copy[idx].type = 'TC';
+                                                            setMissingInstructors(copy);
+                                                        }}
+                                                        className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${inst.type === 'TC' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
+                                                    >TC</button>
+                                                    <button
+                                                        onClick={() => {
+                                                            const copy = [...missingInstructors];
+                                                            copy[idx].type = 'TP';
+                                                            setMissingInstructors(copy);
+                                                        }}
+                                                        className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${inst.type === 'TP' ? 'bg-amber-600 text-white shadow-lg shadow-amber-200' : 'text-slate-400 hover:text-slate-600'}`}
+                                                    >TP</button>
+                                                </div>
                                             </div>
-                                        </div>
-                                        <div className="flex bg-white p-1.5 rounded-2xl border border-slate-200">
-                                            <button
-                                                onClick={() => {
-                                                    const copy = [...missingInstructors];
-                                                    copy[idx].type = 'TC';
-                                                    setMissingInstructors(copy);
-                                                }}
-                                                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${inst.type === 'TC' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
-                                            >TC</button>
-                                            <button
-                                                onClick={() => {
-                                                    const copy = [...missingInstructors];
-                                                    copy[idx].type = 'TP';
-                                                    setMissingInstructors(copy);
-                                                }}
-                                                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${inst.type === 'TP' ? 'bg-amber-600 text-white shadow-lg shadow-amber-200' : 'text-slate-400 hover:text-slate-600'}`}
-                                            >TP</button>
-                                        </div>
+                                        ))}
                                     </div>
-                                ))}
+                                )}
+
+                                {missingRooms.length > 0 && (
+                                    <div className="space-y-4">
+                                        <div className="flex items-center space-x-2 text-slate-400"><MapPin size={16} /><h4 className="text-[10px] font-black uppercase tracking-widest">Aulas Nuevas</h4></div>
+                                        {missingRooms.map((room, idx) => (
+                                            <div key={idx} className="flex items-center justify-between p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                                                <div className="space-y-1">
+                                                    <p className="font-black text-slate-900">{room.building} - {room.room}</p>
+                                                    <input
+                                                        placeholder="Carrera responsable (opcional)"
+                                                        value={room.career}
+                                                        onChange={(e) => {
+                                                            const copy = [...missingRooms];
+                                                            copy[idx].career = e.target.value;
+                                                            setMissingRooms(copy);
+                                                        }}
+                                                        className="text-[10px] font-bold bg-white px-2 py-1 rounded-md border border-slate-200 w-56"
+                                                    />
+                                                </div>
+                                                <input
+                                                    type="number"
+                                                    placeholder="Aforo"
+                                                    value={room.capacity}
+                                                    onChange={(e) => {
+                                                        const copy = [...missingRooms];
+                                                        copy[idx].capacity = Number(e.target.value);
+                                                        setMissingRooms(copy);
+                                                    }}
+                                                    className="text-[10px] font-bold bg-white px-2 py-2 rounded-md border border-slate-200 w-20 text-center"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="p-10 border-t border-slate-100 flex items-center space-x-4">
@@ -311,8 +422,12 @@ const LandingPage: React.FC = () => {
                                 >Atrás</button>
                                 <button
                                     onClick={handleRegisterAndContinue}
-                                    className="flex-1 py-4 bg-slate-900 text-white rounded-3xl font-black hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 uppercase tracking-widest text-xs"
-                                >Registrar Docentes y Sincronizar</button>
+                                    disabled={isLoading}
+                                    className="flex-1 py-4 bg-slate-900 text-white rounded-3xl font-black hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 uppercase tracking-widest text-xs disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                >
+                                    {isLoading && <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+                                    {isLoading ? 'Sincronizando...' : 'Registrar y Sincronizar'}
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -329,6 +444,9 @@ const LandingPage: React.FC = () => {
                     <div className="space-y-3">
                         <div className="flex items-center space-x-3 mb-2">
                             <div className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-[10px] font-black uppercase tracking-[0.2em]">AcademiTrack v2</div>
+                            <div className="flex items-center px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg text-[10px] font-black uppercase tracking-widest" title="La app solo carga horarios de este periodo">
+                                <Calendar size={12} className="mr-1.5" /> Periodo Activo: {ACTIVE_PERIODO}
+                            </div>
                             <div className="flex items-center text-slate-400 text-[10px] font-black uppercase tracking-widest"><Clock size={12} className="mr-1" /> Actualizado: {liveStats.lastUpdate}</div>
                         </div>
                         <h1 className="text-5xl lg:text-6xl font-black text-slate-900 tracking-tighter leading-none">
@@ -349,7 +467,7 @@ const LandingPage: React.FC = () => {
                             <span className="absolute text-xs font-black text-indigo-700">{liveStats.coveragePercent}%</span>
                         </div>
                         <div>
-                            <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Cobertura Auditada</p>
+                            <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Docentes Exportados</p>
                             <h4 className="text-2xl font-black text-indigo-900">{exportedInstructors.size} <span className="text-sm text-indigo-400 text-normal">/ {liveStats.totalInstructors} Docentes</span></h4>
                         </div>
                     </div>
@@ -548,7 +666,7 @@ const LandingPage: React.FC = () => {
                                             </thead>
                                             <tbody className="divide-y divide-slate-50">
                                                 {previewData.map((task, idx) => {
-                                                    const isMatched = !!instructorsByNameMap[task.instructor.toLowerCase()];
+                                                    const isMatched = !!resolveInstructorForRecord(task, instructors);
                                                     const d = task.days || [];
                                                     return (
                                                         <tr key={idx} className="hover:bg-slate-50 transition-colors group">

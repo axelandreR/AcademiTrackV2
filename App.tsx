@@ -1,19 +1,31 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import FileUploader from './components/FileUploader';
-import ReportsDashboard from './components/ReportsDashboard';
 import { ParseResult } from './services/excelParser';
 import { DataProvider, useData } from './context/DataContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import LoginPage from './pages/LoginPage';
+import AccountBadge from './components/AccountBadge';
 
-// Import Pages
+// LandingPage es la ruta de entrada: se importa de forma estática para que el primer
+// render no espere un chunk. El resto se carga bajo demanda (code-splitting) para no
+// arrastrar ReportsDashboard/ScheduleGrid/exportadores de Excel en el bundle inicial.
 import LandingPage from './pages/LandingPage';
-import SchedulePage from './pages/SchedulePage';
-import InstructorsPage from './pages/InstructorsPage';
-import RoomsPage from './pages/RoomsPage';
 
-import ProgressPanel from './components/ProgressPanel';
-import AttendancePage from './pages/AttendancePage';
-import ArchiveManagerPage from './pages/ArchiveManagerPage';
+const SchedulePage = lazy(() => import('./pages/SchedulePage'));
+const InstructorsPage = lazy(() => import('./pages/InstructorsPage'));
+const RoomsPage = lazy(() => import('./pages/RoomsPage'));
+const ProgressPanel = lazy(() => import('./components/ProgressPanel'));
+const AttendancePage = lazy(() => import('./pages/AttendancePage'));
+const ArchiveManagerPage = lazy(() => import('./pages/ArchiveManagerPage'));
+const ReportsDashboard = lazy(() => import('./components/ReportsDashboard'));
+
+const RouteFallback: React.FC = () => (
+  <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-10">
+    <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cargando módulo...</p>
+  </div>
+);
 
 // Componente Wrapper para manejar la carga de datos inicial
 const AppContent: React.FC = () => {
@@ -69,21 +81,23 @@ const AppContent: React.FC = () => {
 
   return (
     <Router>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/schedule" element={<SchedulePage />} />
-        <Route path="/instructors" element={<InstructorsPage />} />
-        <Route path="/rooms" element={<RoomsPage />} />
-        <Route path="/progress" element={<ProgressPanel />} />
-        <Route path="/attendance" element={<AttendancePage />} />
-        <Route path="/archive" element={<ArchiveManagerPage />} />
-        <Route path="/reports" element={
-          // ReportsDashboard necesita props, idealmente también debería usar Context
-          // Por ahora le pasamos los datos del context
-          <ContextReportsWrapper />
-        } />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/schedule" element={<SchedulePage />} />
+          <Route path="/instructors" element={<InstructorsPage />} />
+          <Route path="/rooms" element={<RoomsPage />} />
+          <Route path="/progress" element={<ProgressPanel />} />
+          <Route path="/attendance" element={<AttendancePage />} />
+          <Route path="/archive" element={<ArchiveManagerPage />} />
+          <Route path="/reports" element={
+            // ReportsDashboard necesita props, idealmente también debería usar Context
+            // Por ahora le pasamos los datos del context
+            <ContextReportsWrapper />
+          } />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </Router>
   );
 };
@@ -103,11 +117,36 @@ const ContextReportsWrapper: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
+// Puerta de autenticación: sin sesión -> Login; con sesión -> carga los datos y la app
+const AuthGate: React.FC = () => {
+  const { session, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-10">
+        <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-6"></div>
+        <h2 className="text-xl font-black text-slate-900 uppercase tracking-widest">Verificando sesión...</h2>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginPage />;
+  }
+
   return (
     <DataProvider>
+      <AccountBadge />
       <AppContent />
     </DataProvider>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <AuthProvider>
+      <AuthGate />
+    </AuthProvider>
   );
 };
 

@@ -4,12 +4,14 @@ import { ProcessedSchedule } from '../types';
 import { Search, Edit2, UserMinus, Calendar, MapPin, Clock, Filter, ArrowLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ArchiveEditModal from '../components/ArchiveEditModal';
+import ConfirmDialog from '../components/ConfirmDialog';
 
 const ArchiveManagerPage: React.FC = () => {
     const { allSchedules, isLoading, saveScheduleCloud } = useData();
     const [searchTerm, setSearchTerm] = useState('');
     const [filterType, setFilterType] = useState<'all' | 'academic' | 'admin'>('all');
     const [editingSchedule, setEditingSchedule] = useState<ProcessedSchedule | null>(null);
+    const [pendingRemoval, setPendingRemoval] = useState<ProcessedSchedule | null>(null);
     const navigate = useNavigate();
 
     // Filtrado de datos
@@ -44,15 +46,13 @@ const ArchiveManagerPage: React.FC = () => {
         }
     };
 
-    const handleRemoveInstructor = async (s: ProcessedSchedule) => {
-        if (!window.confirm(`¿Seguro que deseas retirar a ${s.instructor} de este bloque? La reducción de carga se reflejará instantáneamente en la auditoría.`)) return;
+    const handleRemoveInstructor = (s: ProcessedSchedule) => setPendingRemoval(s);
 
-        const updated: ProcessedSchedule = {
-            ...s,
-            instructor: '',
-            instructorId: ''
-        };
-        await saveScheduleCloud(updated);
+    const confirmRemoveInstructor = async () => {
+        const s = pendingRemoval;
+        setPendingRemoval(null);
+        if (!s) return;
+        await saveScheduleCloud({ ...s, instructor: '', instructorId: '' });
     };
 
     if (isLoading) {
@@ -235,6 +235,16 @@ const ArchiveManagerPage: React.FC = () => {
                     </div>
                 </div>
             </main>
+
+            <ConfirmDialog
+                isOpen={pendingRemoval !== null}
+                title="Retirar instructor"
+                message={`Se retirará a ${pendingRemoval?.instructor || 'el instructor'} de este bloque. La reducción de carga se reflejará de inmediato en la auditoría.`}
+                confirmLabel="Retirar"
+                variant="danger"
+                onCancel={() => setPendingRemoval(null)}
+                onConfirm={confirmRemoveInstructor}
+            />
         </div>
     );
 };

@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 // Fix: Added ShieldAlert to the import list from lucide-react
 import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert, AlertTriangle } from 'lucide-react';
-import { ProcessedSchedule, ViewType } from '../types';
+import { ProcessedSchedule, ViewType, RoomData } from '../types';
 import { DAYS_OF_WEEK, COLORS } from '../constants';
 
 interface RecordModalProps {
@@ -13,9 +13,10 @@ interface RecordModalProps {
   initialData?: ProcessedSchedule | null;
   defaultInstructor?: string;
   allSchedules?: ProcessedSchedule[];
+  rooms?: RoomData[];
 }
 
-const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, initialData, defaultInstructor, allSchedules = [] }) => {
+const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, initialData, defaultInstructor, allSchedules = [], rooms = [] }) => {
   const [formData, setFormData] = useState<Partial<ProcessedSchedule>>({
     courseCode: '',
     courseName: '',
@@ -181,6 +182,16 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
   };
 
   const isLocked = !formData.isAdministrative && !!initialData;
+
+  const buildingOptions = Array.from(new Set(rooms.map(r => r.building).filter(Boolean))).sort();
+  const roomOptions = Array.from(new Set(
+    rooms
+      .filter(r => !formData.building || r.building === formData.building)
+      .map(r => r.room)
+      .filter(Boolean)
+  )).sort();
+  const isNewRoomCombo = !!formData.building && !!formData.room &&
+    !rooms.some(r => r.building === formData.building && r.room === formData.room);
 
   return (
     <div className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
@@ -364,12 +375,35 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Edificio</label>
-                  <input className="w-full px-4 py-3 bg-slate-100 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ej: 82-CF" value={formData.building} onChange={e => setFormData({ ...formData, building: e.target.value })} />
+                  <input
+                    list="record-buildings"
+                    className="w-full px-4 py-3 bg-slate-100 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Ej: 82-CF"
+                    value={formData.building}
+                    onChange={e => setFormData({ ...formData, building: e.target.value })}
+                  />
+                  <datalist id="record-buildings">
+                    {buildingOptions.map(b => <option key={b} value={b} />)}
+                  </datalist>
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Aula</label>
-                  <input className="w-full px-4 py-3 bg-slate-100 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ej: 107" value={formData.room} onChange={e => setFormData({ ...formData, room: e.target.value })} />
+                  <input
+                    list="record-rooms"
+                    className="w-full px-4 py-3 bg-slate-100 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Ej: 107"
+                    value={formData.room}
+                    onChange={e => setFormData({ ...formData, room: e.target.value })}
+                  />
+                  <datalist id="record-rooms">
+                    {roomOptions.map(r => <option key={r} value={r} />)}
+                  </datalist>
                 </div>
+                {isNewRoomCombo && (
+                  <p className="col-span-2 text-[10px] font-bold text-amber-600 flex items-center gap-1.5 -mt-1">
+                    <AlertCircle size={12} /> Este ambiente no está en el catálogo — se registrará automáticamente al guardar.
+                  </p>
+                )}
               </div>
             </div>
           </div>

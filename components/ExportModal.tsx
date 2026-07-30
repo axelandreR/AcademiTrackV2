@@ -17,6 +17,7 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, data, curren
   const [format, setFormat] = useState<'pdf' | 'excel'>('pdf');
   const [selectedType, setSelectedType] = useState<ViewType>(currentViewType);
   const [selectedItem, setSelectedItem] = useState<string>(currentSelectedItem || '');
+  const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedCareer, setSelectedCareer] = useState<string>('all');
   const [scope, setScope] = useState<'firstWeek' | 'allWeeks' | 'custom'>('firstWeek');
   const [customStartDate, setCustomStartDate] = useState('');
@@ -32,15 +33,33 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, data, curren
     }
   }, [isOpen, currentViewType, currentSelectedItem]);
 
+  // Para Instructor, cada opción lleva su ID junto al nombre (cuando el horario lo trae),
+  // así el export puede identificar al instructor exacto en vez de depender solo del
+  // nombre — evita cruces entre instructores con apellidos parecidos.
   const options = useMemo(() => {
-    let list: string[] = [];
-    if (selectedType === 'Bloque') {
-      list = Array.from(new Set(data.map(s => s.block)));
+    if (selectedType === 'Instructor') {
+      const byName = new Map<string, string>();
+      data.forEach(s => {
+        if (!s.instructor) return;
+        if (!byName.get(s.instructor) && s.instructorId) byName.set(s.instructor, s.instructorId);
+        else if (!byName.has(s.instructor)) byName.set(s.instructor, '');
+      });
+      return Array.from(byName.entries())
+        .map(([label, id]) => ({ label, id }))
+        .sort((a, b) => a.label.localeCompare(b.label));
     }
+    let list: string[] = [];
+    if (selectedType === 'Bloque') list = Array.from(new Set(data.map(s => s.block)));
     if (selectedType === 'Aula') list = Array.from(new Set(data.map(s => `${s.building} - ${s.room}`)));
-    if (selectedType === 'Instructor') list = Array.from(new Set(data.map(s => s.instructor)));
-    return list.filter(Boolean).sort();
+    return list.filter(Boolean).sort().map(label => ({ label, id: undefined as string | undefined }));
   }, [data, selectedType]);
+
+  // Mantiene selectedItemId sincronizado con selectedItem, sin importar si cambió por el
+  // <select> o por el efecto de sincronización con la vista actual.
+  useEffect(() => {
+    const opt = options.find(o => o.label === selectedItem);
+    setSelectedItemId(opt?.id || '');
+  }, [options, selectedItem]);
 
   const careers = useMemo(() => {
     return Array.from(new Set(data.map(s => s.career))).filter(Boolean).sort();
@@ -239,7 +258,7 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, data, curren
               >
                 <option value="">Selecciona una opción...</option>
                 {options.map(opt => (
-                  <option key={opt} value={opt}>{opt}</option>
+                  <option key={opt.label} value={opt.label}>{opt.label}</option>
                 ))}
               </select>
             </div>
@@ -264,7 +283,7 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, data, curren
           </button>
           <button 
             disabled={(mode === 'individual' && !selectedItem) || (scope === 'custom' && (!customStartDate || !customEndDate))}
-            onClick={() => onExport({ mode, type: selectedType, format, selectedItem, selectedCareer: selectedType === 'Bloque' ? selectedCareer : undefined, scope, customStartDate, customEndDate, logo })}
+            onClick={() => onExport({ mode, type: selectedType, format, selectedItem, selectedItemId: selectedType === 'Instructor' ? (selectedItemId || undefined) : undefined, selectedCareer: selectedType === 'Bloque' ? selectedCareer : undefined, scope, customStartDate, customEndDate, logo })}
             className="px-8 py-2.5 bg-slate-900 text-white text-sm font-black rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all flex items-center space-x-2 disabled:opacity-50 disabled:shadow-none"
           >
             <FileDown size={18} />

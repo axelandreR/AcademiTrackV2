@@ -3,8 +3,8 @@ import { ProcessedSchedule, RoomData, Instructor, HolidayData, InstitutionalRefe
 import { AppSettings, DEFAULT_SETTINGS } from '../types/settings';
 import { supabase } from '../supabaseClient';
 import { validateInstructorWeek } from '../services/auditService';
-import { SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
-import { isFuzzyNameMatch } from '../services/businessRules';
+import { SEMESTER_START_DATE, SEMESTER_END_DATE, ACTIVE_PERIODO } from '../constants';
+import { belongsToInstructor, findFuzzyNameMatches, isFuzzyNameMatch, normalizeNameKey, buildInstructorScheduleIndex, getInstructorSchedules } from '../services/businessRules';
 
 const mapHolidayFromDB = (h: any): HolidayData => ({
   date: parseLocalDBDate(h.date),
@@ -53,7 +53,7 @@ interface DataContextType {
     instructors: Instructor[];
     rooms: RoomData[];
     holidays: HolidayData[];
-  }, mode?: 'full' | 'delta') => Promise<void>;
+  }, mode?: 'full' | 'delta' | 'new_period') => Promise<void>;
   uploadInstitutionalReference: (data: InstitutionalReference[]) => Promise<void>;
 
   exportedInstructors: Set<string>;
@@ -64,7 +64,10 @@ interface DataContextType {
   deleteScheduleCloud: (id: string | string[]) => Promise<void>;
   saveInstructorCloud: (instructor: Instructor) => Promise<void>;
   deleteInstructorCloud: (id: string) => Promise<void>;
-  updateInstructorAuditStatus: (instructorName: string, status: 'OK' | 'DEFICIT' | 'EXCESS', validationJson: any) => Promise<void>;
+  bulkUpsertInstructors: (list: Instructor[]) => Promise<void>;
+  saveRoomCloud: (room: RoomData) => Promise<void>;
+  deleteRoomCloud: (roomKey: string) => Promise<void>;
+  bulkUpsertRooms: (list: RoomData[]) => Promise<void>;
   saveAttendanceTracking: (instructorId: string, month: number, year: number) => Promise<void>;
   getAttendanceTracking: (month: number, year: number) => Promise<Set<string>>;
 
@@ -76,6 +79,7 @@ interface DataContextType {
   instructorsByNameMap: Record<string, Instructor>;
   roomsMap: Record<string, RoomData>;
   holidaysMap: Record<string, HolidayData>;
+  careersMap: Record<string, string>;
 
   // Simulation Mode
   isSimulationMode: boolean;
@@ -90,6 +94,10 @@ interface DataContextType {
   loadScenario: (id: string) => Promise<any>;
   recalculateInstructorAudit: (instructorName: string, currentSchedules: ProcessedSchedule[], instructorsList?: Instructor[]) => Promise<void>;
   syncInstructorIdInSchedules: (instructor: Instructor) => Promise<void>;
+  updateAppSetting: (key: string, value: string) => Promise<void>;
+  recalculateAllInstructorsAudit: (cutoffDate: Date) => Promise<void>;
+  getAuditCutoffDate: () => Date;
+  liveAuditByInstructor: Map<string, { isAuditOk: boolean; hasData: boolean; issues: { week: string; reasons: string[] }[] }>;
 }
 
 export const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -139,6 +147,7 @@ export const mapSchedFromDB = (dbItem: any): ProcessedSchedule => ({
   startDate: parseLocalDBDate(dbItem.start_date),
   endDate: parseLocalDBDate(dbItem.end_date),
   career: dbItem.career || '',
+  codCarrera: dbItem.cod_carrera || '',
   nrc: dbItem.nrc || '',
   color: dbItem.color || '',
   weeklyHours: Number(dbItem.weekly_hours) || 0,
@@ -192,6 +201,7 @@ const mapSchedToDB = (appItem: ProcessedSchedule) => ({
   start_date: formatDateToDB(appItem.startDate),
   end_date: formatDateToDB(appItem.endDate),
   career: appItem.career || null,
+  cod_carrera: appItem.codCarrera || null,
   nrc: appItem.nrc || null,
   color: appItem.color || null,
   weekly_hours: appItem.weeklyHours || 0,
@@ -210,6 +220,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [rooms, setRooms] = useState<RoomData[]>([]);
   const [instructors, setInstructors] = useState<Instructor[]>([]);
   const [holidays, setHolidays] = useState<HolidayData[]>([]);
+  const [careers, setCareers] = useState<{ cod_carrera: string; name: string }[]>([]);
   const [institutionalReferences, setInstitutionalReferences] = useState<InstitutionalReference[]>([]);
   const [settings, setSettings] = useState<Record<string, string>>(DEFAULT_SETTINGS);
   const [exportedInstructors, setExportedInstructors] = useState<Set<string>>(new Set());
@@ -223,7 +234,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
 
-  const toggleInstructorExported = (id: string) => {
+  const toggleInstructorExported = useCallback((id: string) => {
     setExportedInstructors(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -231,37 +242,44 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       localStorage.setItem('exportedInstructors', JSON.stringify(Array.from(next)));
       return next;
     });
-  };
+  }, []);
 
   const [isLoading, setIsLoading] = useState(true);
   const [hasInitialData, setHasInitialData] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fecha límite de auditoría: hasta dónde se exige que el horario esté completo para
+  // marcarlo "OK". Configurable desde Avance de Horarios (tabla app_settings); si no está
+  // configurada, cae al fin de semestre real (comportamiento de siempre). Separada a
+  // propósito de SEMESTER_END_DATE, que sigue controlando la grilla, los exportes y la
+  // detección de conflictos — mover solo esta fecha no acorta esas otras vistas.
+  const getAuditCutoffDate = useCallback((): Date => {
+    const raw = settings['audit_validation_cutoff_date'];
+    return raw ? parseLocalDBDate(raw) : new Date(SEMESTER_END_DATE);
+  }, [settings]);
 
   const recalculateInstructorAudit = useCallback(async (instructorName: string, currentSchedules: ProcessedSchedule[], instructorsList?: Instructor[]) => {
     const listToUse = instructorsList || instructors;
     const inst = listToUse.find(i => i.name === instructorName || i.id === instructorName);
     if (!inst || inst.name.startsWith('INST.')) return;
 
-    // Generar semanas del semestre
+    // Generar semanas del semestre (hasta la fecha límite de auditoría configurable)
+    const auditCutoff = getAuditCutoffDate();
     const semesterWeeks: Date[] = [];
     let current = new Date(SEMESTER_START_DATE);
     const day = current.getDay();
     const diff = current.getDate() - day + (day === 0 ? -6 : 1);
     current.setDate(diff);
     current.setHours(0, 0, 0, 0);
-    while (current <= SEMESTER_END_DATE) {
+    while (current <= auditCutoff) {
       semesterWeeks.push(new Date(current));
       current.setDate(current.getDate() + 7);
     }
 
-    const norm = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.,]/g, "").toUpperCase();
 
-    // Mejoramos el filtrado con match por ID (prioridad) o Fuzzy Name
-    const instSchedules = currentSchedules.filter(s => {
-      const isMySchedule = (s.instructorId && inst.id && norm(s.instructorId) === norm(inst.id)) ||
-        isFuzzyNameMatch(inst.name, s.instructor);
-      return isMySchedule;
-    });
+    // El ID es la única fuente de verdad cuando el bloque lo trae; el fuzzy match por
+    // nombre solo aplica a bloques legados sin ID (ver belongsToInstructor).
+    const instSchedules = currentSchedules.filter(s => belongsToInstructor(inst, s));
     let totalWeeksChecked = 0;
     let weeksOk = 0;
     const auditIssues: { week: string, reasons: string[] }[] = [];
@@ -274,7 +292,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       if (hasHoliday) continue;
 
-      const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays);
+      const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, auditCutoff);
       totalWeeksChecked++;
       if (validation.isValid) {
         weeksOk++;
@@ -295,27 +313,120 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     // Update in local state
     setInstructors(prev => prev.map(i => i.id === inst.id ? { ...i, auditStatus: status, auditJson: JSON.stringify(auditIssues) } : i));
-  }, [instructors, holidays]);
+  }, [instructors, holidays, getAuditCutoffDate]);
+
+  // Guarda un valor en app_settings y lo refleja de inmediato en el estado local.
+  const updateAppSetting = useCallback(async (key: string, value: string) => {
+    const { error } = await supabase.from('app_settings').upsert({ key, value }, { onConflict: 'key' });
+    if (error) throw error;
+    setSettings(prev => ({ ...prev, [key]: value }));
+  }, []);
+
+  // Recalcula la auditoría de TODOS los instructores contra una fecha límite dada, en una
+  // sola pasada indexada (ver businessRules.ts) en vez de repetir un filtro completo de
+  // horarios por instructor. Se usa al cambiar la fecha límite de auditoría desde Avance de
+  // Horarios, para que el cambio se refleje de inmediato en todos los docentes.
+  const recalculateAllInstructorsAudit = useCallback(async (cutoffDate: Date) => {
+    const allCurrentSchedules = [...schedules, ...administrativeTasks];
+    const index = buildInstructorScheduleIndex<ProcessedSchedule>(allCurrentSchedules);
+
+    const weeks: Date[] = [];
+    let current = new Date(SEMESTER_START_DATE);
+    const day = current.getDay();
+    const diff = current.getDate() - day + (day === 0 ? -6 : 1);
+    current.setDate(diff);
+    current.setHours(0, 0, 0, 0);
+    while (current <= cutoffDate) {
+      weeks.push(new Date(current));
+      current.setDate(current.getDate() + 7);
+    }
+
+    const results = instructors
+      .filter(inst => !inst.name.startsWith('INST.'))
+      .map(inst => {
+        const instSchedules = getInstructorSchedules<ProcessedSchedule>(inst, index);
+
+        let totalWeeksChecked = 0;
+        let weeksOk = 0;
+        const auditIssues: { week: string, reasons: string[] }[] = [];
+
+        for (const weekStart of weeks) {
+          let hasHoliday = false;
+          for (let i = 0; i < 7; i++) {
+            const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+            if (holidays.some(h => h.date.toDateString() === d.toDateString())) { hasHoliday = true; break; }
+          }
+          if (hasHoliday) continue;
+
+          const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, cutoffDate);
+          totalWeeksChecked++;
+          if (validation.isValid) {
+            weeksOk++;
+          } else {
+            const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
+            auditIssues.push({ week: weekLabel, reasons: validation.reasons });
+          }
+        }
+
+        const isAuditOk = totalWeeksChecked === 0 || (weeksOk === totalWeeksChecked);
+        const status: 'OK' | 'DEFICIT' | 'PENDING' = isAuditOk ? 'OK' : (auditIssues.length > 0 ? 'DEFICIT' : 'PENDING');
+        return { inst, status, auditJson: JSON.stringify(auditIssues) };
+      });
+
+    const payload = results.map(r => mapInstructorToDB({ ...r.inst, auditStatus: r.status, auditJson: r.auditJson }));
+    const chunkSize = 500;
+    for (let i = 0; i < payload.length; i += chunkSize) {
+      const { error } = await supabase.from('instructors').upsert(payload.slice(i, i + chunkSize));
+      if (error) throw error;
+    }
+
+    const statusMap = new Map<string, { inst: Instructor; status: 'OK' | 'DEFICIT' | 'PENDING'; auditJson: string }>(
+      results.map(r => [r.inst.id, r])
+    );
+    setInstructors(prev => prev.map(i => {
+      const r = statusMap.get(i.id);
+      return r ? { ...i, auditStatus: r.status, auditJson: r.auditJson } : i;
+    }));
+  }, [schedules, administrativeTasks, instructors, holidays]);
 
   /**
-   * Sincroniza el ID del instructor en todos los bloques del archivo base
-   * basándose en coincidencia de nombres (Fuzzy). Esto corrige la "mala mezcla"
-   * de datos cuando se agregan instructores nuevos o se corrigen nombres.
+   * Vincula el ID de un instructor en bloques legados que llegaron SIN id (datos del
+   * Excel antiguos o mal cargados). El ID nunca se reasigna si el bloque YA tiene uno
+   * distinto: eso sería robarle el bloque a otro instructor. Tampoco se vincula si el
+   * nombre del bloque es ambiguo (coincide por fuzzy match con más de un instructor del
+   * catálogo, ej. dos personas con los mismos dos apellidos) — esos casos quedan sin
+   * vincular para que se resuelvan manualmente en vez de asignarlos a ciegas.
    */
   const syncInstructorIdInSchedules = useCallback(async (instructor: Instructor) => {
-    // 1. Encontrar bloques que coincidan por nombre pero tengan ID diferente o vacío
-    const affectedSchedules = [...schedules, ...administrativeTasks].filter(s => {
-      const nameMatch = isFuzzyNameMatch(instructor.name, s.instructor);
-      const idMismatch = s.instructorId !== instructor.id;
-      return nameMatch && idMismatch;
+    // 1. Solo bloques SIN id asignado (nunca tocar uno que ya pertenece a alguien más)
+    const unlinkedCandidates = [...schedules, ...administrativeTasks].filter(s => {
+      const hasNoId = !s.instructorId || s.instructorId.trim() === '';
+      return hasNoId && isFuzzyNameMatch(instructor.name, s.instructor);
     });
 
-    if (affectedSchedules.length === 0) return;
+    if (unlinkedCandidates.length === 0) return;
 
-    console.log(`Syncing ID ${instructor.id} for ${affectedSchedules.length} blocks of ${instructor.name}`);
+    // 2. Descartar los ambiguos: si el nombre del bloque también matchea a OTRO
+    // instructor del catálogo, no hay forma segura de decidir -> se deja pendiente.
+    const safeToLink = unlinkedCandidates.filter(s => {
+      const otherMatches = findFuzzyNameMatches(s.instructor, instructors, instructor.id);
+      if (otherMatches.length > 0) {
+        console.warn(
+          `[Vinculación de instructor] El bloque "${s.courseName}" (${s.id}) con nombre "${s.instructor}" ` +
+          `es ambiguo entre ${instructor.name} y ${otherMatches.map(o => o.name).join(', ')}. ` +
+          `Se deja SIN vincular; asígnalo manualmente para evitar un cruce.`
+        );
+        return false;
+      }
+      return true;
+    });
+
+    if (safeToLink.length === 0) return;
+
+    console.log(`Vinculando ID ${instructor.id} para ${safeToLink.length} bloque(s) sin ID de ${instructor.name}`);
 
     try {
-      const updatedSchedules = affectedSchedules.map(s => ({
+      const updatedSchedules = safeToLink.map(s => ({
         ...s,
         instructor: instructor.name, // Unificamos también el nombre al oficial
         instructorId: instructor.id
@@ -337,7 +448,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (err: any) {
       console.error("Error syncing IDs:", err);
     }
-  }, [schedules, administrativeTasks, recalculateInstructorAudit]);
+  }, [schedules, administrativeTasks, instructors, recalculateInstructorAudit]);
 
   const refreshData = useCallback(async () => {
     setIsLoading(true);
@@ -368,6 +479,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (roomError) throw roomError;
       if (allDbRooms) {
         setRooms(allDbRooms.map(mapRoomFromDB));
+      }
+
+      // Fetch Careers (catálogo cod_carrera -> nombre, usado para derivar la carrera desde el BLOQUE)
+      const { data: allDbCareers, error: careerError } = await supabase.from('careers').select('*');
+      if (careerError) throw careerError;
+      if (allDbCareers) {
+        setCareers(allDbCareers);
       }
 
       // Fetch Instructors
@@ -420,6 +538,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const { data: schedData, error: schedError } = await supabase
           .from('schedules')
           .select('*')
+          .eq('periodo', ACTIVE_PERIODO)
           .range(schedOffset, schedOffset + schedLimit - 1);
         if (schedError) throw schedError;
         if (schedData) {
@@ -483,54 +602,71 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return;
   }, []);
 
-  const updateInstructorAuditStatus = useCallback(async (instructorName: string, status: 'OK' | 'DEFICIT' | 'EXCESS', validationJson: any) => {
-    const instructor = instructors.find(i => i.name === instructorName);
-    if (!instructor) return;
-
-    const { error } = await supabase
-      .from('instructors')
-      .update({
-        audit_status: status,
-        audit_json: validationJson
-      })
-      .eq('id', instructor.id);
-
-    if (error) {
-      console.error("Failed to update audit status cache:", error);
-      return;
-    }
-
-    setInstructors(prev => prev.map(inst => {
-      if (inst.id === instructor.id) {
-        return { ...inst, auditStatus: status, auditJson: JSON.stringify(validationJson) };
-      }
-      return inst;
-    }));
-  }, [instructors]);
-
-  const uploadSchedulesToSupabase = async (data: {
+  const uploadSchedulesToSupabase = useCallback(async (data: {
     schedules: ProcessedSchedule[];
     instructors: Instructor[];
     rooms: RoomData[];
     holidays: HolidayData[];
-  }, mode: 'full' | 'delta' = 'full') => {
+  }, mode: 'full' | 'delta' | 'new_period' = 'full') => {
     setIsLoading(true);
     try {
       // 1. Limpieza de tablas según el modo
+      // Los periodos que trae el archivo que se está cargando (normalmente uno solo,
+      // ej. "202620"). Usamos esto para NUNCA borrar horarios de OTROS periodos
+      // (ej. "202610") al cargar uno nuevo.
+      const periodosDelArchivo = [...new Set(data.schedules.map(s => s.periodo).filter(Boolean))];
+
       if (mode === 'full') {
-        // Reemplazo total
-        await supabase.from('schedules').delete().neq('id', '_root_');
-        await supabase.from('instructors').delete().neq('id', '_root_');
-        await supabase.from('rooms').delete().neq('room_key', '_root_');
-        await supabase.from('holidays').delete().neq('name', '_root_');
+        // Reemplazo total, pero SOLO del/los periodo(s) que trae este archivo.
+        // Instructores/aulas/feriados siguen siendo catálogo compartido entre periodos.
+        if (periodosDelArchivo.length > 0) {
+          await supabase.from('schedules').delete().in('periodo', periodosDelArchivo);
+        } else {
+          // Archivo sin periodo identificado: no hay forma segura de aislar el borrado,
+          // así que no tocamos schedules existentes para no arriesgar otros periodos.
+          console.warn('uploadSchedulesToSupabase(full): el archivo no trae "periodo" en ninguna fila; se omite el borrado de schedules existentes por seguridad.');
+        }
+        // Solo borramos cada catálogo si el archivo efectivamente trae reemplazo para él.
+        // Archivos "solo horarios" (ej. export crudo sin hojas de Aulas/Instructores/Feriados)
+        // NO deben dejar esos catálogos vacíos por venir en modo 'full'.
+        if (data.instructors.length > 0) {
+          await supabase.from('instructors').delete().neq('id', '_root_');
+        } else {
+          console.warn('uploadSchedulesToSupabase(full): el archivo no trae instructores; se omite el borrado del catálogo de instructores.');
+        }
+        if (data.rooms.length > 0) {
+          await supabase.from('rooms').delete().neq('room_key', '_root_');
+        } else {
+          console.warn('uploadSchedulesToSupabase(full): el archivo no trae aulas; se omite el borrado del catálogo de aulas.');
+        }
+        if (data.holidays.length > 0) {
+          await supabase.from('holidays').delete().neq('name', '_root_');
+        } else {
+          console.warn('uploadSchedulesToSupabase(full): el archivo no trae feriados; se omite el borrado del catálogo de feriados.');
+        }
+      } else if (mode === 'new_period') {
+        // Carga de un periodo académico nuevo: reemplaza TODA la programación académica
+        // de ese periodo (a diferencia de delta, no depende de qué NRC trae el archivo,
+        // así que no deja NRC huérfanos de una carga parcial/anterior). Nunca toca
+        // instructores/aulas/feriados ni las tareas administrativas ya creadas para ese periodo.
+        if (periodosDelArchivo.length > 0) {
+          await supabase.from('schedules')
+            .delete()
+            .in('periodo', periodosDelArchivo)
+            .eq('is_administrative', false);
+        } else {
+          console.warn('uploadSchedulesToSupabase(new_period): el archivo no trae "periodo" en ninguna fila; se omite el borrado por seguridad.');
+        }
       } else {
-        // Modo Delta (NRC): Solo borramos los NRCs que vienen en el nuevo archivo
+        // Modo Delta (NRC + Periodo): Solo borramos los NRC de ESE periodo que vienen en el nuevo archivo
         const nrcsToRootOut = [...new Set(data.schedules.map(s => s.nrc).filter(Boolean))];
-        if (nrcsToRootOut.length > 0) {
-          // Solo borramos clases académicas (no administrativas) para esos NRCs
+        if (nrcsToRootOut.length > 0 && periodosDelArchivo.length > 0) {
+          // Solo borramos clases académicas (no administrativas) para esos NRC, y solo
+          // dentro de los periodos del archivo (evita pisar el mismo NRC de otro periodo)
           await supabase.from('schedules')
             .delete()
             .in('nrc', nrcsToRootOut)
+            .in('periodo', periodosDelArchivo)
             .eq('is_administrative', false);
         }
       }
@@ -547,7 +683,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (roomPayload.length > 0) await supabase.from('rooms').upsert(roomPayload);
         if (holidayPayload.length > 0) await supabase.from('holidays').upsert(holidayPayload);
       } else {
-        // En modo delta, solo añadimos instructores/salas si no existen (Upsert por ID/Key)
+        // En modo delta / new_period, solo añadimos instructores/salas si no existen (Upsert por ID/Key)
         if (instPayload.length > 0) await supabase.from('instructors').upsert(instPayload, { onConflict: 'id' });
         if (roomPayload.length > 0) await supabase.from('rooms').upsert(roomPayload, { onConflict: 'room_key' });
         if (holidayPayload.length > 0) await supabase.from('holidays').upsert(holidayPayload, { onConflict: 'name' });
@@ -571,9 +707,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [refreshData]);
 
-  const uploadInstitutionalReference = async (data: InstitutionalReference[]) => {
+  const uploadInstitutionalReference = useCallback(async (data: InstitutionalReference[]) => {
     setIsLoading(true);
     try {
       // Version Local: Guardamos en estado y en LocalStorage para persistencia básica sin BD
@@ -592,9 +728,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const saveScheduleCloud = async (newData: ProcessedSchedule | ProcessedSchedule[]) => {
+  const saveScheduleCloud = useCallback(async (newData: ProcessedSchedule | ProcessedSchedule[]) => {
     // 1. Preparar items y payload
     const items = Array.isArray(newData) ? newData : [newData];
     try {
@@ -634,9 +770,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Error saving to Supabase:", err);
       alert('Error al guardar en la nube: ' + err.message);
     }
-  };
+  }, [schedules, administrativeTasks, recalculateInstructorAudit]);
 
-  const deleteScheduleCloud = async (id: string | string[]) => {
+  const deleteScheduleCloud = useCallback(async (id: string | string[]) => {
     const ids = Array.isArray(id) ? id : [id];
     try {
       const { error } = await supabase.from('schedules').delete().in('id', ids);
@@ -658,9 +794,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Error deleting from Supabase:", err);
       alert('Error al eliminar de la nube: ' + err.message);
     }
-  };
+  }, [schedules, administrativeTasks, recalculateInstructorAudit]);
 
-  const saveInstructorCloud = async (inst: Instructor) => {
+  const saveInstructorCloud = useCallback(async (inst: Instructor) => {
     try {
       const dbInst = mapInstructorToDB(inst);
       const { error } = await supabase.from('instructors').upsert(dbInst);
@@ -685,9 +821,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Error saving instructor to Supabase:", err);
       alert('Error al guardar instructor: ' + err.message);
     }
-  };
+  }, [syncInstructorIdInSchedules]);
 
-  const deleteInstructorCloud = async (id: string) => {
+  const deleteInstructorCloud = useCallback(async (id: string) => {
     try {
       const { error } = await supabase.from('instructors').delete().eq('id', id);
       if (error) throw error;
@@ -697,7 +833,82 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Error deleting instructor from Supabase:", err);
       alert('Error al eliminar instructor: ' + err.message);
     }
-  };
+  }, []);
+
+  // Carga masiva (upsert) de instructores, ej. desde el Excel dedicado de InstructorsPage.
+  // Nunca borra: solo agrega nuevos o actualiza existentes por ID.
+  const bulkUpsertInstructors = useCallback(async (list: Instructor[]) => {
+    if (list.length === 0) return;
+    try {
+      const payload = list.map(mapInstructorToDB);
+      const { error } = await supabase.from('instructors').upsert(payload, { onConflict: 'id' });
+      if (error) throw error;
+
+      setInstructors(prev => {
+        const map = new Map(prev.map(i => [i.id, i]));
+        list.forEach(i => map.set(i.id, i));
+        return Array.from(map.values());
+      });
+    } catch (err: any) {
+      console.error("Error en carga masiva de instructores:", err);
+      alert('Error al cargar instructores: ' + err.message);
+      throw err;
+    }
+  }, []);
+
+  const saveRoomCloud = useCallback(async (room: RoomData) => {
+    try {
+      const dbRoom = mapRoomToDB(room);
+      const { error } = await supabase.from('rooms').upsert(dbRoom, { onConflict: 'room_key' });
+      if (error) throw error;
+
+      setRooms(prev => {
+        const index = prev.findIndex(r => r.roomKey === room.roomKey);
+        if (index >= 0) {
+          const next = [...prev];
+          next[index] = room;
+          return next;
+        }
+        return [...prev, room];
+      });
+    } catch (err: any) {
+      console.error("Error saving room to Supabase:", err);
+      alert('Error al guardar ambiente: ' + err.message);
+    }
+  }, []);
+
+  const deleteRoomCloud = useCallback(async (roomKey: string) => {
+    try {
+      const { error } = await supabase.from('rooms').delete().eq('room_key', roomKey);
+      if (error) throw error;
+
+      setRooms(prev => prev.filter(r => r.roomKey !== roomKey));
+    } catch (err: any) {
+      console.error("Error deleting room from Supabase:", err);
+      alert('Error al eliminar ambiente: ' + err.message);
+    }
+  }, []);
+
+  // Carga masiva (upsert) de aulas, ej. desde el Excel dedicado de RoomsPage.
+  // Nunca borra: solo agrega nuevas o actualiza existentes por roomKey.
+  const bulkUpsertRooms = useCallback(async (list: RoomData[]) => {
+    if (list.length === 0) return;
+    try {
+      const payload = list.map(mapRoomToDB);
+      const { error } = await supabase.from('rooms').upsert(payload, { onConflict: 'room_key' });
+      if (error) throw error;
+
+      setRooms(prev => {
+        const map = new Map(prev.map(r => [r.roomKey, r]));
+        list.forEach(r => map.set(r.roomKey, r));
+        return Array.from(map.values());
+      });
+    } catch (err: any) {
+      console.error("Error en carga masiva de aulas:", err);
+      alert('Error al cargar aulas: ' + err.message);
+      throw err;
+    }
+  }, []);
 
   const saveAttendanceTracking = useCallback(async (instructorId: string, month: number, year: number) => {
     try {
@@ -785,9 +996,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       let adminToClone = administrativeTasks;
 
       if (instructorFilter) {
-        // Filter data for specific instructor
-        schedulesToClone = schedules.filter(s => s.instructor === instructorFilter);
-        adminToClone = administrativeTasks.filter(s => s.instructor === instructorFilter);
+        // Filter data for specific instructor. Buscamos el objeto Instructor real para
+        // poder usar belongsToInstructor (prioriza ID); si no lo encontramos en el
+        // catálogo, caemos a comparación de nombre como último recurso.
+        const instObj = instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter));
+        const matchesFilter = (s: ProcessedSchedule) => instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
+        schedulesToClone = schedules.filter(matchesFilter);
+        adminToClone = administrativeTasks.filter(matchesFilter);
         // Set configuration to ignore audit alerts for this focused simulation
         setSimulationConfig({ instructorFilter, ignoreAudit: true });
       } else {
@@ -850,9 +1065,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // alert(`Curso ${newSchedule.courseCode} importado a ${targetInstructor}`);
   }, [schedules, administrativeTasks, instructors]);
 
+  // La confirmación previa (acción irreversible: escribe en la BD real) vive en el
+  // componente que la dispara — components/SimulationBar.tsx — para poder usar el modal
+  // propio de la app (ConfirmDialog) en vez del window.confirm nativo del navegador.
   const applySimulation = useCallback(async () => {
-    if (!window.confirm("¿Seguro que deseas aplicar los cambios de la simulación a la base de datos real? Esta acción es irreversible.")) return;
-
     setIsLoading(true);
     try {
       // 1. Identify Changes (Diff Logic - simplified: Replace All or Upsert Changed)
@@ -902,7 +1118,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [schedules, administrativeTasks, simulationSchedules, simulationAdmin]);
 
   // Intercept Cloud Functions
-  const saveScheduleCloudWrapper = async (items: ProcessedSchedule | ProcessedSchedule[]) => {
+  const saveScheduleCloudWrapper = useCallback(async (items: ProcessedSchedule | ProcessedSchedule[]) => {
     if (isSimulationMode) {
       const newItems = Array.isArray(items) ? items : [items];
       // Update Simulation State Only
@@ -926,9 +1142,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     // Normal Mode
     return saveScheduleCloud(items);
-  };
+  }, [isSimulationMode, saveScheduleCloud]);
 
-  const deleteScheduleCloudWrapper = async (id: string | string[]) => {
+  const deleteScheduleCloudWrapper = useCallback(async (id: string | string[]) => {
     if (isSimulationMode) {
       const ids = new Set(Array.isArray(id) ? id : [id]);
       setSimulationSchedules(prev => prev.filter(s => !ids.has(s.id)));
@@ -936,7 +1152,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return;
     }
     return deleteScheduleCloud(id);
-  };
+  }, [isSimulationMode, deleteScheduleCloud]);
 
   const saveScenario = useCallback(async (name: string, description: string = '', metadata: any = null) => {
     try {
@@ -1006,6 +1222,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const { data, error } = await supabase
       .from('schedules')
       .select('*')
+      .eq('periodo', ACTIVE_PERIODO)
       .or(`nrc.ilike.%${query}%,course_name.ilike.%${query}%,course_code.ilike.%${query}%`)
       .limit(30);
 
@@ -1049,78 +1266,168 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return [...schedules, ...administrativeTasks];
   }, [schedules, administrativeTasks, isSimulationMode, simulationSchedules, simulationAdmin]);
 
+  // Estado de auditoría EN VIVO por instructor (mismo motor que la grilla y el Reporte
+  // Global — ver services/auditCalculations.ts::calculateWeeklyAudit vía validateInstructorWeek).
+  // Vive aquí en el Provider (que envuelve TODAS las rutas sin desmontarse, ver App.tsx) en
+  // vez de duplicarse en ProgressPanel.tsx y AttendancePage.tsx como antes: así el costo
+  // (~261 instructores × semanas del semestre) se paga UNA vez y sobrevive la navegación
+  // entre "Avance de Horarios" y "Fichas de Asistencia", en vez de recalcularse desde cero
+  // cada vez que se entra a cada pantalla.
+  const liveAuditIndex = React.useMemo(() => buildInstructorScheduleIndex<ProcessedSchedule>(allSchedules), [allSchedules]);
+
+  const liveAuditSemesterWeeks = React.useMemo(() => {
+    const cutoff = getAuditCutoffDate();
+    const weeks: Date[] = [];
+    let current = new Date(SEMESTER_START_DATE);
+    const day = current.getDay();
+    const diff = current.getDate() - day + (day === 0 ? -6 : 1);
+    current.setDate(diff);
+    current.setHours(0, 0, 0, 0);
+    while (current <= cutoff) {
+      weeks.push(new Date(current));
+      current.setDate(current.getDate() + 7);
+    }
+    return weeks;
+  }, [getAuditCutoffDate]);
+
+  const liveAuditByInstructor = React.useMemo(() => {
+    const map = new Map<string, { isAuditOk: boolean; hasData: boolean; issues: { week: string; reasons: string[] }[] }>();
+    const cutoff = getAuditCutoffDate();
+    instructors.forEach(inst => {
+      if (inst.name.startsWith('INST.')) return;
+      const instSchedules = getInstructorSchedules<ProcessedSchedule>(inst, liveAuditIndex);
+      if (instSchedules.length === 0) {
+        map.set(inst.id, { isAuditOk: false, hasData: false, issues: [] });
+        return;
+      }
+
+      let totalWeeksChecked = 0;
+      let weeksOk = 0;
+      const issues: { week: string; reasons: string[] }[] = [];
+
+      for (const weekStart of liveAuditSemesterWeeks) {
+        let hasHoliday = false;
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+          if (holidays.some(h => h.date.toDateString() === d.toDateString())) { hasHoliday = true; break; }
+        }
+        if (hasHoliday) continue;
+
+        const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, cutoff);
+        totalWeeksChecked++;
+        if (validation.isValid) {
+          weeksOk++;
+        } else {
+          const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
+          issues.push({ week: weekLabel, reasons: validation.reasons });
+        }
+      }
+
+      const isAuditOk = totalWeeksChecked === 0 || weeksOk === totalWeeksChecked;
+      map.set(inst.id, { isAuditOk, hasData: true, issues });
+    });
+    return map;
+  }, [instructors, liveAuditIndex, liveAuditSemesterWeeks, holidays, getAuditCutoffDate]);
+
+  // Mapas normalizados para acceso O(1) (antes estaban como useMemo inline dentro del
+  // objeto value, lo que dificultaba memoizar el value completo).
+  const instructorsMap = React.useMemo(() => {
+    const map: Record<string, Instructor> = {};
+    instructors.forEach(inst => { map[inst.id] = inst; });
+    return map;
+  }, [instructors]);
+
+  const instructorsByNameMap = React.useMemo(() => {
+    const map: Record<string, Instructor> = {};
+    instructors.forEach(inst => { map[normalizeNameKey(inst.name)] = inst; });
+    return map;
+  }, [instructors]);
+
+  const roomsMap = React.useMemo(() => {
+    const map: Record<string, RoomData> = {};
+    rooms.forEach(room => { map[room.roomKey] = room; });
+    return map;
+  }, [rooms]);
+
+  const holidaysMap = React.useMemo(() => {
+    const map: Record<string, HolidayData> = {};
+    holidays.forEach(h => { map[h.date.toDateString()] = h; });
+    return map;
+  }, [holidays]);
+
+  const careersMap = React.useMemo(() => {
+    const map: Record<string, string> = {};
+    careers.forEach(c => { map[c.cod_carrera] = c.name; });
+    return map;
+  }, [careers]);
+
+  // Value memoizado: antes se creaba un objeto nuevo en CADA render del Provider, lo que
+  // forzaba re-render de TODOS los consumidores de useData() ante cualquier cambio de
+  // estado interno, aunque el dato que a ese consumidor le importa no hubiera cambiado.
+  const contextValue = React.useMemo(() => ({
+    // If Simulation Mode, we hijack the exposed state so standard components consume the simulation data.
+    schedules: isSimulationMode ? simulationSchedules : schedules,
+    administrativeTasks: isSimulationMode ? simulationAdmin : administrativeTasks,
+    // Provide raw access for search features
+    rawSchedules: schedules,
+    rawAdministrativeTasks: administrativeTasks,
+    searchSchedules,
+
+    rooms, instructors, holidays, institutionalReferences,
+    isLoading, hasInitialData, error,
+
+    setSchedules, setAdministrativeTasks,
+    setRooms, setInstructors, setHolidays,
+    refreshData, uploadSchedulesToSupabase,
+
+    saveScheduleCloud: saveScheduleCloudWrapper,
+    deleteScheduleCloud: deleteScheduleCloudWrapper,
+
+    saveInstructorCloud, deleteInstructorCloud, bulkUpsertInstructors,
+    saveRoomCloud, deleteRoomCloud, bulkUpsertRooms,
+    saveAttendanceTracking, getAttendanceTracking,
+    uploadInstitutionalReference,
+    allSchedules, exportedInstructors, toggleInstructorExported,
+    instructorsMap, instructorsByNameMap, roomsMap, holidaysMap, careersMap,
+    settings,
+    loadSchedulesForFilter,
+    globalSchedulesSummary: isSimulationMode ? allSchedules : globalSchedulesSummary,
+
+    isSimulationMode,
+    simulationConfig,
+    extraHoursConfig,
+    setExtraHoursConfig,
+    startSimulation,
+    endSimulation,
+    importScheduleToSimulation,
+    applySimulation,
+    saveScenario,
+    loadScenario,
+    recalculateInstructorAudit,
+    syncInstructorIdInSchedules,
+    updateAppSetting,
+    recalculateAllInstructorsAudit,
+    getAuditCutoffDate,
+    liveAuditByInstructor
+  }), [
+    isSimulationMode, simulationSchedules, schedules, simulationAdmin, administrativeTasks,
+    searchSchedules, rooms, instructors, holidays, institutionalReferences,
+    isLoading, hasInitialData, error, refreshData, uploadSchedulesToSupabase,
+    saveScheduleCloudWrapper, deleteScheduleCloudWrapper,
+    saveInstructorCloud, deleteInstructorCloud, bulkUpsertInstructors,
+    saveRoomCloud, deleteRoomCloud, bulkUpsertRooms,
+    saveAttendanceTracking, getAttendanceTracking, uploadInstitutionalReference,
+    allSchedules, exportedInstructors, toggleInstructorExported,
+    instructorsMap, instructorsByNameMap, roomsMap, holidaysMap, careersMap,
+    settings, loadSchedulesForFilter, globalSchedulesSummary,
+    simulationConfig, extraHoursConfig, startSimulation, endSimulation,
+    importScheduleToSimulation, applySimulation, saveScenario, loadScenario,
+    recalculateInstructorAudit, syncInstructorIdInSchedules, updateAppSetting,
+    recalculateAllInstructorsAudit, getAuditCutoffDate, liveAuditByInstructor
+  ]);
+
   return (
-    <DataContext.Provider value={{
-      // If Simulation Mode, we hijack the exposed state so standard components consume the simulation data.
-      schedules: isSimulationMode ? simulationSchedules : schedules,
-      administrativeTasks: isSimulationMode ? simulationAdmin : administrativeTasks,
-      // Provide raw access for search features
-      rawSchedules: schedules,
-      rawAdministrativeTasks: administrativeTasks,
-      searchSchedules,
-
-      rooms, instructors, holidays, institutionalReferences,
-      isLoading, hasInitialData, error,
-
-      // We pass the SETTERS for real state, but components usually use the cloud wrappers.
-      // If a component calls setSchedules directly, it updates the REAL state in memory only (UI updates), 
-      // but usually 'saveScheduleCloud' handles persistence.
-      // Ideally, we should wrap setters too or instruct components to use cloud functions.
-      // For now, let's keep setters as is (they are mostly used for internal refresh), 
-      // but 'refreshData' overwrites them.
-      setSchedules, setAdministrativeTasks,
-
-      setRooms, setInstructors, setHolidays,
-      refreshData, uploadSchedulesToSupabase,
-
-      saveScheduleCloud: saveScheduleCloudWrapper,
-      deleteScheduleCloud: deleteScheduleCloudWrapper,
-
-      saveInstructorCloud, deleteInstructorCloud, updateInstructorAuditStatus,
-      saveAttendanceTracking, getAttendanceTracking,
-      uploadInstitutionalReference,
-      allSchedules, exportedInstructors, toggleInstructorExported,
-      // Estados normalizados para acceso O(1)
-      instructorsMap: React.useMemo(() => {
-        const map: Record<string, Instructor> = {};
-        instructors.forEach(inst => { map[inst.id] = inst; });
-        return map;
-      }, [instructors]),
-      instructorsByNameMap: React.useMemo(() => {
-        const map: Record<string, Instructor> = {};
-        const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-        instructors.forEach(inst => {
-          map[normalize(inst.name)] = inst;
-        });
-        return map;
-      }, [instructors]),
-      roomsMap: React.useMemo(() => {
-        const map: Record<string, RoomData> = {};
-        rooms.forEach(room => { map[room.roomKey] = room; });
-        return map;
-      }, [rooms]),
-      holidaysMap: React.useMemo(() => {
-        const map: Record<string, HolidayData> = {};
-        holidays.forEach(h => { map[h.date.toDateString()] = h; });
-        return map;
-      }, [holidays]),
-      settings,
-      loadSchedulesForFilter,
-      globalSchedulesSummary: isSimulationMode ? allSchedules : globalSchedulesSummary,
-
-      isSimulationMode,
-      simulationConfig,
-      extraHoursConfig,
-      setExtraHoursConfig,
-      startSimulation,
-      endSimulation,
-      importScheduleToSimulation,
-      applySimulation,
-      saveScenario,
-      loadScenario,
-      recalculateInstructorAudit,
-      syncInstructorIdInSchedules
-    }}>
+    <DataContext.Provider value={contextValue}>
       {children}
     </DataContext.Provider>
   );

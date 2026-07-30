@@ -40,8 +40,8 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
 
   // --- Custom Hooks ---
   // --- Custom Hooks ---
-  const { auditData, stats, semesterRange } = useAuditReport(schedules, instructors, holidays, holidaysMap);
-  const { conflictData } = useConflictReport(schedules, semesterRange, holidaysMap);
+  const { auditData, stats, semesterRange } = useAuditReport(schedules, instructors, holidays);
+  const { conflictData } = useConflictReport(schedules, semesterRange, holidaysMap, instructors);
 
   const { reconciliationResults } = useReconciliationReport(schedules, institutionalReferences, true);
 

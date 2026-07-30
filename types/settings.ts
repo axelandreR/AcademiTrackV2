@@ -5,8 +5,12 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
-    semester_start_date: '2026-02-16',
-    semester_end_date: '2026-07-26',
-    planning_cutoff_date: '2025-12-07',
-    days_of_week: 'LUNES,MARTES,MIERCOLES,JUEVES,VIERNES,SABADO'
+    semester_start_date: '2026-08-17',
+    semester_end_date: '2027-01-17',
+    days_of_week: 'LUNES,MARTES,MIERCOLES,JUEVES,VIERNES,SABADO',
+    // Hasta dónde se exige horario completo para marcar auditoría "OK" (Avance de
+    // Horarios). Editable desde el ícono de ajustes de ese panel; este valor solo
+    // aplica como respaldo si la tabla app_settings todavía no tiene una fila para
+    // esta clave.
+    audit_validation_cutoff_date: '2027-01-17'
 };

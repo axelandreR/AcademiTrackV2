@@ -1,16 +1,65 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MapPin, Search, ArrowLeft, Plus, Edit2, Trash2, X } from 'lucide-react';
+import { MapPin, Search, ArrowLeft, Plus, Edit2, Trash2, X, Upload, FileText, CheckCircle } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { RoomData } from '../types';
+import { parseRoomsFile } from '../services/excelParser';
+import { generateAulaTemplate } from '../services/templateGenerator';
+import ConfirmDialog from '../components/ConfirmDialog';
 
 const RoomsPage: React.FC = () => {
     const navigate = useNavigate();
-    const { rooms, setRooms } = useData();
+    const { rooms, saveRoomCloud, deleteRoomCloud, bulkUpsertRooms } = useData();
 
     const [managementSearch, setManagementSearch] = useState('');
     const [isManagementModalOpen, setIsManagementModalOpen] = useState(false);
     const [editingItem, setEditingItem] = useState<RoomData | null>(null);
+
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [isUploading, setIsUploading] = useState(false);
+    const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
+    const [pendingDeleteKey, setPendingDeleteKey] = useState<string | null>(null);
+    const [uploadResult, setUploadResult] = useState<string | null>(null);
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = '';
+
+        setIsUploading(true);
+        setUploadResult(null);
+        try {
+            const parsed = await parseRoomsFile(file);
+            if (parsed.length === 0) {
+                setUploadResult('No se detectaron aulas válidas en el archivo.');
+            } else {
+                await bulkUpsertRooms(parsed);
+                setUploadResult(`${parsed.length} aula(s) agregada(s)/actualizada(s) correctamente.`);
+            }
+        } catch (err: any) {
+            console.error(err);
+            setUploadResult('Error al procesar el archivo: ' + (err.message || 'formato inválido'));
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    const handleDownloadTemplate = async () => {
+        setIsDownloadingTemplate(true);
+        try {
+            const blob = await generateAulaTemplate();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'AcademiTrack_Plantilla_Aulas.xlsx';
+            a.click();
+            window.URL.revokeObjectURL(url);
+        } catch (e: any) {
+            alert('Error al generar la plantilla: ' + e.message);
+        } finally {
+            setIsDownloadingTemplate(false);
+        }
+    };
 
     const filteredRooms = useMemo(() =>
         rooms.filter(r =>
@@ -34,19 +83,11 @@ const RoomsPage: React.FC = () => {
             capacity: Number(formData.get('capacity')),
         };
 
-        if (editingItem) {
-            setRooms(prev => prev.map(i => i.roomKey === editingItem.roomKey ? newRoom : i));
-        } else {
-            setRooms(prev => [...prev, newRoom]);
-        }
+        saveRoomCloud(newRoom);
         setIsManagementModalOpen(false);
     };
 
-    const handleDelete = (key: string) => {
-        if (window.confirm('¿Está seguro de eliminar este ambiente?')) {
-            setRooms(prev => prev.filter(r => r.roomKey !== key));
-        }
-    };
+    const handleDelete = (key: string) => setPendingDeleteKey(key);
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col h-screen overflow-hidden">
@@ -73,6 +114,21 @@ const RoomsPage: React.FC = () => {
                             className="pl-10 pr-4 py-2 bg-slate-100 border-none rounded-xl text-sm font-bold w-64 focus:ring-2 focus:ring-slate-400"
                         />
                     </div>
+                    <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".xlsx, .xls" className="hidden" />
+                    <button
+                        onClick={handleDownloadTemplate}
+                        disabled={isDownloadingTemplate}
+                        className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest hover:border-orange-400 hover:text-orange-600 transition-all disabled:opacity-50"
+                    >
+                        <FileText size={16} /><span>{isDownloadingTemplate ? 'Generando...' : 'Plantilla'}</span>
+                    </button>
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isUploading}
+                        className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest hover:border-orange-400 hover:text-orange-600 transition-all disabled:opacity-50"
+                    >
+                        <Upload size={16} /><span>{isUploading ? 'Cargando...' : 'Cargar Excel'}</span>
+                    </button>
                     <button
                         onClick={() => { setEditingItem(null); setIsManagementModalOpen(true); }}
                         className="flex items-center space-x-2 px-6 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all"
@@ -81,6 +137,15 @@ const RoomsPage: React.FC = () => {
                     </button>
                 </div>
             </header>
+
+            {uploadResult && (
+                <div className="px-8 pt-4">
+                    <div className="flex items-center justify-between px-6 py-3 bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-2xl text-xs font-bold">
+                        <div className="flex items-center space-x-2"><CheckCircle size={16} /><span>{uploadResult}</span></div>
+                        <button onClick={() => setUploadResult(null)} className="text-emerald-400 hover:text-emerald-700"><X size={16} /></button>
+                    </div>
+                </div>
+            )}
 
             <main className="flex-1 overflow-auto p-8">
                 <div className="bg-white rounded-[32px] shadow-2xl border border-slate-100 overflow-hidden">
@@ -145,6 +210,19 @@ const RoomsPage: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            <ConfirmDialog
+                isOpen={pendingDeleteKey !== null}
+                title="Eliminar ambiente"
+                message="Se eliminará este ambiente del catálogo de forma permanente. Los horarios que lo usan no se borran, pero quedarán apuntando a un ambiente inexistente."
+                confirmLabel="Eliminar"
+                variant="danger"
+                onCancel={() => setPendingDeleteKey(null)}
+                onConfirm={() => {
+                    if (pendingDeleteKey) deleteRoomCloud(pendingDeleteKey);
+                    setPendingDeleteKey(null);
+                }}
+            />
         </div>
     );
 };

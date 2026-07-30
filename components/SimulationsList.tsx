@@ -4,12 +4,14 @@ import { Scenario } from '../types';
 import { supabase } from '../supabaseClient';
 import { Play, Trash2, Calendar, FileText } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
+import ConfirmDialog from './ConfirmDialog';
 
 const SimulationsList: React.FC = () => {
     const { loadScenario } = useData();
     const [scenarios, setScenarios] = useState<Scenario[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [_, setSearchParams] = useSearchParams();
+    const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
     const fetchScenarios = async () => {
         setIsLoading(true);
@@ -32,10 +34,15 @@ const SimulationsList: React.FC = () => {
         fetchScenarios();
     }, []);
 
-    const handleDelete = async (id: string, e: React.MouseEvent) => {
+    const handleDelete = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
-        if (!window.confirm('¿Estás seguro de que quieres eliminar esta simulación?')) return;
+        setPendingDeleteId(id);
+    };
 
+    const confirmDelete = async () => {
+        const id = pendingDeleteId;
+        setPendingDeleteId(null);
+        if (!id) return;
         try {
             const { error } = await supabase.from('scenarios').delete().eq('id', id);
             if (error) throw error;
@@ -132,6 +139,16 @@ const SimulationsList: React.FC = () => {
                     </div>
                 )}
             </div>
+
+            <ConfirmDialog
+                isOpen={pendingDeleteId !== null}
+                title="Eliminar simulación"
+                message="Se eliminará este escenario guardado de forma permanente. No afecta la programación real."
+                confirmLabel="Eliminar"
+                variant="danger"
+                onCancel={() => setPendingDeleteId(null)}
+                onConfirm={confirmDelete}
+            />
         </div>
     );
 };

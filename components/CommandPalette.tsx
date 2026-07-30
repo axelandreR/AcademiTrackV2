@@ -14,6 +14,7 @@ export interface SearchItem {
     type: 'instructor' | 'room' | 'block' | 'nrc' | 'audit';
     viewType?: ViewType;
     filterValue?: string;
+    instructorId?: string; // Solo para type 'instructor'/'nrc' — ID real del instructor
     auditStatus?: 'deficit' | 'excess' | 'perfect';
 }
 
@@ -58,7 +59,8 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({
                 description: `${inst.type} | ${inst.specialty}`,
                 type: 'instructor',
                 viewType: 'Instructor',
-                filterValue: inst.name
+                filterValue: inst.name,
+                instructorId: inst.id
             });
         });
 
@@ -109,7 +111,8 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({
                     description: `${s.courseName} | ${s.instructor}`,
                     type: 'nrc',
                     viewType: 'Instructor',
-                    filterValue: s.instructor
+                    filterValue: s.instructor,
+                    instructorId: s.instructorId
                 });
             }
         });

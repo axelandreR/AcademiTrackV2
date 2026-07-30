@@ -3,16 +3,21 @@ import { useSearchParams } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { Play, Save, X, CheckCheck, AlertTriangle, Clock } from 'lucide-react';
 import ExtraHoursModal from './ExtraHoursModal';
+import ConfirmDialog from './ConfirmDialog';
 
 const SimulationBar: React.FC = () => {
     const { isSimulationMode, endSimulation, applySimulation, saveScenario, extraHoursConfig, setExtraHoursConfig, holidays, simulationConfig } = useData();
     const [isApplying, setIsApplying] = useState(false);
     const [isExtraHoursModalOpen, setIsExtraHoursModalOpen] = useState(false);
+    const [isApplyConfirmOpen, setIsApplyConfirmOpen] = useState(false);
     const [searchParams] = useSearchParams();
 
     if (!isSimulationMode) return null;
 
-    const handleApply = async () => {
+    const handleApply = () => setIsApplyConfirmOpen(true);
+
+    const confirmApply = async () => {
+        setIsApplyConfirmOpen(false);
         setIsApplying(true);
         await applySimulation();
         setIsApplying(false);
@@ -90,6 +95,16 @@ const SimulationBar: React.FC = () => {
                 onSave={(config) => setExtraHoursConfig(config)}
                 holidays={holidays}
                 instructorName={simulationConfig?.instructorFilter}
+            />
+
+            <ConfirmDialog
+                isOpen={isApplyConfirmOpen}
+                title="Aplicar simulación"
+                message="Se escribirán los cambios de la simulación en la base de datos real. Esta acción es irreversible."
+                confirmLabel="Aplicar cambios"
+                variant="danger"
+                onCancel={() => setIsApplyConfirmOpen(false)}
+                onConfirm={confirmApply}
             />
         </div>
     );

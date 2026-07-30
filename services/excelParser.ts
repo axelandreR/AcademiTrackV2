@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import { ProcessedSchedule, RoomData, Instructor, HolidayData, InstitutionalReference, ScheduleCategory, ModalityType } from '../types';
-import { COLORS, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
+import { COLORS, SEMESTER_START_DATE, SEMESTER_END_DATE, ACTIVE_PERIODO } from '../constants';
 
 export interface ParseResult {
   schedules: ProcessedSchedule[];
@@ -33,7 +33,49 @@ const mapFuzzy = (obj: any, candidates: string[]) => {
   return undefined;
 };
 
-export const parseExcelFile = async (file: File): Promise<ParseResult> => {
+// Fallback por patrón: algunos exports traen encabezados con encoding roto
+// (ej. "DESCRIPCI<REPLACEMENT_CHAR>N_CURSO" en vez de "DESCRIPCIÓN_CURSO"), donde el
+// caracter con tilde llegó como U+FFFD y mapFuzzy (que solo quita tildes válidas) no
+// puede reconocerlo. El '.' del regex matchea cualquier caracter en esa posición.
+const mapFuzzyLoose = (obj: any, pattern: RegExp) => {
+  for (const key in obj) {
+    if (pattern.test(key)) return obj[key];
+  }
+  return undefined;
+};
+
+const mapRoomRow = (r: any): RoomData => ({
+  career: String(mapFuzzy(r, ['CARRERA']) || ''),
+  roomKey: `${String(mapFuzzy(r, ['EDIF']) || '').trim()} - ${String(mapFuzzy(r, ['AULA']) || '').trim()}`,
+  building: String(mapFuzzy(r, ['EDIF']) || ''),
+  room: String(mapFuzzy(r, ['AULA']) || ''),
+  description: String(mapFuzzy(r, ['DESCRIPCION_ACTUAL', 'DESCRIPCION']) || ''),
+  type: String(mapFuzzy(r, ['TIPO']) || 'SIN TIPO').trim().toUpperCase(),
+  capacity: Number(mapFuzzy(r, ['AFORO', 'CAPACIDAD']) || 0)
+});
+
+const mapInstructorRow = (i: any): Instructor => {
+  const tipoRaw = String(mapFuzzy(i, ['TIPO']) || '').toUpperCase();
+  return {
+    id: String(mapFuzzy(i, ['ID', 'CODIGO']) || ''),
+    name: normalizeName(String(mapFuzzy(i, ['TRABAJADOR', 'NOMBRE', 'INSTRUCTOR', 'DOCENTE']) || '')),
+    type: (tipoRaw.includes('TC') || tipoRaw.includes('COMPLETO')) ? 'TC' : 'TP',
+    maxHours: Number(mapFuzzy(i, ['HORAS_MAX', 'META']) || 0),
+    specialty: String(mapFuzzy(i, ['ESPECIALIDAD']) || 'General'),
+    campus: String(mapFuzzy(i, ['SEDE', 'CAMPUS']) || 'N/A'),
+    status: String(mapFuzzy(i, ['ESTADO']) || 'Activo')
+  };
+};
+
+// El código de programa (ej. "NAED") viene embebido en el BLOQUE como
+// [2 dígitos de sede][4 letras de cod_carrera][resto], ej. "06NAEDE201" -> "NAED".
+// Se usa quando el archivo no trae una columna CARRERA explícita.
+const extractCodCarreraFromBloque = (bloque: string, careersMap: Record<string, string>): string => {
+  const candidate = (bloque || '').trim().slice(2, 6).toUpperCase();
+  return careersMap[candidate] !== undefined ? candidate : '';
+};
+
+export const parseExcelFile = async (file: File, careersMap: Record<string, string> = {}): Promise<ParseResult> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -51,15 +93,7 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
         let rooms: RoomData[] = [];
         if (roomSheetName) {
           const roomJson = XLSX.utils.sheet_to_json<any>(workbook.Sheets[roomSheetName], { defval: null });
-          rooms = roomJson.map(r => ({
-            career: String(mapFuzzy(r, ['CARRERA']) || ''),
-            roomKey: `${String(mapFuzzy(r, ['EDIF']) || '').trim()} - ${String(mapFuzzy(r, ['AULA']) || '').trim()}`,
-            building: String(mapFuzzy(r, ['EDIF']) || ''),
-            room: String(mapFuzzy(r, ['AULA']) || ''),
-            description: String(mapFuzzy(r, ['DESCRIPCION_ACTUAL', 'DESCRIPCION']) || ''),
-            type: String(mapFuzzy(r, ['TIPO']) || 'SIN TIPO').trim().toUpperCase(),
-            capacity: Number(mapFuzzy(r, ['AFORO', 'CAPACIDAD']) || 0)
-          }));
+          rooms = roomJson.map(mapRoomRow);
         }
 
         // 3. Instructores
@@ -67,18 +101,7 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
         let instructors: Instructor[] = [];
         if (instSheetName) {
           const instJson = XLSX.utils.sheet_to_json<any>(workbook.Sheets[instSheetName], { defval: null });
-          instructors = instJson.map(i => {
-            const tipoRaw = String(mapFuzzy(i, ['TIPO']) || '').toUpperCase();
-            return {
-              id: String(mapFuzzy(i, ['ID', 'CODIGO']) || ''),
-              name: normalizeName(String(mapFuzzy(i, ['TRABAJADOR', 'NOMBRE', 'INSTRUCTOR', 'DOCENTE']) || '')),
-              type: (tipoRaw.includes('TC') || tipoRaw.includes('COMPLETO')) ? 'TC' : 'TP',
-              maxHours: Number(mapFuzzy(i, ['HORAS_MAX', 'META']) || 0),
-              specialty: String(mapFuzzy(i, ['ESPECIALIDAD']) || 'General'),
-              campus: String(mapFuzzy(i, ['SEDE', 'CAMPUS']) || 'N/A'),
-              status: String(mapFuzzy(i, ['ESTADO']) || 'Activo')
-            };
-          });
+          instructors = instJson.map(mapInstructorRow);
         }
 
         // 4. Feriados
@@ -139,27 +162,41 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
           }
 
           const nrcValue = String(mapFuzzy(item, ['SECCION', 'NRC', 'ID_NRC', 'SEC', 'ID_SECCION']) || '-');
+          const periodoValue = String(mapFuzzy(item, ['PERIODO', 'CICLO']) || 'SIN_PERIODO');
 
-          // Generar ID determinístico basado en NRC para evitar conflictos en Delta Updates
-          const currentCount = nrcSessionCounter.get(nrcValue) || 0;
-          nrcSessionCounter.set(nrcValue, currentCount + 1);
-          const stableId = `sched-${nrcValue}-${currentCount}`;
+          // Generar ID determinístico basado en PERIODO+NRC para evitar conflictos en Delta
+          // Updates Y para que dos periodos distintos (ej. 202610 y 202620) nunca generen
+          // el mismo id y se pisen entre sí en el upsert.
+          const counterKey = `${periodoValue}-${nrcValue}`;
+          const currentCount = nrcSessionCounter.get(counterKey) || 0;
+          nrcSessionCounter.set(counterKey, currentCount + 1);
+          const stableId = `sched-${periodoValue}-${nrcValue}-${currentCount}`;
+
+          const bloqueValue = String(mapFuzzy(item, ['BLOQUE', 'GRUPO']) || '');
+          const rawCareer = String(mapFuzzy(item, ['CARRERA', 'PROGRAMA', 'DEPT']) || '');
+          // Si el archivo no trae CARRERA explícita (ej. export crudo de un solo sheet),
+          // la derivamos del código de programa embebido en el BLOQUE.
+          const codCarrera = rawCareer ? '' : extractCodCarreraFromBloque(bloqueValue, careersMap);
+          const career = rawCareer || (codCarrera ? (careersMap[codCarrera] || codCarrera) : '');
 
           return {
             id: stableId,
             courseCode: String(mapFuzzy(item, ['CODIGO', 'CURSO_ID', 'MAT-CUR', 'MAT_CUR', 'MATRICULA_CURSO']) || ''),
-            courseName: String(mapFuzzy(item, ['DESCRIPCION_CURSO', 'MATERIA', 'CURSO']) || ''),
-            activity: String(mapFuzzy(item, ['ACTIVIDAD', 'TIPO_ACT']) || ''),
+            courseName: String(
+              mapFuzzy(item, ['DESCRIPCION_CURSO', 'MATERIA', 'CURSO']) ||
+              mapFuzzyLoose(item, /^DESCRIPCI.N_CURSO$/i) || ''
+            ),
+            activity: String(mapFuzzy(item, ['ACTIVIDAD', 'TIPO_ACT', 'TIPO']) || ''),
             meetingType: String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || ''),
-            block: String(mapFuzzy(item, ['BLOQUE', 'GRUPO']) || ''),
+            block: bloqueValue,
             instructor: normalizeName(String(mapFuzzy(item, ['INSTRUCTOR', 'DOCENTE', 'TRABAJADOR']) || '')),
             instructorId: String(mapFuzzy(item, ['ID_INST', 'DOCENTE_ID', 'ID', 'ID DOCENTE', 'CODIGO DOCENTE', 'ID_DOCENTE']) || '').trim(),
             room: String(mapFuzzy(item, ['SALON', 'AULA', 'AMBIENTE']) || ''),
             building: String(mapFuzzy(item, ['EDIFICIO', 'EDIF']) || ''),
             days, startTime, endTime, startDate, endDate,
-            career: String(mapFuzzy(item, ['CARRERA', 'PROGRAMA', 'DEPT']) || ''),
+            career, codCarrera,
             nrc: nrcValue, color: getOrCreateColor(nrcValue),
-            weeklyHours, aforo: parseNumberRobust(mapFuzzy(item, ['AFORO', 'CAPACIDAD'])),
+            weeklyHours, aforo: parseNumberRobust(mapFuzzy(item, ['AFORO', 'CAPACIDAD', 'CAPACIDAD_NRC'])),
             periodo: String(mapFuzzy(item, ['PERIODO', 'CICLO']) || ''),
             semestre: String(mapFuzzy(item, ['SEMESTRE', 'NIVEL']) || ''),
             modality: (String(mapFuzzy(item, ['TIPO_REUNION', 'MODALIDAD']) || '').toUpperCase().includes('VIRTUAL') ||
@@ -174,6 +211,49 @@ export const parseExcelFile = async (file: File): Promise<ParseResult> => {
 
 
         resolve({ schedules, rooms, instructors, holidays });
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+/**
+ * Parsea un Excel dedicado exclusivamente al catálogo de Instructores (usado desde
+ * InstructorsPage). Toma la hoja cuyo nombre contenga "instructor"/"docente", o si no
+ * encuentra ninguna, la primera hoja del libro.
+ */
+export const parseInstructorsFile = async (file: File): Promise<Instructor[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: false });
+        const sheetName = workbook.SheetNames.find(name => normalizeKey(name).includes('instructor') || normalizeKey(name).includes('docente')) || workbook.SheetNames[0];
+        const json = XLSX.utils.sheet_to_json<any>(workbook.Sheets[sheetName], { defval: null });
+        resolve(json.map(mapInstructorRow).filter(i => i.id && i.name));
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+/**
+ * Parsea un Excel dedicado exclusivamente al catálogo de Aulas (usado desde RoomsPage).
+ * Toma la hoja "aula"/"ambiente", o si no encuentra ninguna, la primera hoja del libro.
+ */
+export const parseRoomsFile = async (file: File): Promise<RoomData[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: false });
+        const sheetName = workbook.SheetNames.find(name => normalizeKey(name) === 'aula' || normalizeKey(name).includes('ambiente')) || workbook.SheetNames[0];
+        const json = XLSX.utils.sheet_to_json<any>(workbook.Sheets[sheetName], { defval: null });
+        resolve(json.map(mapRoomRow).filter(r => r.building && r.room));
       } catch (err) { reject(err); }
     };
     reader.onerror = (err) => reject(err);
@@ -513,7 +593,7 @@ export const parseAdminTasksRecovery = async (file: File): Promise<ProcessedSche
             color: 'slate',
             weeklyHours: (days.length * (timeToMinRecovery(endTime) - timeToMinRecovery(startTime))) / 60,
             aforo: 0,
-            periodo: 'RECUPERADO',
+            periodo: ACTIVE_PERIODO,
             semestre: '',
             isAdministrative: true,
             category: finalCategory,
@@ -731,7 +811,7 @@ export const parseScheduleRecovery = async (file: File): Promise<ProcessedSchedu
                 color: 'slate',
                 weeklyHours: (task.days.length * (timeToMinRecovery(task.endTime) - timeToMinRecovery(task.startTime))) / 60,
                 aforo: 0,
-                periodo: 'RECUPERADO',
+                periodo: ACTIVE_PERIODO,
                 semestre: '',
                 isAdministrative: true,
                 category: task.category,

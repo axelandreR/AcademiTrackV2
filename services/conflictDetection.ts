@@ -1,7 +1,8 @@
 
-import { ProcessedSchedule, HolidayData, ReconciliationResult, InstitutionalReference } from '../types';
+import { ProcessedSchedule, HolidayData, ReconciliationResult, InstitutionalReference, Instructor } from '../types';
 import { timeToMinutes } from '../utils/timeUtils';
 import { SEMESTER_END_DATE } from '../constants';
+import { buildInstructorScheduleIndex, getInstructorSchedules } from './businessRules';
 
 export interface Conflict {
     type: 'instructor' | 'room';
@@ -17,17 +18,42 @@ export interface Conflict {
 export const detectConflicts = (
     schedules: ProcessedSchedule[],
     semesterRange: { start: Date; end: Date },
-    holidaysMap: Record<string, HolidayData>
+    holidaysMap: Record<string, HolidayData>,
+    instructors: Instructor[] = []
 ): Conflict[] => {
     const conflicts: Conflict[] = [];
     const instGroups = new Map<string, ProcessedSchedule[]>();
     const roomGroups = new Map<string, ProcessedSchedule[]>();
 
+    // Agrupamos por identidad real del instructor usando el índice O(n) instructorId->horarios
+    // (ver businessRules.ts), no por el texto crudo de `instructor`. Si no, un mismo docente
+    // con dos bloques escritos distinto en el Excel (ej. "MENDIETA ALARCON LUIS OSCAR" vs
+    // "MENDIETA ALARCON, LUIS", ambos con el mismo ID) cae en dos grupos separados y un
+    // choque real de horario entre ambos nunca se detecta. Antes esto hacía
+    // instructors.find(...) DENTRO de un forEach de horarios (O(instructores × horarios),
+    // ~890k comparaciones con los volúmenes reales) — confirmado como una causa real de
+    // lentitud en "Reporte Global".
+    const relevantSchedules = schedules.filter(s => s.instructor && s.instructor !== 'Sin asignar');
+    const scheduleIndex = buildInstructorScheduleIndex<ProcessedSchedule>(relevantSchedules);
+    const claimed = new Set<ProcessedSchedule>();
+
+    instructors.forEach(meta => {
+        const matches = getInstructorSchedules<ProcessedSchedule>(meta, scheduleIndex);
+        if (matches.length === 0) return;
+        matches.forEach(s => claimed.add(s));
+        instGroups.set(`id:${meta.id}`, matches);
+    });
+
+    // Horarios con nombre pero que no matchean (ni por ID ni por nombre fuzzy) a ningún
+    // instructor del catálogo: se agrupan por su propio texto, igual que antes.
+    relevantSchedules.forEach(s => {
+        if (claimed.has(s)) return;
+        const key = `name:${s.instructor}`;
+        if (!instGroups.has(key)) instGroups.set(key, []);
+        instGroups.get(key)!.push(s);
+    });
+
     schedules.forEach(s => {
-        if (s.instructor && s.instructor !== 'Sin asignar') {
-            if (!instGroups.has(s.instructor)) instGroups.set(s.instructor, []);
-            instGroups.get(s.instructor)!.push(s);
-        }
         if (s.room && s.room !== 'POR ASIGNAR') {
             // Administrative tasks do NOT generate room conflicts (no physical room)
             if (s.isAdministrative) return;
@@ -152,7 +178,12 @@ export const detectConflicts = (
         }
     };
 
-    instGroups.forEach((list, instructor) => findOverlap(list, 'instructor', instructor));
+    instGroups.forEach((list) => {
+        // Nombre a mostrar: preferimos el más largo/completo del grupo (suele ser el
+        // nombre "oficial" del catálogo en vez de una variante abreviada del Excel).
+        const displayName = list.reduce((longest, s) => (s.instructor || '').length > longest.length ? s.instructor : longest, '');
+        findOverlap(list, 'instructor', displayName);
+    });
     roomGroups.forEach((list, room) => findOverlap(list, 'room', room));
     return conflicts;
 };

@@ -6,16 +6,18 @@ import { ProcessedSchedule, ScheduleCategory, ModalityType, ExportConfig, ViewTy
 import { generateScheduleExcel, generateAdminTasksExcel } from '../services/excelExporter';
 import { CUT_OFF_DATE, SEMESTER_END_DATE } from '../constants';
 import { timeToMinutes } from '../utils/timeUtils';
+import { belongsToInstructor, resolveInstructorByName } from '../services/businessRules';
 
 export const useScheduleActions = (
     currentWeekStart: Date,
     selectedFilter: string,
     viewType: ViewType,
     setIsExportModalOpen: (open: boolean) => void,
-    checkInstructorDiscrepancy: (name: string) => boolean
+    checkInstructorDiscrepancy: (name: string, id?: string) => boolean,
+    selectedInstructorId?: string
 ) => {
     const {
-        allSchedules, administrativeTasks, instructorsByNameMap, holidays,
+        allSchedules, administrativeTasks, instructorsByNameMap, instructorsMap, instructors, holidays,
         saveScheduleCloud, deleteScheduleCloud, isSimulationMode, extraHoursConfig
     } = useData();
 
@@ -23,7 +25,7 @@ export const useScheduleActions = (
 
     const handleExport = async (config: ExportConfig) => {
         // En simulación permitimos exportar con discrepancias
-        if (!isSimulationMode && config.type === 'Instructor' && config.mode === 'individual' && config.selectedItem && checkInstructorDiscrepancy(config.selectedItem)) {
+        if (!isSimulationMode && config.type === 'Instructor' && config.mode === 'individual' && config.selectedItem && checkInstructorDiscrepancy(config.selectedItem, config.selectedItemId)) {
             alert('ERROR: Horario con discrepancia de carga. Corrija las observaciones antes de exportar.');
             return;
         }
@@ -33,10 +35,14 @@ export const useScheduleActions = (
             const zip = new JSZip();
             if (config.mode === 'individual') {
                 const item = config.selectedItem || '';
+                // El ID (cuando lo trae el ExportModal) manda sobre el nombre.
+                const resolvedInstructor = config.type === 'Instructor'
+                    ? (config.selectedItemId ? instructorsMap[config.selectedItemId] : resolveInstructorByName(item, instructorsByNameMap, instructors))
+                    : undefined;
                 const itemData = allSchedules.filter(s => {
                     if (config.type === 'Bloque') return s.block === item;
                     if (config.type === 'Aula') return `${s.building} - ${s.room}` === item;
-                    if (config.type === 'Instructor') return s.instructor === item;
+                    if (config.type === 'Instructor') return resolvedInstructor ? belongsToInstructor(resolvedInstructor, s) : s.instructor === item;
                     return false;
                 });
                 console.log("EXPORT DEBUG: itemData", itemData);
@@ -47,7 +53,7 @@ export const useScheduleActions = (
                     scope: config.scope,
                     customStartDate: config.customStartDate,
                     customEndDate: config.customEndDate,
-                    instructorInfo: instructorsByNameMap[item.toLowerCase()],
+                    instructorInfo: resolvedInstructor,
                     logo: config.logo,
                     holidays,
                     extraHoursConfig: isSimulationMode ? extraHoursConfig : null
@@ -77,7 +83,7 @@ export const useScheduleActions = (
                         type: config.type,
                         itemName: item,
                         scope: config.scope,
-                        instructorInfo: instructorsByNameMap[item.toLowerCase()],
+                        instructorInfo: resolveInstructorByName(item, instructorsByNameMap, instructors),
                         logo: config.logo,
                         holidays,
                         extraHoursConfig: isSimulationMode ? extraHoursConfig : null
@@ -100,7 +106,7 @@ export const useScheduleActions = (
     const handleExportAdminTasks = async () => {
         if (!selectedFilter || viewType !== 'Instructor') return;
         try {
-            const instructorInfo = instructorsByNameMap[selectedFilter.toLowerCase()];
+            const instructorInfo = selectedInstructorId ? instructorsMap[selectedInstructorId] : resolveInstructorByName(selectedFilter, instructorsByNameMap, instructors);
             const blob = await generateAdminTasksExcel(selectedFilter, allSchedules, instructorInfo);
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -125,7 +131,7 @@ export const useScheduleActions = (
         const endH = Math.floor(endMin / 60);
         const endM = endMin % 60;
         const endTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
-        const instructor = instructorsByNameMap[selectedFilter.toLowerCase()];
+        const instructor = selectedInstructorId ? instructorsMap[selectedInstructorId] : resolveInstructorByName(selectedFilter, instructorsByNameMap, instructors);
         const effectiveModality = category === 'por_asignar' ? 'presencial' : modality;
 
         const baseStartDate = new Date(currentWeekStart);
@@ -148,7 +154,8 @@ export const useScheduleActions = (
 
         while (scanner <= finalEndDate) {
             const collision = allSchedules.find(s => {
-                if (s.instructor !== selectedFilter || !s.days.includes(day)) return false;
+                const belongsToSelected = instructor ? belongsToInstructor(instructor, s) : s.instructor === selectedFilter;
+                if (!belongsToSelected || !s.days.includes(day)) return false;
                 const sStart = timeToMinutes(s.startTime);
                 const sEnd = timeToMinutes(s.endTime);
                 const hasTimeOverlap = (startMin < sEnd && endMin > sStart);

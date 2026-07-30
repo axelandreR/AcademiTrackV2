@@ -13,14 +13,19 @@ import {
     processAttendanceJourneys,
     AttendanceSheetData
 } from '../services/attendanceService';
-import { isPresencialOrComputableAsinc, isFuzzyNameMatch } from '../services/businessRules';
+import { isPresencialOrComputableAsinc, belongsToInstructor } from '../services/businessRules';
 import { generateAttendanceExcel } from '../services/attendanceExporter';
+import ConfirmDialog from '../components/ConfirmDialog';
 import JSZip from 'jszip';
 
 const AttendancePage: React.FC = () => {
     const navigate = useNavigate();
     const {
         instructors, allSchedules, isLoading,
+        // Auditoría en vivo compartida (calculada una sola vez en DataProvider — ver
+        // context/DataContext.tsx::liveAuditByInstructor — y reutilizada aquí y en
+        // ProgressPanel.tsx sin recalcularse al navegar entre esas dos pantallas).
+        liveAuditByInstructor,
         getAttendanceTracking, saveAttendanceTracking,
         syncInstructorIdInSchedules
     } = useData();
@@ -33,6 +38,10 @@ const AttendancePage: React.FC = () => {
     // Estado de seguimiento (Nube)
     const [generatedSheets, setGeneratedSheets] = useState<Set<string>>(new Set());
     const [viewingAudit, setViewingAudit] = useState<Instructor | null>(null);
+    // Progreso de la descarga masiva (X de Y fichas), para que no parezca que la app se colgó.
+    const [massiveProgress, setMassiveProgress] = useState<{ done: number; total: number } | null>(null);
+    const [pendingSync, setPendingSync] = useState<Instructor | null>(null);
+    const [pendingMassiveCount, setPendingMassiveCount] = useState<number | null>(null);
 
     useEffect(() => {
         const fetchTracking = async () => {
@@ -65,11 +74,6 @@ const AttendancePage: React.FC = () => {
             // 2. Omitir placeholders (como en ProgressPanel)
             if (inst.name.toUpperCase().startsWith('INST.')) return false;
 
-            // 3. REGLA: Solo sin observaciones críticas
-            // Permitimos que aparezcan todos, pero el botón de descarga masiva los filtrará
-            const status = (inst.auditStatus || '').toString().trim().toUpperCase();
-            const isRestricted = status === 'DEFICIT' || status === 'EXCESS'; // Solo bloqueamos si hay error explícito
-
             // Si tiene búsqueda, filtramos por nombre/id
             const matchesSearch = inst.name.toLowerCase().includes(searchTerm.toLowerCase()) || inst.id.includes(searchTerm);
             if (!matchesSearch) return false;
@@ -78,11 +82,9 @@ const AttendancePage: React.FC = () => {
         }).map(inst => {
             // Calculamos si tiene carga presencial para mostrar aviso
             const hasPresencial = allSchedules.some(s => {
-                const norm = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.,]/g, "").toUpperCase();
-
-                // Match por ID (exacto) o Nombre (Fuzzy)
-                const isMySchedule = (norm(inst.id) === norm(s.instructorId)) || isFuzzyNameMatch(inst.name, s.instructor);
-                if (!isMySchedule) return false;
+                // El ID manda siempre que el bloque lo tenga; el fuzzy match por nombre
+                // solo aplica a bloques legados sin ID.
+                if (!belongsToInstructor(inst, s)) return false;
 
                 // Rango relaxado al año seleccionado para detectar carga futura/pasada
                 const scheduleYear = s.startDate.getFullYear();
@@ -124,51 +126,59 @@ const AttendancePage: React.FC = () => {
         }
     };
 
-    const handleSync = async (e: React.MouseEvent, instructor: Instructor) => {
+    const handleSync = (e: React.MouseEvent, instructor: Instructor) => {
         e.stopPropagation();
-        if (window.confirm(`¿Sincronizar carga para ${instructor.name}? Se buscarán clases por coincidencia de nombre y se les asignará su ID oficial.`)) {
-            await syncInstructorIdInSchedules(instructor);
-        }
+        setPendingSync(instructor);
     };
 
-    const handleDownloadMassive = async () => {
-        const readyInstructors = tpInstructorsWithPresencial.filter(inst => (inst.auditStatus || '').toUpperCase() === 'OK');
+    const handleDownloadMassive = () => {
+        const readyInstructors = tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk);
 
         if (readyInstructors.length === 0) {
             alert("No hay instructores con estado de auditoría 'OK' para descarga masiva.");
             return;
         }
+        setPendingMassiveCount(readyInstructors.length);
+    };
 
-        const confirmMassive = window.confirm(`Se descargarán ${readyInstructors.length} fichas (solo aquellas con auditoría OK). ¿Deseas continuar?`);
-        if (!confirmMassive) return;
+    const confirmDownloadMassive = async () => {
+        setPendingMassiveCount(null);
+        const readyInstructors = tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk);
+        if (readyInstructors.length === 0) return;
 
         const zip = new JSZip();
         const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
 
-        for (const inst of readyInstructors) {
-            const data = processAttendanceJourneys(inst, allSchedules, startDate, endDate);
-            if (data.journeys.length > 0) {
-                const blob = await generateAttendanceExcel(data, SENATI_LOGO_URL);
-                const fileName = `FICHA_${inst.id}_${inst.name.replace(/\s+/g, '_')}.xlsx`;
-                zip.file(fileName, blob);
-                await recordGeneratedStatus(inst.id);
+        setMassiveProgress({ done: 0, total: readyInstructors.length });
+        try {
+            for (const inst of readyInstructors) {
+                const data = processAttendanceJourneys(inst, allSchedules, startDate, endDate);
+                if (data.journeys.length > 0) {
+                    const blob = await generateAttendanceExcel(data, SENATI_LOGO_URL);
+                    const fileName = `FICHA_${inst.id}_${inst.name.replace(/\s+/g, '_')}.xlsx`;
+                    zip.file(fileName, blob);
+                    await recordGeneratedStatus(inst.id);
+                }
+                setMassiveProgress(prev => prev ? { ...prev, done: prev.done + 1 } : prev);
             }
-        }
 
-        const content = await zip.generateAsync({ type: 'blob' });
-        const url = URL.createObjectURL(content);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `FICHAS_MASIVAS_${selectedMonth}_${selectedYear}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+            const content = await zip.generateAsync({ type: 'blob' });
+            const url = URL.createObjectURL(content);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `FICHAS_MASIVAS_${selectedMonth}_${selectedYear}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } finally {
+            setMassiveProgress(null);
+        }
     };
 
     const readyToDownloadCount = useMemo(() => {
-        return tpInstructorsWithPresencial.filter(inst => (inst.auditStatus || '').toUpperCase() === 'OK').length;
-    }, [tpInstructorsWithPresencial]);
+        return tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk).length;
+    }, [tpInstructorsWithPresencial, liveAuditByInstructor]);
 
     const months = [
         { v: 1, n: 'Enero' }, { v: 2, n: 'Febrero' }, { v: 3, n: 'Marzo' },
@@ -226,11 +236,20 @@ const AttendancePage: React.FC = () => {
 
                     <button
                         onClick={handleDownloadMassive}
-                        disabled={readyToDownloadCount === 0}
+                        disabled={readyToDownloadCount === 0 || massiveProgress !== null}
                         className="flex items-center space-x-2 px-6 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-xl shadow-slate-200"
                     >
-                        <DownloadCloud size={16} />
-                        <span>Descarga Masiva ({readyToDownloadCount})</span>
+                        {massiveProgress ? (
+                            <>
+                                <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                                <span>Generando {massiveProgress.done} / {massiveProgress.total}</span>
+                            </>
+                        ) : (
+                            <>
+                                <DownloadCloud size={16} />
+                                <span>Descarga Masiva ({readyToDownloadCount})</span>
+                            </>
+                        )}
                     </button>
                 </div>
             </header>
@@ -290,6 +309,7 @@ const AttendancePage: React.FC = () => {
                                 ) : (
                                     tpInstructorsWithPresencial.map(inst => {
                                         const isGenerated = generatedSheets.has(inst.id);
+                                        const liveAudit = liveAuditByInstructor.get(inst.id);
                                         return (
                                             <tr key={inst.id} className="hover:bg-slate-50 transition-colors group">
                                                 <td className="px-8 py-5">
@@ -306,7 +326,7 @@ const AttendancePage: React.FC = () => {
                                                                         Sin Carga Presencial
                                                                     </span>
                                                                 )}
-                                                                {(!inst.hasPresencial || inst.auditStatus === 'PENDING') && (
+                                                                {(!inst.hasPresencial || !liveAudit?.hasData) && (
                                                                     <button
                                                                         onClick={(e) => handleSync(e, inst)}
                                                                         title="Sincronizar carga por Nombre/ID"
@@ -338,12 +358,12 @@ const AttendancePage: React.FC = () => {
                                                     )}
                                                 </td>
                                                 <td className="px-8 py-5 text-center">
-                                                    {(inst.auditStatus || '').toUpperCase() === 'OK' ? (
+                                                    {liveAudit?.isAuditOk ? (
                                                         <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-emerald-100">
                                                             <ShieldCheck size={10} />
                                                             <span>Óptimo</span>
                                                         </div>
-                                                    ) : (inst.auditStatus === 'DEFICIT' || inst.auditStatus === 'EXCESS') ? (
+                                                    ) : (liveAudit?.hasData && !liveAudit.isAuditOk) ? (
                                                         <div
                                                             onClick={() => setViewingAudit(inst)}
                                                             className="inline-flex items-center space-x-1.5 px-3 py-1 bg-rose-50 text-rose-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-rose-100 cursor-pointer hover:bg-rose-100 transition-colors"
@@ -406,38 +426,32 @@ const AttendancePage: React.FC = () => {
                         </div>
 
                         <div className="p-8 max-h-[60vh] overflow-y-auto">
-                            {viewingAudit.auditJson ? (() => {
-                                try {
-                                    const issues = JSON.parse(viewingAudit.auditJson);
-                                    if (!Array.isArray(issues) || issues.length === 0) {
-                                        return <p className="text-sm font-bold text-slate-400 text-center py-8 italic">No se encontraron detalles específicos del error.</p>;
-                                    }
-                                    return (
-                                        <div className="space-y-6">
-                                            {issues.map((issue: any, idx: number) => (
-                                                <div key={idx} className="bg-slate-50 rounded-2xl p-4 border border-slate-100 hover:border-rose-100 transition-colors group">
-                                                    <div className="flex items-center space-x-2 mb-3">
-                                                        <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
-                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">Semana del {issue.week}</p>
-                                                    </div>
-                                                    <ul className="space-y-2">
-                                                        {(issue.reasons || []).map((reason: string, rIdx: number) => (
-                                                            <li key={rIdx} className="flex items-start space-x-3">
-                                                                <div className="mt-1.5 w-1 h-1 rounded-full bg-rose-400 shrink-0" />
-                                                                <p className="text-xs font-bold text-slate-700 leading-relaxed">{reason}</p>
-                                                            </li>
-                                                        ))}
-                                                    </ul>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    );
-                                } catch (e) {
-                                    return <p className="text-sm font-bold text-slate-400">Error al procesar detalles: {viewingAudit.auditJson}</p>;
+                            {(() => {
+                                const issues = liveAuditByInstructor.get(viewingAudit.id)?.issues || [];
+                                if (issues.length === 0) {
+                                    return <p className="text-sm font-bold text-slate-400 text-center py-8 italic">No se encontraron detalles específicos del error.</p>;
                                 }
-                            })() : (
-                                <p className="text-sm font-bold text-slate-400 text-center py-8">Pendiente de detalle técnico...</p>
-                            )}
+                                return (
+                                    <div className="space-y-6">
+                                        {issues.map((issue, idx: number) => (
+                                            <div key={idx} className="bg-slate-50 rounded-2xl p-4 border border-slate-100 hover:border-rose-100 transition-colors group">
+                                                <div className="flex items-center space-x-2 mb-3">
+                                                    <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">Semana del {issue.week}</p>
+                                                </div>
+                                                <ul className="space-y-2">
+                                                    {issue.reasons.map((reason: string, rIdx: number) => (
+                                                        <li key={rIdx} className="flex items-start space-x-3">
+                                                            <div className="mt-1.5 w-1 h-1 rounded-full bg-rose-400 shrink-0" />
+                                                            <p className="text-xs font-bold text-slate-700 leading-relaxed">{reason}</p>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        ))}
+                                    </div>
+                                );
+                            })()}
                         </div>
 
                         <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end">
@@ -451,6 +465,28 @@ const AttendancePage: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            <ConfirmDialog
+                isOpen={pendingSync !== null}
+                title="Sincronizar carga"
+                message={`Se buscarán las clases de ${pendingSync?.name || 'este instructor'} por coincidencia de nombre y se les asignará su ID oficial.`}
+                confirmLabel="Sincronizar"
+                onCancel={() => setPendingSync(null)}
+                onConfirm={() => {
+                    const inst = pendingSync;
+                    setPendingSync(null);
+                    if (inst) syncInstructorIdInSchedules(inst);
+                }}
+            />
+
+            <ConfirmDialog
+                isOpen={pendingMassiveCount !== null}
+                title="Descarga masiva"
+                message={`Se generarán ${pendingMassiveCount ?? 0} fichas de asistencia (solo las de instructores con auditoría OK) y se descargarán en un archivo ZIP.`}
+                confirmLabel="Descargar"
+                onCancel={() => setPendingMassiveCount(null)}
+                onConfirm={confirmDownloadMassive}
+            />
         </div>
     );
 };

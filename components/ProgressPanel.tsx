@@ -1,106 +1,79 @@
 import React, { useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
-import { SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
-import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info, RefreshCw } from 'lucide-react';
+import { SEMESTER_END_DATE } from '../constants';
+import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info, RefreshCw, Settings } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { validateInstructorWeek } from '../services/auditService';
 import { supabase } from '../supabaseClient';
-import { mapSchedFromDB } from '../context/DataContext';
+import { mapSchedFromDB, parseLocalDBDate } from '../context/DataContext';
 
 const ProgressPanel: React.FC = () => {
-    const { globalSchedulesSummary, instructors, exportedInstructors, toggleInstructorExported, holidays, updateInstructorAuditStatus, allSchedules } = useData();
+    const {
+        instructors, exportedInstructors, toggleInstructorExported, settings, updateAppSetting, recalculateAllInstructorsAudit,
+        // Auditoría en vivo compartida (calculada una sola vez en DataProvider — ver
+        // context/DataContext.tsx::liveAuditByInstructor — y reutilizada en AttendancePage.tsx
+        // sin recalcularse al navegar entre esas dos pantallas).
+        liveAuditByInstructor
+    } = useData();
     const navigate = useNavigate();
     const [selectedAuditIssuer, setSelectedAuditIssuer] = useState<{ name: string, issues: { week: string, reasons: string[] }[] } | null>(null);
+    const [showCutoffModal, setShowCutoffModal] = useState(false);
+    const [cutoffDraft, setCutoffDraft] = useState('');
+    const [isSavingCutoff, setIsSavingCutoff] = useState(false);
 
+    // Fecha límite de auditoría: hasta dónde se exige que el horario esté completo para
+    // contar como "OK". Configurable con el ícono de ajustes de este panel; si no está
+    // configurada, cae al fin de semestre real (comportamiento de siempre).
+    const auditCutoffDate = useMemo(() => {
+        const raw = settings['audit_validation_cutoff_date'];
+        return raw ? parseLocalDBDate(raw) : new Date(SEMESTER_END_DATE);
+    }, [settings]);
 
-    // Use global summary as source. If allSchedules is empty (lazy), use summary.
-    // Actually, 'allSchedules' now only contains "currently viewed" or "nothing".
-    // So for global stats, we MUST use globalSchedulesSummary.
-
-
-    const timeToMinutes = (t: string) => {
-        if (!t) return 0;
-        const [h, m] = t.split(':').map(Number);
-        return (h || 0) * 60 + (m || 0);
+    const toInputDate = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
     };
 
-    // Generar semanas del semestre
-    const semesterWeeks = useMemo(() => {
-        const weeks: Date[] = [];
-        let current = new Date(SEMESTER_START_DATE);
-        const day = current.getDay();
-        const diff = current.getDate() - day + (day === 0 ? -6 : 1);
-        current.setDate(diff);
-        current.setHours(0, 0, 0, 0);
+    const openCutoffModal = () => {
+        setCutoffDraft(toInputDate(auditCutoffDate));
+        setShowCutoffModal(true);
+    };
 
-        while (current <= SEMESTER_END_DATE) {
-            weeks.push(new Date(current));
-            current.setDate(current.getDate() + 7);
+    const handleSaveCutoff = async () => {
+        if (!cutoffDraft) return;
+        setIsSavingCutoff(true);
+        try {
+            await updateAppSetting('audit_validation_cutoff_date', cutoffDraft);
+            await recalculateAllInstructorsAudit(parseLocalDBDate(cutoffDraft));
+            setShowCutoffModal(false);
+        } catch (e: any) {
+            alert('Error al guardar la fecha límite de auditoría: ' + e.message);
+        } finally {
+            setIsSavingCutoff(false);
         }
-        return weeks;
-    }, []);
+    };
 
-    const progressData = useMemo(() => {
-        // 1. Get all schedules in memory (Full Load Mode)
-        const schedules = allSchedules;
 
+    // Fusión barata sobre el mapa de auditoría compartido (ver arriba): O(instructores),
+    // sin repetir el escaneo semana-a-semana que ya se calculó una vez en DataProvider.
+    const auditResults = useMemo(() => {
         return instructors
-            .filter(inst => {
-                // Filter 1: Must be Active and Real (not 'INST.')
-                if (inst.status !== 'Activo' || inst.name.startsWith('INST.')) return false;
-
-                // Filter 2: Must have at least one schedule assigned (Academic or Admin)
-                const hasSchedules = schedules.some(s => s.instructor === inst.name);
-                return hasSchedules;
-            })
+            .filter(inst => inst.status === 'Activo' && !inst.name.startsWith('INST.'))
             .map(inst => {
-                // Get schedules for this specific instructor
-                const instSchedules = schedules.filter(s => s.instructor === inst.name);
-
-                let totalWeeksChecked = 0;
-                let weeksOk = 0;
-                let auditIssues: { week: string, reasons: string[] }[] = [];
-
-                for (const weekStart of semesterWeeks) {
-                    // Holiday Check
-                    let hasHoliday = false;
-                    for (let i = 0; i < 7; i++) {
-                        const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
-                        if (holidays.some(h => h.date.toDateString() === d.toDateString())) { hasHoliday = true; break; }
-                    }
-                    if (hasHoliday) continue;
-
-                    // Execute robust validation (Same logic as Editor)
-                    const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays);
-
-                    totalWeeksChecked++;
-
-                    if (validation.isValid) {
-                        weeksOk++;
-                    } else {
-                        const weekLabel = `${weekStart.getDate().toString().padStart(2, '0')}/${(weekStart.getMonth() + 1).toString().padStart(2, '0')}`;
-                        auditIssues.push({ week: weekLabel, reasons: validation.reasons });
-                    }
-                }
-
-                // Status Logic: 
-                // - OK if ALL checked weeks are valid.
-                // - If no weeks checked (e.g. all holidays), it's OK.
-                const isAuditOk = totalWeeksChecked === 0 || (weeksOk === totalWeeksChecked);
-
-                return {
-                    ...inst,
-                    isAuditOk,
-                    auditIssues,
-                    isExported: exportedInstructors.has(inst.id),
-                    isFictitious: false
-                };
+                const live = liveAuditByInstructor.get(inst.id);
+                if (!live || !live.hasData) return null;
+                return { ...inst, isAuditOk: live.isAuditOk, auditIssues: live.issues, isFictitious: false };
             })
-            // Sort by Audit Status (Error first?) or Name (Alphabetical)
-            // Let's keep alphabetical for consistency with sidebar
+            .filter((r): r is NonNullable<typeof r> => r !== null)
             .sort((a, b) => a.name.localeCompare(b.name));
+    }, [instructors, liveAuditByInstructor]);
 
-    }, [instructors, allSchedules, semesterWeeks, holidays, exportedInstructors]);
+    // Fusión barata: solo agrega isExported, O(instructores).
+    const progressData = useMemo(() =>
+        auditResults.map(r => ({ ...r, isExported: exportedInstructors.has(r.id) })),
+        [auditResults, exportedInstructors]
+    );
 
     const tcStats = useMemo(() => {
         const tcs = progressData.filter(i => i.type === 'TC' && !i.isFictitious);
@@ -164,8 +137,18 @@ const ProgressPanel: React.FC = () => {
                         <div className="flex items-center justify-center md:justify-start space-x-3 mb-2">
                             <div className="p-2 bg-blue-600 text-white rounded-xl shadow-lg shadow-blue-200"><TrendingUp size={24} /></div>
                             <h2 className="text-3xl font-black text-slate-900 tracking-tight">Avance de Horarios</h2>
+                            <button
+                                onClick={openCutoffModal}
+                                title="Configurar fecha límite de auditoría"
+                                className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+                            >
+                                <Settings size={20} />
+                            </button>
                         </div>
                         <p className="text-slate-500 font-medium">Estado de cumplimiento basado en auditoría de carga.</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+                            Se exige completo hasta: {auditCutoffDate.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                        </p>
                     </div>
                     <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-xl flex items-center justify-center space-x-6">
                         <div className="relative w-16 h-16">
@@ -238,6 +221,52 @@ const ProgressPanel: React.FC = () => {
                     </div>
                 </div>
             </div>
+
+            {showCutoffModal && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+                    <div className="bg-white w-full max-w-md rounded-[32px] shadow-2xl overflow-hidden animate-in zoom-in duration-300 border border-slate-100">
+                        <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                            <div className="flex items-center space-x-3">
+                                <div className="p-2 bg-blue-100 text-blue-600 rounded-xl"><Settings size={20} /></div>
+                                <div>
+                                    <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Fecha Límite de Auditoría</h3>
+                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Hasta dónde exigir horario completo</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setShowCutoffModal(false)} className="p-2 hover:bg-white rounded-xl transition-all"><X size={20} className="text-slate-400" /></button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                                Un instructor se marca "Audit OK" solo si su horario está completo en todas las semanas desde el inicio del semestre hasta esta fecha. Bájala si aún no gestionas las últimas semanas del ciclo (cierre/exámenes) y no quieres que eso bloquee marcar a los docentes como completos por ahora.
+                            </p>
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Fecha límite</label>
+                                <input
+                                    type="date"
+                                    value={cutoffDraft}
+                                    onChange={e => setCutoffDraft(e.target.value)}
+                                    className="w-full px-4 py-3 bg-slate-100 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+                            {isSavingCutoff && (
+                                <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest flex items-center gap-2">
+                                    <RefreshCw size={12} className="animate-spin" /> Recalculando auditoría de {instructors.length} instructores...
+                                </p>
+                            )}
+                        </div>
+                        <div className="p-6 bg-slate-50 flex justify-end gap-3">
+                            <button onClick={() => setShowCutoffModal(false)} disabled={isSavingCutoff} className="px-6 py-2.5 text-slate-500 font-black text-[10px] uppercase tracking-widest disabled:opacity-50">Cancelar</button>
+                            <button
+                                onClick={handleSaveCutoff}
+                                disabled={isSavingCutoff || !cutoffDraft}
+                                className="px-6 py-2.5 bg-slate-900 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-50"
+                            >
+                                {isSavingCutoff ? 'Guardando...' : 'Guardar y Recalcular'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {selectedAuditIssuer && (
                 <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">

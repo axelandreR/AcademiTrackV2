@@ -114,6 +114,7 @@ export interface ProcessedSchedule {
   startDate: Date;
   endDate: Date;
   career: string;
+  codCarrera?: string;
   nrc: string;
   color: string;
   weeklyHours: number;
@@ -143,6 +144,7 @@ export interface ExportConfig {
   type: ViewType;
   format: 'pdf' | 'excel';
   selectedItem?: string;
+  selectedItemId?: string; // ID del instructor (cuando type === 'Instructor'), prioridad sobre el nombre
   selectedCareer?: string;
   scope: 'firstWeek' | 'allWeeks' | 'custom';
   customStartDate?: string;

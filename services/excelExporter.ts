@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import { ProcessedSchedule, ViewType, Instructor, HolidayData } from '../types';
-import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, isContractualLoad } from './businessRules';
+import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, isContractualLoad, belongsToInstructor } from './businessRules';
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 
 interface ExcelExportParams {
@@ -613,7 +613,7 @@ export const generateGlobalAuditExcel = async (instructors: Instructor[], schedu
 
   instructors.forEach((inst) => {
     const rowValues: (string | number)[] = [inst.id, inst.name, inst.type, inst.specialty];
-    const instSchedules = schedules.filter(s => s.instructor === inst.name);
+    const instSchedules = schedules.filter(s => belongsToInstructor(inst, s));
     const instAcademic = instSchedules.filter(s => !s.isAdministrative);
 
     weeks.forEach(w => {
@@ -693,7 +693,9 @@ export const generateAdminTasksExcel = async (instructorName: string, schedules:
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Tareas Administrativas');
 
-  const instructorSchedules = schedules.filter(s => s.instructor === instructorName);
+  const instructorSchedules = schedules.filter(s =>
+    instructorInfo ? belongsToInstructor(instructorInfo, s) : s.instructor === instructorName
+  );
   const adminSchedules = instructorSchedules.filter(s => s.isAdministrative);
 
   // Cabecera de información del instructor

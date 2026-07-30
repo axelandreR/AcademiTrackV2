@@ -3,6 +3,7 @@ import { useData } from '../context/DataContext';
 import { ProcessedSchedule, InstitutionalReference } from '../types';
 import { Upload, FileWarning, CheckCircle, SearchCode, Database, Activity, AlertTriangle, ArrowRight, X, ChevronDown, Filter, LayoutGrid } from 'lucide-react';
 import { parseInstitutionalReport } from '../services/excelParser';
+import ConfirmDialog from './ConfirmDialog';
 
 interface ValidationPanelProps {
     onBack: () => void;
@@ -37,6 +38,15 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ onBack }) => {
 
     // 1. Obtener lista de carreras disponibles en la App (para filtro)
     const [showColumnWarning, setShowColumnWarning] = useState<string[]>([]);
+    // Confirmación pendiente genérica: las 3 acciones de reparación de este panel
+    // (integrar curso, actualizar instructor, sobrescribir programación) la reutilizan
+    // en vez de usar el confirm() nativo del navegador.
+    const [pendingConfirm, setPendingConfirm] = useState<{
+        title: string;
+        message: string;
+        confirmLabel: string;
+        action: () => void | Promise<void>;
+    } | null>(null);
 
     // 1. Obtener lista de carreras y BLOQUES disponibles (Unión App + Sistema)
     const { availableCareers, availableBlocks } = useMemo(() => {
@@ -309,10 +319,18 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ onBack }) => {
     }, [validationResults, selectedCareer, selectedBlock]);
 
     // --- ACCIONES DE REPARACIÓN ---
-    const handleIntegrateMissing = async (res: ValidationResult) => {
+    const handleIntegrateMissing = (res: ValidationResult) => {
         if (!res.sysData) return;
-        if (!confirm(`¿Integrar curso ${res.nrc} (${res.courseName}) a la App?`)) return;
+        setPendingConfirm({
+            title: 'Integrar curso',
+            message: `Se integrará el curso ${res.nrc} (${res.courseName}) a la programación de la App.`,
+            confirmLabel: 'Integrar',
+            action: () => doIntegrateMissing(res)
+        });
+    };
 
+    const doIntegrateMissing = async (res: ValidationResult) => {
+        if (!res.sysData) return;
         try {
             const sys = res.sysData;
             // Crear objeto ProcessedSchedule desde sysData
@@ -349,12 +367,20 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ onBack }) => {
         }
     };
 
-    const handleUpdateInstructor = async (res: ValidationResult) => {
+    const handleUpdateInstructor = (res: ValidationResult) => {
+        if (!res.appData || !res.sysData) return;
+        setPendingConfirm({
+            title: 'Actualizar instructor',
+            message: `Se cambiará el instructor de este bloque de "${res.appData.instructor}" a "${res.sysData.instructor_nombre}".`,
+            confirmLabel: 'Actualizar',
+            action: () => doUpdateInstructor(res)
+        });
+    };
+
+    const doUpdateInstructor = async (res: ValidationResult) => {
         if (!res.appData || !res.sysData) return;
         const newInstName = res.sysData.instructor_nombre;
         const newInstId = res.sysData.instructor_id;
-
-        if (!confirm(`¿Actualizar instructor de ${res.appData.instructor} a ${newInstName}?`)) return;
 
         try {
             const updated = { ...res.appData, instructor: newInstName, instructorId: newInstId };
@@ -366,27 +392,32 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ onBack }) => {
     };
 
     // NUEVO: Función para Sobrescribir Data de App con Data de Sistema (Fechas, Sala, Día)
-    const handleApplyDifference = async (res: ValidationResult) => {
+    const handleApplyDifference = (res: ValidationResult) => {
+        if (!res.appData || !res.sysData) return;
+        const sys = res.sysData;
+        const fInicio = new Date(sys.fecha_inicio);
+        const fFin = new Date(sys.fecha_fin);
+
+        if (isNaN(fInicio.getTime()) || isNaN(fFin.getTime())) {
+            alert("Error: Las fechas del sistema no son válidas.");
+            return;
+        }
+
+        setPendingConfirm({
+            title: 'Sobrescribir programación',
+            message: `Se sobrescribirá la programación de la App con la del Sistema. Sala: ${sys.edificio}-${sys.salon}. Fechas: ${fInicio.toISOString().split('T')[0]} al ${fFin.toISOString().split('T')[0]}. Día: ${sys.dia}.`,
+            confirmLabel: 'Sobrescribir',
+            action: () => doApplyDifference(res)
+        });
+    };
+
+    const doApplyDifference = async (res: ValidationResult) => {
         try {
             if (!res.appData || !res.sysData) return;
 
             const sys = res.sysData;
-            // Aseguramos que convertimos a Date válido, manejando posibles strings o fechas inválidas
             const fInicio = new Date(sys.fecha_inicio);
             const fFin = new Date(sys.fecha_fin);
-
-            if (isNaN(fInicio.getTime()) || isNaN(fFin.getTime())) {
-                alert("Error: Las fechas del sistema no son válidas.");
-                return;
-            }
-
-            const msg = `¿Estás seguro de sobrescribir la programación en la App con la del Sistema?\n\n` +
-                `Se actualizarán:\n` +
-                `- Sala: ${sys.edificio}-${sys.salon}\n` +
-                `- Fechas: ${fInicio.toISOString().split('T')[0]} al ${fFin.toISOString().split('T')[0]}\n` +
-                `- Día: ${sys.dia}`;
-
-            if (!confirm(msg)) return;
 
             // Construir objeto actualizado
             const updated = {
@@ -747,6 +778,19 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ onBack }) => {
                     </div>
                 </div>
             )}
+
+            <ConfirmDialog
+                isOpen={pendingConfirm !== null}
+                title={pendingConfirm?.title || ''}
+                message={pendingConfirm?.message || ''}
+                confirmLabel={pendingConfirm?.confirmLabel}
+                onCancel={() => setPendingConfirm(null)}
+                onConfirm={() => {
+                    const action = pendingConfirm?.action;
+                    setPendingConfirm(null);
+                    action?.();
+                }}
+            />
         </div>
     );
 };

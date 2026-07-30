@@ -9,8 +9,8 @@ const parseSettingsDate = (dateStr: string) => {
 };
 
 export const useScheduleNavigation = (allSchedules: ProcessedSchedule[], settings?: Record<string, string>) => {
-    const semesterStart = settings ? parseSettingsDate(settings['semester_start_date'] || '2026-02-16') : new Date(2026, 1, 16);
-    const semesterEnd = settings ? parseSettingsDate(settings['semester_end_date'] || '2026-07-26') : new Date(2026, 6, 26);
+    const semesterStart = settings ? parseSettingsDate(settings['semester_start_date'] || '2026-08-17') : new Date(2026, 7, 17);
+    const semesterEnd = settings ? parseSettingsDate(settings['semester_end_date'] || '2027-01-17') : new Date(2027, 0, 17);
     const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() => {
         const today = new Date();
         if (today < semesterStart) return getStartOfWeek(semesterStart);

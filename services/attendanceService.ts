@@ -1,5 +1,5 @@
 import { ProcessedSchedule, Instructor } from '../types';
-import { isPresencialOrComputableAsinc, isFuzzyNameMatch } from './businessRules';
+import { isPresencialOrComputableAsinc, belongsToInstructor } from './businessRules';
 
 export interface DailyJourney {
     date: Date;
@@ -77,14 +77,10 @@ export const processAttendanceJourneys = (
     // Helper para normalizar textos (quitar acentos, espacios y pasar a mayúsculas)
     const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
 
-    const targetId = normalize(instructor.id);
-
     const instructorScheds = allSchedules.filter(s => {
-        // Coincidencia con Match por ID (Prioridad) o Nombre (Fuzzy)
-        const isMySchedule = (s.instructorId && instructor.id && normalize(s.instructorId) === normalize(instructor.id)) ||
-            isFuzzyNameMatch(instructor.name, s.instructor);
-
-        if (!isMySchedule) return false;
+        // El ID es la única fuente de verdad cuando el bloque lo trae; fuzzy match
+        // por nombre solo aplica a bloques legados sin ID (ver belongsToInstructor).
+        if (!belongsToInstructor(instructor, s)) return false;
 
         // Rango de fechas (solapamiento)
         // Usamos timestamps para evitar problemas de horas

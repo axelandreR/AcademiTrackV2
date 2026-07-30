@@ -2,9 +2,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
-import { isOtherFunctionsCourse, isAcademicMetaLoad, isContractualLoad, isExcludedFromTotalLoad } from '../services/businessRules';
+import { isContractualLoad, resolveInstructorByName } from '../services/businessRules';
+import { calculateWeeklyAudit } from '../services/auditCalculations';
 import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData, ExtraHoursConfig } from '../types';
-import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE } from '../constants';
+import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
 import {
   Clock, MapPin, Hash, Video, LayoutDashboard, Table as TableIcon,
   ChevronRight, ChevronLeft, Layers, AlertTriangle
@@ -14,8 +15,7 @@ import AuditModal from './AuditModal';
 import AuditFooter from './AuditFooter';
 import ScheduleSidebar from './ScheduleSidebar';
 import ScheduleCard from './ScheduleCard';
-
-const SEMESTER_END_DATE = new Date(2026, 5, 28); // 28/06/2026
+import ScheduleLegend from './ScheduleLegend';
 
 interface ScheduleGridProps {
   schedules: ProcessedSchedule[];
@@ -26,10 +26,11 @@ interface ScheduleGridProps {
   viewType?: ViewType;
   appMode?: AppMode;
   availability?: AvailabilityWindow;
-  onNavigate?: (type: ViewType, filter: string) => void;
+  onNavigate?: (type: ViewType, filter: string, instructorId?: string) => void;
   onNavigateWeek?: (weeks: number) => void;
   instructorsData?: Instructor[];
   selectedFilterName?: string;
+  selectedInstructorId?: string;
   onAddAdministrativeTask?: (day: string, startTime: string, duration: number, category: ScheduleCategory, modality: ModalityType) => void;
   holidays?: HolidayData[];
   onDeficitStatusChange?: (hasDeficit: boolean) => void;
@@ -48,6 +49,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   appMode,
   instructorsData = [],
   selectedFilterName,
+  selectedInstructorId,
   onAddAdministrativeTask,
   onNavigate,
   onNavigateWeek,
@@ -56,7 +58,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   contentMode
 }) => {
   const allTimeSlots = getTimeSlots();
-  const { instructorsByNameMap, simulationConfig, isSimulationMode, extraHoursConfig } = useData();
+  const { instructorsByNameMap, instructorsMap, simulationConfig, isSimulationMode, extraHoursConfig, settings } = useData();
+
+  // Misma fecha de fin de semestre configurable que usa el sidebar (settings.semester_end_date),
+  // en vez de la constante fija — así la grilla y el punto rojo de Docentes nunca discrepan
+  // entre sí. Distinta a propósito de la fecha límite de auditoría de Avance de Horarios.
+  const semesterEndDateSetting = useMemo(() => {
+    const raw = settings['semester_end_date'];
+    return raw ? new Date(raw) : new Date(SEMESTER_END_DATE);
+  }, [settings]);
 
   const [activeEditorTool, setActiveEditorTool] = useState<ScheduleCategory>('asincrona');
   const [activeModality, setActiveModality] = useState<ModalityType>('virtual');
@@ -69,18 +79,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
   const isInstructorView = viewType === 'Instructor';
 
-  const instructorType = useMemo(() => {
-    if (!isInstructorView || !selectedFilterName) return 'TP';
-    const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-    const meta = instructorsByNameMap[normalize(selectedFilterName)];
-    return meta?.type || 'TP';
-  }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
-
+  // El ID (cuando viene) manda sobre el nombre: lookup exacto O(1) contra instructorsMap,
+  // sin depender de que selectedFilterName coincida palabra por palabra con el catálogo.
   const currentInstructorMeta = useMemo(() => {
     if (!isInstructorView || !selectedFilterName) return null;
-    const normalize = (str: string) => (str || '').toString().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-    return instructorsByNameMap[normalize(selectedFilterName)] || null;
-  }, [instructorsByNameMap, selectedFilterName, isInstructorView]);
+    if (selectedInstructorId) return instructorsMap[selectedInstructorId] || null;
+    return resolveInstructorByName(selectedFilterName, instructorsByNameMap, instructorsData) || null;
+  }, [instructorsMap, instructorsByNameMap, instructorsData, selectedFilterName, selectedInstructorId, isInstructorView]);
+
+  const instructorType = currentInstructorMeta?.type || 'TP';
 
   useEffect(() => {
     if (!isResizing) return;
@@ -101,7 +108,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
   const HOUR_HEIGHT = 8;
   const SLOT_HEIGHT = HOUR_HEIGHT / 4;
-  const TIME_COLUMN_WIDTH = '100px';
+  const TIME_COLUMN_WIDTH = '128px';
 
   const timeToMinutes = (t: string) => {
     if (!t) return 0;
@@ -134,213 +141,84 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   }, [weekStartDate]);
 
   const stats = useMemo(() => {
-    const academicSchedulesInFile = schedules.filter(s => !s.isAdministrative);
-    let fileLoadHours = 0;
-    let syncTotalMin = 0;
-    let asyncTotalMin = 0;
-    let prepTotalMin = 0;
-    let otherFuncsTotalMin = 0;
-    let assignTotalMin = 0;
-
-    // --- CÁLCULO DE META DEL ARCHIVO (fileLoadHours) ---
-    // En lugar de sumar por día (lo cual duplicaba carga en clases multi-día), 
-    // sumamos cada tarea académica activa en ESTA semana una sola vez.
-    const weekStartAt = datesOfWeek[0].date.getTime();
-    const weekEndAt = datesOfWeek[datesOfWeek.length - 1].date.getTime();
-
-    // Una tarea es válida si su rango de fechas [startDate, endDate] se solapa con la semana actual
-    const activeTasksThisWeek = academicSchedulesInFile.filter(s => {
-      return isAcademicMetaLoad(s) && s.startDate.getTime() <= weekEndAt && s.endDate.getTime() >= weekStartAt;
-    });
-
-    fileLoadHours = activeTasksThisWeek.reduce((sum, s) => sum + s.weeklyHours, 0);
-
-    const isHolidayInWeek = datesOfWeek.some(day => isHoliday(day.date));
-    let hasDailyBreach = false;
-    const dailyLimit = instructorType === 'TC' ? 9.2 : 7.0;
-    const dailyLimitMins = instructorType === 'TC' ? 552.01 : 420.01;
-
-    datesOfWeek.forEach(day => {
-      // REGLA 1: Ignorar días después del 28/06 en el cálculo de carga en calendario
-      if (day.date > SEMESTER_END_DATE) return;
-
-      const dayTasksInCalendar = schedules.filter(s => isScheduleActiveOnDate(s, day.date, day.key));
-      let dayTotalMin = 0;
-
-      dayTasksInCalendar.forEach(s => {
-        const dur = (timeToMinutes(s.endTime) - timeToMinutes(s.startTime));
-        if (isContractualLoad(s)) {
-          dayTotalMin += dur;
-        }
-
-        if (isAcademicMetaLoad(s)) {
-          const isAutoestudio = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-          if (isAutoestudio) asyncTotalMin += dur;
-          else syncTotalMin += dur;
-        } else if (s.isAdministrative) {
-          if (s.category === 'preparacion') prepTotalMin += dur;
-          else if (s.category === 'coordinador') otherFuncsTotalMin += dur;
-          else if (s.category === 'por_asignar') assignTotalMin += dur;
-        } else if (isOtherFunctionsCourse(s)) {
-          // Se cuenta para el total contractual (46h) pero no para la meta académica
-          otherFuncsTotalMin += dur;
-        }
-      });
-
-      if (dayTotalMin > dailyLimitMins && !isHoliday(day.date)) {
-        hasDailyBreach = true;
-      }
-    });
-
-    const syncH = syncTotalMin / 60;
-    const asyncH = asyncTotalMin / 60;
-    const otherH = otherFuncsTotalMin / 60;
-    const academicLoad = syncH + asyncH + otherH;
-
-    const totalContractHours = academicLoad + (prepTotalMin / 60) + (assignTotalMin / 60);
+    const weekStart = datesOfWeek[0].date;
+    const week = calculateWeeklyAudit(instructorType, weekStart, schedules, holidays, semesterEndDateSetting);
 
     // Una semana está fuera si es después del fin o antes del inicio del semestre
-    const isWeekOutOfSemester = datesOfWeek[0].date > SEMESTER_END_DATE || datesOfWeek[datesOfWeek.length - 1].date < SEMESTER_START_DATE;
+    const isWeekOutOfSemester = datesOfWeek[0].date > semesterEndDateSetting || datesOfWeek[datesOfWeek.length - 1].date < SEMESTER_START_DATE;
 
-    const hasAcademicDiscrepancy = !isHolidayInWeek && !isWeekOutOfSemester && Math.abs(academicLoad - fileLoadHours) > 0.01;
-    const hasContractDiscrepancy = !isHolidayInWeek && !isWeekOutOfSemester && instructorType === 'TC' && Math.abs(totalContractHours - CONTRACT_HOURS_TC) > 0.01;
-
-    // REGLA DE ORO: Si es TC, la alerta se dispara si NO cumple las 46h O si hay exceso diario.
-    // La discrepancia académica se vuelve informativa (opcional).
-    let hasAuditWarning = (instructorType === 'TC' ? hasContractDiscrepancy : hasAcademicDiscrepancy) || hasDailyBreach;
+    const base = {
+      syncHours: week.syncHours, asyncHours: week.asyncHours, prepHours: week.prepHours, otherHours: week.otherHours,
+      assignHours: week.assignHours, fileLoadHours: week.academicMeta, academicLoad: week.academicReal,
+      totalContractHours: week.contractReal, targetLoadForWeek: week.academicMeta,
+      isHolidayInWeek: week.isHolidayWeek, isWeekOutOfSemester
+    };
 
     // OVERRIDE: Si estamos en simulación enfocada (horas extras), desactivar alertas visuales
     if (simulationConfig?.ignoreAudit) {
-      hasAuditWarning = false;
-      // Opcionalmente podemos forzar las discrepancias a false también si queremos ocultar los colores rojos en los textos,
-      // pero hasAuditWarning controla el modal y el punto rojo principal.
-      // Si queremos limpiar todo:
-      // hasContractDiscrepancy = false; // (const requires readjustment)
-    }
-
-    // OVERRIDE FINAL: Si la configuración de simulación ignora auditoría, forzamos todo a false/clean.
-    if (simulationConfig?.ignoreAudit) {
       return {
-        syncHours: syncH, asyncHours: asyncH, prepHours: prepTotalMin / 60, otherHours: otherH,
-        assignHours: assignTotalMin / 60, fileLoadHours, academicLoad, totalContractHours, targetLoadForWeek: fileLoadHours,
-        hasAcademicDiscrepancy: false,
-        hasContractDiscrepancy: false,
-        hasAuditWarning: false,
-        hasDailyBreach: false,
-        isDeficit: false,
-        isHolidayInWeek, isWeekOutOfSemester
+        ...base,
+        hasAcademicDiscrepancy: false, hasContractDiscrepancy: false, hasAuditWarning: false,
+        hasDailyBreach: false, isDeficit: false
       };
     }
 
+    const hasAcademicDiscrepancy = !isWeekOutOfSemester && week.hasAcademicDiscrepancy;
+    const hasContractDiscrepancy = !isWeekOutOfSemester && week.hasContractDiscrepancy;
+    const hasDailyBreach = !isWeekOutOfSemester && week.hasDailyBreach;
+
+    // REGLA DE ORO: Si es TC, la alerta se dispara si NO cumple las 46h O si hay exceso diario.
+    // La discrepancia académica se vuelve informativa (opcional).
+    const hasAuditWarning = (instructorType === 'TC' ? hasContractDiscrepancy : hasAcademicDiscrepancy) || hasDailyBreach;
+
     return {
-      syncHours: syncH, asyncHours: asyncH, prepHours: prepTotalMin / 60, otherHours: otherH,
-      assignHours: assignTotalMin / 60, fileLoadHours, academicLoad, totalContractHours, targetLoadForWeek: fileLoadHours,
-      hasAcademicDiscrepancy,
-      hasContractDiscrepancy: simulationConfig?.ignoreAudit ? false : hasContractDiscrepancy, // Redundant but safe
-      hasAuditWarning: simulationConfig?.ignoreAudit ? false : hasAuditWarning,
-      hasDailyBreach: simulationConfig?.ignoreAudit ? false : hasDailyBreach,
-      isDeficit: simulationConfig?.ignoreAudit ? false : (!isHolidayInWeek && academicLoad < fileLoadHours - 0.01),
-      isHolidayInWeek, isWeekOutOfSemester
+      ...base,
+      hasAcademicDiscrepancy, hasContractDiscrepancy, hasAuditWarning, hasDailyBreach,
+      isDeficit: week.isHolidayWeek ? false : week.academicReal < week.academicMeta - 0.01
     };
-  }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig]);
+  }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig, semesterEndDateSetting]);
 
   const auditObservations = useMemo(() => {
     const list: { date: Date; type: 'academic' | 'contractual' | 'daily'; meta: number; real: number }[] = [];
 
-    // OPTIMIZACIÓN 1: Ejecución perezosa. Solo calculamos si el modal está abierto.
+    // OPTIMIZACIÓN: Ejecución perezosa. Solo calculamos si el modal está abierto.
     if (!showAuditModal || !isInstructorView || !selectedFilterName || simulationConfig?.ignoreAudit) return list;
 
     const isTC = instructorType === 'TC';
     const dailyLimit = isTC ? 9.2 : 7.0;
-    const scanDailyLimitMins = isTC ? 552.01 : 420.01;
-
-    // OPTIMIZACIÓN 2: Pre-filtrado. Separamos administrativas de académicas una sola vez.
-    const academicInFile = schedules.filter(s => !s.isAdministrative);
-
-    // OPTIMIZACIÓN 3: Agrupación por día de la semana para evitar .filter internos costosos.
-    const tasksByDay = {
-      'LUNES': schedules.filter(s => s.days.includes('LUNES')),
-      'MARTES': schedules.filter(s => s.days.includes('MARTES')),
-      'MIERCOLES': schedules.filter(s => s.days.includes('MIERCOLES')),
-      'JUEVES': schedules.filter(s => s.days.includes('JUEVES')),
-      'VIERNES': schedules.filter(s => s.days.includes('VIERNES')),
-      'SABADO': schedules.filter(s => s.days.includes('SABADO')),
-      'DOMINGO': schedules.filter(s => s.days.includes('DOMINGO')),
-    };
+    const dailyLimitMins = dailyLimit * 60 + 0.01;
 
     let scannerDate = new Date(SEMESTER_START_DATE);
 
-    while (scannerDate <= SEMESTER_END_DATE) {
-      let wTarget = 0, wSync = 0, wAsync = 0, wPC = 0, wCoord = 0, wAssign = 0;
-      let hasHolidayInWeek = false;
+    while (scannerDate <= semesterEndDateSetting) {
+      const week = calculateWeeklyAudit(instructorType, scannerDate, schedules, holidays, semesterEndDateSetting);
 
-      const weekStart = new Date(scannerDate);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekStart.getDate() + 6);
+      if (week.hasDailyBreach) {
+        for (let d = 0; d < 7; d++) {
+          const current = new Date(scannerDate);
+          current.setDate(scannerDate.getDate() + d);
+          if (current > semesterEndDateSetting || isHoliday(current)) continue;
 
-      const weekStartAt = weekStart.getTime();
-      const weekEndAt = weekEnd.getTime();
-
-      // Meta Académica de la semana
-      const weeklyMetaTasks = academicInFile.filter(s =>
-        isAcademicMetaLoad(s) && s.startDate.getTime() <= weekEndAt && s.endDate.getTime() >= weekStartAt
-      );
-      wTarget = weeklyMetaTasks.reduce((sum, s) => sum + s.weeklyHours, 0);
-
-      for (let d = 0; d < 7; d++) {
-        const current = new Date(scannerDate);
-        current.setDate(scannerDate.getDate() + d);
-        if (current > SEMESTER_END_DATE) continue;
-
-        const currentTime = current.getTime();
-        const dayIdx = current.getDay();
-        const dayName = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'][dayIdx] as keyof typeof tasksByDay;
-
-        const isHol = isHoliday(current);
-        if (isHol) hasHolidayInWeek = true;
-
-        // OPTIMIZACIÓN 4: Usamos el subset pre-filtrado por día.
-        const calTasks = tasksByDay[dayName].filter(s => currentTime >= s.startDate.getTime() && currentTime <= s.endDate.getTime());
-        let dayMinutesTotal = 0;
-
-        calTasks.forEach(s => {
-          const dur = (timeToMinutes(s.endTime) - timeToMinutes(s.startTime));
-          if (isContractualLoad(s)) dayMinutesTotal += dur;
-
-          if (isAcademicMetaLoad(s)) {
-            const isAuto = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-            if (isAuto) wAsync += dur / 60; else wSync += dur / 60;
-          } else if (s.isAdministrative) {
-            if (s.category === 'preparacion') wPC += dur / 60;
-            else if (s.category === 'coordinador') wCoord += dur / 60;
-            else if (s.category === 'por_asignar') wAssign += dur / 60;
-          } else if (isOtherFunctionsCourse(s)) {
-            wCoord += dur / 60;
+          const dayTasks = schedules.filter(s => isScheduleActiveOnDate(s, current, DAYS_OF_WEEK[(current.getDay() + 6) % 7].key));
+          const dayMin = dayTasks.reduce((sum, s) => isContractualLoad(s) ? sum + (timeToMinutes(s.endTime) - timeToMinutes(s.startTime)) : sum, 0);
+          if (dayMin > dailyLimitMins) {
+            list.push({ date: new Date(current), type: 'daily', meta: dailyLimit, real: dayMin / 60 });
           }
-        });
-
-        if (dayMinutesTotal > scanDailyLimitMins && !isHol) {
-          list.push({ date: new Date(current), type: 'daily', meta: dailyLimit, real: dayMinutesTotal / 60 });
         }
       }
 
-      if (!hasHolidayInWeek) {
-        const currentAcademicReal = wSync + wAsync;
-        if (!isTC && Math.abs(currentAcademicReal - wTarget) > 0.01) {
-          list.push({ date: new Date(scannerDate), type: 'academic', meta: wTarget, real: currentAcademicReal });
+      if (!week.isHolidayWeek) {
+        if (!isTC && week.hasAcademicDiscrepancy) {
+          list.push({ date: new Date(scannerDate), type: 'academic', meta: week.academicMeta, real: week.academicReal });
         }
-
-        if (isTC) {
-          const totalWeekContract = currentAcademicReal + wPC + wCoord + wAssign;
-          if (Math.abs(totalWeekContract - CONTRACT_HOURS_TC) > 0.01) {
-            list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: totalWeekContract });
-          }
+        if (isTC && week.hasContractDiscrepancy) {
+          list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: week.contractReal });
         }
       }
       scannerDate.setDate(scannerDate.getDate() + 7);
     }
     return list;
-  }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType, showAuditModal]);
+  }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType, showAuditModal, semesterEndDateSetting]);
 
   useEffect(() => {
     if (isInstructorView) onDeficitStatusChange?.(stats.hasAuditWarning);
@@ -356,6 +234,14 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   }, [allTimeSlots, schedules, isInstructorView, isEditorMode]);
 
   const TOTAL_GRID_HEIGHT = (visibleTimeSlots.length * SLOT_HEIGHT);
+
+  // Etiqueta de fin de un slot de 15min (para la regleta de 2 columnas: inicio | fin).
+  const addMinutesToLabel = (h: number, m: number, addMin: number) => {
+    const total = h * 60 + m + addMin;
+    const hh = Math.floor(total / 60);
+    const mm = total % 60;
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  };
 
   // Estilos y visualización movidos a ScheduleCard.tsx
 
@@ -437,7 +323,10 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
           {contentMode === 'grid' ? (
             <div className="min-w-[1100px] flex flex-col h-fit">
               <div className="flex border-b border-slate-300 bg-white sticky top-0 z-[70] shadow-sm">
-                <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[10px] uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]"><span>Reloj</span><Clock size={12} className="mt-1 opacity-50" /></div>
+                <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[10px] uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
+                  <div className="flex items-center space-x-1"><span>Reloj</span><ScheduleLegend /></div>
+                  <Clock size={12} className="mt-1 opacity-50" />
+                </div>
                 <div className="flex-1 grid grid-cols-7">
                   {datesOfWeek.map((day) => (
                     <div key={day.key} className="p-4 text-center border-r border-slate-200 last:border-r-0 flex flex-col items-center justify-center space-y-1 bg-white">
@@ -450,11 +339,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
               <div className="relative flex bg-white" style={{ height: `${TOTAL_GRID_HEIGHT}rem` }}>
                 <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 bg-slate-50 border-r border-slate-300 z-30 sticky left-0 shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
-                  {visibleTimeSlots.map((slot, idx) => (
-                    <div key={`${slot.hour}-${slot.minute}`} className={`flex items-center justify-center border-slate-200 ${visibleTimeSlots[idx + 1]?.isMainHour ? 'border-b border-b-slate-300' : 'border-b border-dotted border-b-slate-200'}`} style={{ height: `${SLOT_HEIGHT}rem` }}>
-                      <span className={`font-black tracking-tighter ${slot.isMainHour ? 'text-slate-900 text-[14px]' : 'text-slate-400 text-[9px]'}`}>{slot.label}</span>
-                    </div>
-                  ))}
+                  {visibleTimeSlots.map((slot, idx) => {
+                    const endLabel = visibleTimeSlots[idx + 1]?.label || addMinutesToLabel(slot.hour, slot.minute, 15);
+                    return (
+                      <div key={`${slot.hour}-${slot.minute}`} className={`flex items-stretch justify-center divide-x divide-slate-200 border-slate-200 ${visibleTimeSlots[idx + 1]?.isMainHour ? 'border-b border-b-slate-300' : 'border-b border-dotted border-b-slate-200'}`} style={{ height: `${SLOT_HEIGHT}rem` }}>
+                        <span className={`flex-1 flex items-center justify-center font-black tracking-tighter ${slot.isMainHour ? 'text-slate-900 text-[13px]' : 'text-slate-400 text-[9px]'}`}>{slot.label}</span>
+                        <span className={`flex-1 flex items-center justify-center font-bold tracking-tighter ${slot.isMainHour ? 'text-slate-400 text-[11px]' : 'text-slate-300 text-[8px]'}`}>{endLabel}</span>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 <div className="flex-1 relative grid grid-cols-7 bg-white">
@@ -602,6 +495,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
               onClick={() => onNavigateWeek(-1)}
               className="absolute left-[30px] top-1/2 -translate-y-1/2 z-[110] p-3 bg-white border-2 border-slate-200 rounded-full shadow-2xl text-slate-700 opacity-40 hover:opacity-100 hover:scale-110 active:scale-95 transition-all group"
               title="Semana Anterior"
+              aria-label="Semana anterior"
             >
               <ChevronLeft size={24} className="group-hover:-translate-x-0.5 transition-transform" />
             </button>
@@ -610,6 +504,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
               onClick={() => onNavigateWeek(1)}
               className="absolute right-4 top-1/2 -translate-y-1/2 z-[110] p-3 bg-white border-2 border-slate-200 rounded-full shadow-2xl text-slate-700 opacity-40 hover:opacity-100 hover:scale-110 active:scale-95 transition-all group"
               title="Siguiente Semana"
+              aria-label="Siguiente semana"
             >
               <ChevronRight size={24} className="group-hover:translate-x-0.5 transition-transform" />
             </button>

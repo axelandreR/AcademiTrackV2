@@ -2,12 +2,14 @@
 import React, { useRef, useState } from 'react';
 import { Upload, FileText, CheckCircle, AlertCircle } from 'lucide-react';
 import { parseExcelFile, ParseResult } from '../services/excelParser';
+import { useData } from '../context/DataContext';
 
 interface FileUploaderProps {
   onDataLoaded: (result: ParseResult) => void;
 }
 
 const FileUploader: React.FC<FileUploaderProps> = ({ onDataLoaded }) => {
+  const { careersMap } = useData();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -22,11 +24,11 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onDataLoaded }) => {
     setFileName(file.name);
 
     try {
-      const result = await parseExcelFile(file);
+      const result = await parseExcelFile(file, careersMap);
       onDataLoaded(result);
     } catch (err) {
       console.error(err);
-      setError('Error al procesar el archivo. Asegúrate de incluir las hojas "Programación" y "AULA".');
+      setError('Error al procesar el archivo. Asegúrate de incluir la hoja "Programación".');
     } finally {
       setLoading(false);
     }
@@ -52,8 +54,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onDataLoaded }) => {
         </div>
         
         <div>
-          <h3 className="text-2xl font-black text-slate-800 tracking-tight">Cargar Maestro de Horarios</h3>
-          <p className="text-slate-500 text-sm mt-2 font-medium">Sube el archivo Excel con las hojas de Programación y AULA</p>
+          <h3 className="text-2xl font-black text-slate-800 tracking-tight">Cargar Programación</h3>
+          <p className="text-slate-500 text-sm mt-2 font-medium">Sube el archivo Excel de horarios (Instructores y Aulas se cargan desde sus propias páginas)</p>
         </div>
 
         <button 

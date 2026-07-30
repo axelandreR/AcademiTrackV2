@@ -7,6 +7,7 @@ import {
 import Breadcrumbs from './Breadcrumbs';
 import { ViewType, ProcessedSchedule } from '../types';
 import { useData } from '../context/DataContext';
+import { resolveInstructorForRecord } from '../services/businessRules';
 
 interface ScheduleHeaderProps {
     navigate: (path: string) => void;
@@ -29,7 +30,7 @@ const ScheduleHeader: React.FC<ScheduleHeaderProps> = ({
     filteredData,
     setSidebarSearchTerm
 }) => {
-    const { instructorsByNameMap, roomsMap } = useData();
+    const { roomsMap, instructors } = useData();
 
     // Helper for breadcrumbs
     const breadcrumbItems = useMemo(() => {
@@ -61,7 +62,7 @@ const ScheduleHeader: React.FC<ScheduleHeaderProps> = ({
                     groupName = room?.type || 'AULA';
                 }
                 else if (viewType === 'Instructor') {
-                    const inst = instructorsByNameMap[activeSample.instructor.toLowerCase()];
+                    const inst = resolveInstructorForRecord(activeSample, instructors);
                     groupName = inst?.type === 'TC' ? 'TIEMPO COMPLETO' : 'TIEMPO PARCIAL';
                 }
                 crumbs.push({ label: groupName.toUpperCase(), onClick: () => { }, active: false });
@@ -71,7 +72,7 @@ const ScheduleHeader: React.FC<ScheduleHeaderProps> = ({
         }
 
         return crumbs;
-    }, [selectedFilter, viewType, filteredData, roomsMap, instructorsByNameMap, navigate, setSelectedFilter, setSidebarSearchTerm]);
+    }, [selectedFilter, viewType, filteredData, roomsMap, instructors, navigate, setSelectedFilter, setSidebarSearchTerm]);
 
     return (
         <header className="bg-white border-b border-slate-200 px-8 py-3 lg:py-4 flex flex-col lg:flex-row lg:items-center justify-between sticky top-0 z-[100] shadow-sm shrink-0">
