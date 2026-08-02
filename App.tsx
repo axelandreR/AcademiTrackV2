@@ -19,6 +19,7 @@ const ProgressPanel = lazy(() => import('./components/ProgressPanel'));
 const AttendancePage = lazy(() => import('./pages/AttendancePage'));
 const ArchiveManagerPage = lazy(() => import('./pages/ArchiveManagerPage'));
 const ReportsDashboard = lazy(() => import('./components/ReportsDashboard'));
+const UserManagementPage = lazy(() => import('./pages/UserManagementPage'));
 
 const RouteFallback: React.FC = () => (
   <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-10">
@@ -90,6 +91,7 @@ const AppContent: React.FC = () => {
           <Route path="/progress" element={<ProgressPanel />} />
           <Route path="/attendance" element={<AttendancePage />} />
           <Route path="/archive" element={<ArchiveManagerPage />} />
+          <Route path="/users" element={<UserManagementPage />} />
           <Route path="/reports" element={
             // ReportsDashboard necesita props, idealmente también debería usar Context
             // Por ahora le pasamos los datos del context

@@ -6,13 +6,17 @@ import {
     Clock, Calendar, Activity, Database, ShieldCheck, CheckCircle, FileText
 } from 'lucide-react';
 import { useData } from '../context/DataContext';
+import { useAuth } from '../context/AuthContext';
 import FileUploader from '../components/FileUploader';
 import { generateProgramacionTemplate } from '../services/templateGenerator';
 import { findMissingCatalogReferences, resolveInstructorForRecord } from '../services/businessRules';
+import { computeDeltaDiff } from '../services/deltaDiff';
+import DeltaReviewPanel from '../components/DeltaReviewPanel';
 import { ACTIVE_PERIODO } from '../constants';
 
 const LandingPage: React.FC = () => {
     const navigate = useNavigate();
+    const { isSuperuser } = useAuth();
     const {
         uploadSchedulesToSupabase, schedules, instructors,
         isLoading, allSchedules, exportedInstructors, rooms,
@@ -108,6 +112,8 @@ const LandingPage: React.FC = () => {
     const [missingInstructors, setMissingInstructors] = React.useState<any[]>([]);
     const [missingRooms, setMissingRooms] = React.useState<any[]>([]);
     const [showMissingModal, setShowMissingModal] = React.useState(false);
+    const [showDeltaReview, setShowDeltaReview] = React.useState(false);
+    const [deltaSelectedNrcs, setDeltaSelectedNrcs] = React.useState<Set<string>>(new Set());
 
     // Estadísticas en tiempo real para el Dashboard
     const liveStats = useMemo(() => {
@@ -157,14 +163,51 @@ const LandingPage: React.FC = () => {
         }
     }, [pendingData, syncMode, schedules, instructors]);
 
+    // Diff por NRC para el modo Delta: compara lo que ya está en BD (para el periodo del
+    // archivo) contra lo que trae el archivo, para poder elegir qué NRC aplicar en vez de
+    // pisar todos los NRC del archivo a ciegas.
+    const deltaDiff = useMemo(() => {
+        if (!pendingData || syncMode !== 'delta') return null;
+        const periodosDelArchivo = Array.from(new Set(pendingData.schedules.map((s: any) => s.periodo).filter(Boolean))) as string[];
+        return computeDeltaDiff(schedules, pendingData.schedules, periodosDelArchivo);
+    }, [pendingData, syncMode, schedules]);
+
+    // Preselecciona todos los NRC nuevos/cambiados cada vez que se recalcula el diff
+    // (al entrar al panel con un archivo nuevo). Los "sin cambios" ni siquiera se listan.
+    React.useEffect(() => {
+        if (deltaDiff) {
+            setDeltaSelectedNrcs(new Set(deltaDiff.entries.map(e => e.nrc)));
+        }
+    }, [deltaDiff]);
+
+    const toggleDeltaNrc = (nrc: string) => {
+        setDeltaSelectedNrcs(prev => {
+            const next = new Set(prev);
+            if (next.has(nrc)) next.delete(nrc); else next.add(nrc);
+            return next;
+        });
+    };
+
+    // Payload real a subir: en modo Delta, solo las filas de los NRC que el usuario dejó
+    // marcados en el panel de revisión; en los demás modos, el archivo completo.
+    const getPayloadToSend = () => {
+        if (!pendingData) return pendingData;
+        if (syncMode !== 'delta') return pendingData;
+        return {
+            ...pendingData,
+            schedules: pendingData.schedules.filter((s: any) => deltaSelectedNrcs.has(s.nrc)),
+        };
+    };
+
     const handleConfirmSync = async () => {
         if (!pendingData) return;
+        const payloadToSend = getPayloadToSend();
 
         // Referencias detectadas DENTRO de Programación (por ID/nombre de instructor y por
         // Edificio+Aula) que no existen todavía en los catálogos actuales. A diferencia del
         // chequeo anterior, esto funciona aunque el archivo no traiga hojas de Instructores/Aula.
         const { missingInstructors: missingInst, missingRooms: missingRm } = findMissingCatalogReferences(
-            pendingData.schedules, instructors, rooms
+            payloadToSend.schedules, instructors, rooms
         );
 
         if (missingInst.length > 0 || missingRm.length > 0) {
@@ -190,9 +233,10 @@ const LandingPage: React.FC = () => {
             return;
         }
 
-        await uploadSchedulesToSupabase(pendingData, syncMode);
+        await uploadSchedulesToSupabase(payloadToSend, syncMode);
         setPendingData(null);
         setShowConfirmation(false);
+        setShowDeltaReview(false);
         setIsUpdating(false);
     };
 
@@ -207,9 +251,10 @@ const LandingPage: React.FC = () => {
         setShowMissingModal(false);
         setMissingInstructors([]);
         setMissingRooms([]);
-        await uploadSchedulesToSupabase(pendingData, syncMode);
+        await uploadSchedulesToSupabase(getPayloadToSend(), syncMode);
         setPendingData(null);
         setShowConfirmation(false);
+        setShowDeltaReview(false);
         setIsUpdating(false);
     };
 
@@ -273,7 +318,7 @@ const LandingPage: React.FC = () => {
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <button onClick={() => { setSyncMode('delta'); setShowSelection(false); setShowConfirmation(true); }} className="p-8 border-2 border-slate-50 bg-slate-50 rounded-[32px] text-left hover:border-blue-500 hover:bg-white hover:shadow-2xl hover:shadow-blue-100 transition-all group">
+                                <button onClick={() => { setSyncMode('delta'); setShowSelection(false); setShowDeltaReview(true); }} className="p-8 border-2 border-slate-50 bg-slate-50 rounded-[32px] text-left hover:border-blue-500 hover:bg-white hover:shadow-2xl hover:shadow-blue-100 transition-all group">
                                     <div className="font-black text-slate-900 mb-2 group-hover:text-blue-600 uppercase text-sm tracking-tight">Delta (Por NRC)</div>
                                     <p className="text-xs text-slate-500 leading-relaxed">Reemplaza solo los NRC que trae el archivo, sin tocar el resto. Ideal para correcciones puntuales sobre un periodo ya cargado.</p>
                                 </button>
@@ -319,6 +364,20 @@ const LandingPage: React.FC = () => {
                             </div>
                         </div>
                     </div>
+                )}
+
+                {/* PANEL DELTA: Revisión de cambios detectados por NRC antes de sincronizar */}
+                {showDeltaReview && deltaDiff && (
+                    <DeltaReviewPanel
+                        diff={deltaDiff}
+                        selectedNrcs={deltaSelectedNrcs}
+                        onToggleNrc={toggleDeltaNrc}
+                        onSelectAll={() => setDeltaSelectedNrcs(new Set(deltaDiff.entries.map(e => e.nrc)))}
+                        onSelectNone={() => setDeltaSelectedNrcs(new Set())}
+                        onConfirm={handleConfirmSync}
+                        onCancel={() => { setPendingData(null); setShowDeltaReview(false); }}
+                        isLoading={isLoading}
+                    />
                 )}
 
                 {/* MODAL 3: Registro de Referencias Pendientes (docentes/aulas nuevas detectadas en Programación) */}
@@ -569,6 +628,12 @@ const LandingPage: React.FC = () => {
                                 <RefreshCw size={24} className="text-white group-hover:rotate-180 transition-transform duration-500" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-white">Recuperar Tareas</span>
                             </button>
+                            {isSuperuser && (
+                                <button onClick={() => navigate('/users')} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
+                                    <ShieldCheck size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
+                                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Usuarios</span>
+                                </button>
+                            )}
                         </div>
                     </div>
                     {/* Decoración de fondo */}
