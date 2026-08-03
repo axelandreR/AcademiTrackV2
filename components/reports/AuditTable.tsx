@@ -11,7 +11,8 @@ interface AuditTableProps {
 const AuditTable: React.FC<AuditTableProps> = ({ filteredAudit, onSelectAudit }) => {
     return (
         <div className="bg-white rounded-[40px] shadow-2xl overflow-hidden border border-slate-100">
-            <table className="w-full text-left border-collapse">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px] text-left border-collapse">
                 <thead>
                     <tr className="bg-slate-50 border-b border-slate-100">
                         <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Instructor / ID</th>
@@ -61,6 +62,7 @@ const AuditTable: React.FC<AuditTableProps> = ({ filteredAudit, onSelectAudit })
                     ))}
                 </tbody>
             </table>
+            </div>
         </div>
     );
 };

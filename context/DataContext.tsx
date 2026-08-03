@@ -762,9 +762,22 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setHasInitialData(true);
 
       // Auto-Audit Trigger
+      // `schedules`/`administrativeTasks` son closures desactualizadas (el setState de
+      // arriba aún no se reflejó en ellas). Si `items` edita un registro que YA existe en
+      // esas listas (mismo id), sin deduplicar quedaban AMBAS versiones — la vieja del
+      // closure y la nueva de `items` — en el array que recibe recalculateInstructorAudit,
+      // duplicando esas horas para esa semana (mismo patrón de bug que "Individualizar").
+      // Se filtra por id cualquier copia desactualizada antes de sumar `items` (la versión
+      // recién guardada), igual que ya se hace arriba para setSchedules/setAdministrativeTasks.
+      const itemIds = new Set(items.map(i => i.id));
+      const auditSchedules = [
+        ...schedules.filter(s => !itemIds.has(s.id)),
+        ...administrativeTasks.filter(s => !itemIds.has(s.id)),
+        ...items
+      ];
       const affectedInstructors = new Set(items.map(i => i.instructor));
       affectedInstructors.forEach(name => {
-        recalculateInstructorAudit(name, [...schedules, ...administrativeTasks, ...items]);
+        recalculateInstructorAudit(name, auditSchedules);
       });
     } catch (err: any) {
       console.error("Error saving to Supabase:", err);

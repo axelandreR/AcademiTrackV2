@@ -18,7 +18,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import { useScheduleNavigation } from '../hooks/useScheduleNavigation';
 import { useScheduleCalculations } from '../hooks/useScheduleCalculations';
 import { useScheduleActions } from '../hooks/useScheduleActions';
-import { timeToMinutes } from '../utils/timeUtils';
+import { timeToMinutes, getStartOfWeek } from '../utils/timeUtils';
 
 import NavigationSidebar from '../components/NavigationSidebar';
 import ScheduleHeader from '../components/ScheduleHeader';
@@ -136,6 +136,21 @@ const SchedulePage: React.FC = () => {
             loadSchedulesForFilter(viewType, filter);
         }
     }, [searchParams.get('filter'), viewType, loadSchedulesForFilter]);
+
+    // Salto directo a la semana de un conflicto (ej. desde "Corregir en Horario" en el
+    // Reporte Global, que ya traía el ?date= en la URL pero nadie lo leía — te dejaba en
+    // el instructor/aula correcto pero en la semana actual, obligando a buscar a mano la
+    // semana del conflicto). Formato esperado: YYYY-MM-DD (ver Conflict.actualDate).
+    useEffect(() => {
+        const dateParam = searchParams.get('date');
+        if (!dateParam) return;
+        const parts = dateParam.split('-').map(Number);
+        if (parts.length !== 3 || parts.some(isNaN)) return;
+        const [year, month, day] = parts;
+        const parsedDate = new Date(year, month - 1, day);
+        if (isNaN(parsedDate.getTime())) return;
+        setCurrentWeekStart(getStartOfWeek(parsedDate));
+    }, [searchParams.get('date')]);
 
     // Force expansion of sidebar groups based on URL filter
     useEffect(() => {

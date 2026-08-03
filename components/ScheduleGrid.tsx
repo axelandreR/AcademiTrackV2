@@ -4,11 +4,13 @@ import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isContractualLoad, resolveInstructorByName } from '../services/businessRules';
 import { calculateWeeklyAudit } from '../services/auditCalculations';
+import { computeDailyJourney } from '../services/dailyJourney';
+import DailyJourneyPanel from './DailyJourneyPanel';
 import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData, ExtraHoursConfig } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
 import {
   Clock, MapPin, Hash, Video, LayoutDashboard, Table as TableIcon,
-  ChevronRight, ChevronLeft, Layers, AlertTriangle
+  ChevronRight, ChevronLeft, Layers, AlertTriangle, ZoomIn, ZoomOut
 } from 'lucide-react';
 import DataTable from './DataTable';
 import AuditModal from './AuditModal';
@@ -73,8 +75,32 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [isSelectorExpanded, setIsSelectorExpanded] = useState(true);
   const [isFooterExpanded, setIsFooterExpanded] = useState(false);
+  // Expandido por defecto solo en modo edición; en solo-visualización arranca colapsado
+  // (el rectángulo rojo/verde ya avisa si hay algo pendiente, sin ocupar espacio).
+  const [isJourneyExpanded, setIsJourneyExpanded] = useState(() => appMode === 'editor' && viewType === 'Instructor');
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [isResizing, setIsResizing] = useState(false);
+
+  // Zoom de la grilla (persistido por dispositivo). Usa la propiedad CSS `zoom` en vez de
+  // `transform: scale()` porque `zoom` sí afecta el layout real (el contenedor con scroll
+  // recalcula su scrollWidth/scrollHeight solo, sticky/absolute internos siguen funcionando
+  // sin ajustes extra) — con `transform` habría que recalcular el tamaño del contenedor a mano.
+  const ZOOM_MIN = 0.7;
+  const ZOOM_MAX = 1.6;
+  const ZOOM_STEP = 0.1;
+  const [zoomLevel, setZoomLevel] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('academitrack_schedule_zoom') : null;
+    const parsed = saved ? parseFloat(saved) : NaN;
+    return !isNaN(parsed) && parsed >= ZOOM_MIN && parsed <= ZOOM_MAX ? parsed : 1;
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem('academitrack_schedule_zoom', String(zoomLevel));
+  }, [zoomLevel]);
+
+  const zoomIn = () => setZoomLevel(prev => Math.min(ZOOM_MAX, Math.round((prev + ZOOM_STEP) * 100) / 100));
+  const zoomOut = () => setZoomLevel(prev => Math.max(ZOOM_MIN, Math.round((prev - ZOOM_STEP) * 100) / 100));
+  const resetZoom = () => setZoomLevel(1);
 
   const isEditorMode = appMode === 'editor' && viewType === 'Instructor';
   const isInstructorView = viewType === 'Instructor';
@@ -140,6 +166,19 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     });
   }, [weekStartDate]);
 
+  // Jornada diaria (inicio/fin real de presencia y horas por turno) para el panel del
+  // Editor de Carga. Se recalcula con cada click de edición porque depende de `schedules`.
+  const weeklyJourney = useMemo(() => {
+    if (!isInstructorView) return [];
+    return datesOfWeek.map((day) => ({
+      key: day.key,
+      journey: computeDailyJourney(
+        schedules.filter(s => isScheduleActiveOnDate(s, day.date, day.key)),
+        instructorType
+      ),
+    }));
+  }, [isInstructorView, datesOfWeek, schedules, instructorType]);
+
   const stats = useMemo(() => {
     const weekStart = datesOfWeek[0].date;
     const week = calculateWeeklyAudit(instructorType, weekStart, schedules, holidays, semesterEndDateSetting);
@@ -174,7 +213,9 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     return {
       ...base,
       hasAcademicDiscrepancy, hasContractDiscrepancy, hasAuditWarning, hasDailyBreach,
-      isDeficit: week.isHolidayWeek ? false : week.academicReal < week.academicMeta - 0.01
+      // week.hasAcademicDiscrepancy ya viene validado contra semanas vecinas si hay
+      // feriado (ver isHolidayWeekLoadNormal) — no hace falta anular de nuevo aquí.
+      isDeficit: hasAcademicDiscrepancy && week.academicReal < week.academicMeta - 0.01
     };
   }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig, semesterEndDateSetting]);
 
@@ -207,13 +248,14 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         }
       }
 
-      if (!week.isHolidayWeek) {
-        if (!isTC && week.hasAcademicDiscrepancy) {
-          list.push({ date: new Date(scannerDate), type: 'academic', meta: week.academicMeta, real: week.academicReal });
-        }
-        if (isTC && week.hasContractDiscrepancy) {
-          list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: week.contractReal });
-        }
+      // week.hasAcademicDiscrepancy/hasContractDiscrepancy ya vienen validados contra
+      // semanas vecinas cuando hay feriado (ver isHolidayWeekLoadNormal) — no hace falta
+      // anular de nuevo por semana con feriado aquí.
+      if (!isTC && week.hasAcademicDiscrepancy) {
+        list.push({ date: new Date(scannerDate), type: 'academic', meta: week.academicMeta, real: week.academicReal });
+      }
+      if (isTC && week.hasContractDiscrepancy) {
+        list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: week.contractReal });
       }
       scannerDate.setDate(scannerDate.getDate() + 7);
     }
@@ -319,22 +361,63 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       />
 
       <div className="flex-1 flex flex-col min-h-0 relative">
+        {contentMode === 'grid' && (
+          <div className="absolute top-3 right-3 z-[95] flex items-center bg-white/95 backdrop-blur border border-slate-200 rounded-2xl shadow-lg p-1">
+            <button
+              onClick={zoomOut}
+              disabled={zoomLevel <= ZOOM_MIN}
+              title="Alejar"
+              aria-label="Alejar la grilla"
+              className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            >
+              <ZoomOut size={15} />
+            </button>
+            <button
+              onClick={resetZoom}
+              title="Restablecer zoom"
+              aria-label="Restablecer zoom al 100%"
+              className="px-2 min-w-[44px] text-center text-[10px] font-black text-slate-500 hover:text-slate-900 transition-colors"
+            >
+              {Math.round(zoomLevel * 100)}%
+            </button>
+            <button
+              onClick={zoomIn}
+              disabled={zoomLevel >= ZOOM_MAX}
+              title="Acercar"
+              aria-label="Acercar la grilla"
+              className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            >
+              <ZoomIn size={15} />
+            </button>
+          </div>
+        )}
         <div className="flex-1 overflow-auto custom-scrollbar relative">
           {contentMode === 'grid' ? (
-            <div className="min-w-[1100px] flex flex-col h-fit">
-              <div className="flex border-b border-slate-300 bg-white sticky top-0 z-[70] shadow-sm">
-                <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[10px] uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
-                  <div className="flex items-center space-x-1"><span>Reloj</span><ScheduleLegend /></div>
-                  <Clock size={12} className="mt-1 opacity-50" />
+            <div className="min-w-[820px] md:min-w-[1100px] flex flex-col h-fit" style={{ zoom: zoomLevel } as React.CSSProperties}>
+              <div className="sticky top-0 z-[70] bg-white shadow-sm">
+                <div className="flex border-b border-slate-300 bg-white">
+                  <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[10px] uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
+                    <div className="flex items-center space-x-1"><span>Reloj</span><ScheduleLegend /></div>
+                    <Clock size={12} className="mt-1 opacity-50" />
+                  </div>
+                  <div className="flex-1 grid grid-cols-7">
+                    {datesOfWeek.map((day) => (
+                      <div key={day.key} className="p-4 text-center border-r border-slate-200 last:border-r-0 flex flex-col items-center justify-center space-y-1 bg-white">
+                        <div className="font-black text-slate-900 text-xs uppercase tracking-tighter">{day.label}</div>
+                        <div className="text-[10px] text-blue-700 font-black bg-blue-50/50 px-3 py-0.5 rounded-full border border-blue-100 shadow-sm">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex-1 grid grid-cols-7">
-                  {datesOfWeek.map((day) => (
-                    <div key={day.key} className="p-4 text-center border-r border-slate-200 last:border-r-0 flex flex-col items-center justify-center space-y-1 bg-white">
-                      <div className="font-black text-slate-900 text-xs uppercase tracking-tighter">{day.label}</div>
-                      <div className="text-[10px] text-blue-700 font-black bg-blue-50/50 px-3 py-0.5 rounded-full border border-blue-100 shadow-sm">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</div>
-                    </div>
-                  ))}
-                </div>
+                {isInstructorView && (
+                  <DailyJourneyPanel
+                    days={weeklyJourney}
+                    instructorType={instructorType}
+                    timeColumnWidth={TIME_COLUMN_WIDTH}
+                    isExpanded={isJourneyExpanded}
+                    onToggleExpanded={() => setIsJourneyExpanded(prev => !prev)}
+                  />
+                )}
               </div>
 
               <div className="relative flex bg-white" style={{ height: `${TOTAL_GRID_HEIGHT}rem` }}>

@@ -2,7 +2,7 @@
 import { useCallback, useMemo } from 'react';
 import { useData } from '../context/DataContext';
 import { isAcademicMetaLoad, isContractualLoad, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName } from '../services/businessRules';
-import { calculateWeeklyAudit } from '../services/auditCalculations';
+import { calculateWeeklyAudit, isHolidayWeekLoadNormal } from '../services/auditCalculations';
 import { ProcessedSchedule } from '../types';
 
 export const useScheduleCalculations = (currentWeekStart: Date) => {
@@ -39,7 +39,10 @@ export const useScheduleCalculations = (currentWeekStart: Date) => {
         // Único motor de auditoría (ver services/auditCalculations.ts::calculateWeeklyAudit) —
         // misma regla que la grilla, el Reporte Global y Avance de Horarios.
         const week = calculateWeeklyAudit(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate);
-        if (week.isHolidayWeek) return false;
+        // Antes, cualquier feriado en la semana anulaba el punto rojo de discrepancia en la
+        // lista lateral. Ahora solo se anula si las semanas vecinas (anterior/posterior)
+        // también respetan el límite diario — mismo criterio que el motor de auditoría.
+        if (week.isHolidayWeek && isHolidayWeekLoadNormal(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate)) return false;
 
         const isTC = inst.type === 'TC';
         let real = isTC ? week.contractReal : week.academicReal;

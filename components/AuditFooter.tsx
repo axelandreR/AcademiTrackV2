@@ -66,10 +66,20 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
                         <div className="hidden xl:block">
                             <h3 className="text-sm font-black uppercase tracking-widest leading-none">Carga {instructorType}</h3>
                             <p className={`text-[10px] font-bold uppercase mt-1 ${stats.hasAuditWarning ? 'text-rose-300' : 'text-slate-400'}`}>
-                                {stats.isWeekOutOfSemester ? 'Vigencia de Ciclo Finalizada' : stats.isHolidayInWeek ? 'Vigencia de Feriado (Auditoría Suspendida)' : stats.hasAuditWarning ? 'Alerta Detectada' : 'Estado Óptimo'}
+                                {stats.isWeekOutOfSemester
+                                    ? 'Vigencia de Ciclo Finalizada'
+                                    : stats.hasAuditWarning
+                                        ? 'Alerta Detectada'
+                                        : stats.isHolidayInWeek
+                                            ? 'Semana con Feriado (Validada con Semanas Vecinas)'
+                                            : 'Estado Óptimo'}
                             </p>
                         </div>
-                        {!stats.isHolidayInWeek && !stats.isWeekOutOfSemester && (
+                        {/* La Auditoría Detallada ya no se oculta por tener feriado en la semana:
+                            week.hasDailyBreach/hasAcademicDiscrepancy/hasContractDiscrepancy ya vienen
+                            validados contra semanas vecinas (ver isHolidayWeekLoadNormal), así que si
+                            hay algo real que revisar, el botón debe seguir disponible para verlo. */}
+                        {!stats.isWeekOutOfSemester && (
                             <button
                                 onClick={() => setShowAuditModal(true)}
                                 className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black uppercase tracking-widest transition-all shadow-lg active:scale-95 px-4 py-2 text-[10px] w-full xl:w-auto justify-center"
@@ -78,10 +88,10 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
                                 <span className="whitespace-nowrap">Auditoría Detallada</span>
                             </button>
                         )}
-                        {(stats.isHolidayInWeek || stats.isWeekOutOfSemester) && (
-                            <div className={`flex items-center space-x-2 ${stats.isWeekOutOfSemester ? 'bg-slate-600' : 'bg-amber-50'} text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest`}>
+                        {stats.isWeekOutOfSemester && (
+                            <div className="flex items-center space-x-2 bg-slate-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">
                                 <AlertCircle size={14} />
-                                <span>{stats.isWeekOutOfSemester ? 'Fuera de Ciclo Lectivo' : 'Semana con Feriado'}</span>
+                                <span>Fuera de Ciclo Lectivo</span>
                             </div>
                         )}
                     </div>

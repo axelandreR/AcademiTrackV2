@@ -24,11 +24,10 @@ export const validateInstructorWeek = (
     holidays: HolidayData[],
     semesterEndDate: Date
 ): AuditResult => {
+    // week.hasContractDiscrepancy/hasAcademicDiscrepancy/hasDailyBreach ya vienen
+    // validados contra semanas vecinas cuando hay feriado (ver isHolidayWeekLoadNormal en
+    // auditCalculations.ts) — ya no hace falta anular esta función entera por feriado.
     const week = calculateWeeklyAudit(instructor.type, weekStart, schedules, holidays, semesterEndDate);
-
-    if (week.isHolidayWeek) {
-        return { isValid: true, reasons: [] };
-    }
 
     const reasons: string[] = [];
 
