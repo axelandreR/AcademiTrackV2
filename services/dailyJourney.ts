@@ -14,6 +14,7 @@ export interface DailyJourneySummary {
     afternoon: ShiftSummary;
     totalHours: number;
     dailyLimit: number;
+    // Solo TC: para TP el Refrigerio no es obligatorio, nunca se marca como faltante.
     missingRefrigerio: boolean;
     // TC: el día tiene tareas pero no llega a la meta diaria (9.2h).
     belowTarget: boolean;
@@ -84,7 +85,9 @@ export const computeDailyJourney = (
         afternoon,
         totalHours,
         dailyLimit,
-        missingRefrigerio: !refrigerio,
+        // Solo aplica a TC: los TP suelen tener jornadas cortas y no están obligados a
+        // registrar Refrigerio, así que no debe marcarse como pendiente para ellos.
+        missingRefrigerio: instructorType === 'TC' && !refrigerio,
         belowTarget: instructorType === 'TC' && totalHours < dailyLimit - 0.01,
         overTarget: totalHours > dailyLimit + 0.01,
     };

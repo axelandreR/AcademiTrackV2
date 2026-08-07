@@ -37,7 +37,7 @@ export const validateInstructorWeek = (
         }
     } else {
         if (week.hasAcademicDiscrepancy) {
-            reasons.push(`Programado: ${week.academicReal.toFixed(2)}h vs Requerido: ${week.academicMeta.toFixed(2)}h`);
+            reasons.push(`Programado: ${week.academicReal.toFixed(2)}h vs Requerido: ${week.academicHoursMeta.toFixed(2)}h (Horas Académicas)`);
         }
     }
 

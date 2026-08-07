@@ -17,6 +17,9 @@ interface AuditFooterProps {
         otherHours: number;
         assignHours: number;
         fileLoadHours: number;
+        // Meta real para TP: ARCHIVO convertido a horas académicas (45min=1h, con
+        // excepción de CNIU-108/CNIU-126/otras asignaciones en cronológico). No aplica a TC.
+        academicHoursMeta: number;
         hasAcademicDiscrepancy: boolean;
         hasContractDiscrepancy: boolean;
         totalContractHours: number;
@@ -99,6 +102,12 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
 
                 <div className="grid grid-cols-3 md:grid-cols-4 xl:flex xl:items-center flex-wrap gap-x-6 gap-y-4 justify-center md:justify-end mt-6 xl:mt-0 pt-6 xl:pt-0 border-t border-white/10 xl:border-none">
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Archivo</span><span className="text-base font-black text-blue-400">{stats.fileLoadHours.toFixed(2)}h</span></div>
+                    {instructorType === 'TP' && (
+                        <div className="flex flex-col items-center" title="Meta a cumplir: ARCHIVO convertido a horas académicas (45min=1h; CNIU-108/CNIU-126/otras asignaciones en cronológico)">
+                            <span className="text-[8px] font-black text-amber-400 uppercase mb-1">Horas Académicas</span>
+                            <span className="text-base font-black text-amber-300">{stats.academicHoursMeta.toFixed(2)}h</span>
+                        </div>
+                    )}
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Real</span><span className={`text-base font-black ${stats.hasAcademicDiscrepancy ? 'text-rose-400' : 'text-emerald-400'}`}>{stats.academicLoad.toFixed(2)}h</span></div>
                     <div className="h-8 w-px bg-white/10 hidden xl:block" />
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Sinc</span><span className="text-base font-black text-slate-200">{stats.syncHours.toFixed(2)}h</span></div>

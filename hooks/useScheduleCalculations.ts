@@ -46,7 +46,9 @@ export const useScheduleCalculations = (currentWeekStart: Date) => {
 
         const isTC = inst.type === 'TC';
         let real = isTC ? week.contractReal : week.academicReal;
-        let meta = isTC ? 46 : week.academicMeta;
+        // TP compara contra Horas Académicas (ARCHIVO convertido), no el ARCHIVO crudo —
+        // mismo criterio que el resto de las pantallas de auditoría.
+        let meta = isTC ? 46 : week.academicHoursMeta;
 
         // Si estamos usando datos de resumen (globalSchedulesSummary) sin horas de
         // inicio/fin por bloque, el cálculo por horario da 0 aunque sí haya carga —

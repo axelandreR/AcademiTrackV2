@@ -13,6 +13,11 @@ export interface WeeklyAuditBreakdown {
     assignHours: number;
     academicReal: number;
     academicMeta: number;
+    // Meta en horas académicas para TP (ver conversión más abajo): cursos normales
+    // convertidos 45min=1h académica; CNIU-108/CNIU-126/otras asignaciones se cuentan en
+    // cronológico (60min=1h) igual que hoy. No aplica a TC (queda en 0, TC sigue usando
+    // academicMeta/CONTRACT_HOURS_TC como siempre).
+    academicHoursMeta: number;
     contractReal: number;
     isHolidayWeek: boolean;
     hasDailyBreach: boolean;
@@ -85,6 +90,13 @@ export const calculateWeeklyAudit = (
 
     let syncMin = 0, asyncMin = 0, otherMin = 0, prepMin = 0, assignMin = 0;
     let hasDailyBreach = false;
+    // Horas Académicas (meta para TP, ver comentario en la interfaz): se acumulan por
+    // separado los minutos de cursos del ARCHIVO (no administrativos) según la misma regla
+    // que ya separa OTROS del resto — regulares (dividir /45) vs CNIU-108/CNIU-126/otras
+    // asignaciones (dividir /60) — calculado día por día como el resto del motor, no por
+    // solapamiento de rango de fechas.
+    let academicHoursRegularMin = 0;
+    let academicHoursExceptionMin = 0;
 
     for (let i = 0; i < 7; i++) {
         const day = new Date(weekStart);
@@ -112,9 +124,11 @@ export const calculateWeeklyAudit = (
             // dejaba esta rama inalcanzable (bug confirmado: OTROS siempre mostraba 0.00h).
             if (!s.isAdministrative && isOtherFunctionsCourse(s)) {
                 otherMin += dur;
+                academicHoursExceptionMin += dur;
             } else if (isAcademicMetaLoad(s)) {
                 const isAutoestudio = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
                 if (isAutoestudio) asyncMin += dur; else syncMin += dur;
+                if (!s.isAdministrative) academicHoursRegularMin += dur;
             } else if (s.isAdministrative) {
                 if (s.category === 'preparacion') prepMin += dur;
                 else if (s.category === 'coordinador') otherMin += dur;
@@ -130,6 +144,10 @@ export const calculateWeeklyAudit = (
     const otherHours = otherMin / 60;
     const academicReal = syncHours + asyncHours + otherHours;
     const contractReal = academicReal + (prepMin / 60) + (assignMin / 60);
+    // Solo tiene sentido para TP (por ahora). Cursos normales: 45min = 1h académica.
+    // CNIU-108/CNIU-126/otras asignaciones: se quedan en cronológico (60min = 1h), igual
+    // que ya se hace para OTROS.
+    const academicHoursMeta = isTC ? 0 : (academicHoursRegularMin / 45) + (academicHoursExceptionMin / 60);
 
     // Antes, cualquier feriado en la semana anulaba la auditoría semanal completa (a pedido
     // del negocio, porque el corte manual de esa clase el día feriado hacía que la semana
@@ -141,14 +159,17 @@ export const calculateWeeklyAudit = (
     const suppressWeeklyDiscrepancy = isHolidayWeek && !skipHolidayNeighborCheck &&
         isHolidayWeekLoadNormal(instructorType, weekStart, instructorSchedules, holidays, semesterEndDate);
 
-    const hasAcademicDiscrepancy = !suppressWeeklyDiscrepancy && Math.abs(academicReal - academicMeta) > 0.01;
+    // TP: la meta ahora es Horas Académicas (convertida), no el ARCHIVO crudo. TC no cambia
+    // (sigue sin usar esta comparación como gate principal — ver hasContractDiscrepancy).
+    const hasAcademicDiscrepancy = !suppressWeeklyDiscrepancy &&
+        Math.abs(academicReal - (isTC ? academicMeta : academicHoursMeta)) > 0.01;
     const hasContractDiscrepancy = !suppressWeeklyDiscrepancy && isTC && Math.abs(contractReal - CONTRACT_HOURS_TC) > 0.01;
 
     const isValid = !hasDailyBreach && (isTC ? !hasContractDiscrepancy : !hasAcademicDiscrepancy);
 
     return {
         syncHours, asyncHours, otherHours, prepHours: prepMin / 60, assignHours: assignMin / 60,
-        academicReal, academicMeta, contractReal,
+        academicReal, academicMeta, academicHoursMeta, contractReal,
         isHolidayWeek, hasDailyBreach, hasAcademicDiscrepancy, hasContractDiscrepancy, isValid
     };
 };
@@ -250,7 +271,7 @@ export const calculateInstructorAudit = (
     // S1: semana de referencia para el estado resumen (DEFICIT/EXCESO/OK) que se muestra
     // en la tabla del Reporte Global — usa el motor único (ver calculateWeeklyAudit).
     const s1 = calculateWeeklyAudit(instructor.type, firstWeekStart, instSchedules, holidays, semesterEndDate);
-    const metaCargaS1 = isTC ? LOAD_LIMITS.WEEKLY_TC : s1.academicMeta;
+    const metaCargaS1 = isTC ? LOAD_LIMITS.WEEKLY_TC : s1.academicHoursMeta;
     const cargaRealS1 = isTC ? s1.contractReal : s1.academicReal;
     const hasHolidayS1 = s1.isHolidayWeek;
     const hasDailyBreachS1 = s1.hasDailyBreach;
@@ -291,7 +312,7 @@ export const calculateInstructorAudit = (
         // (ni es correcto) volver a anular por semana con feriado aquí.
         const wHasDiscrepancy = isTC ? week.hasContractDiscrepancy : week.hasAcademicDiscrepancy;
         if (wHasDiscrepancy) {
-            const wMeta = isTC ? LOAD_LIMITS.WEEKLY_TC : week.academicMeta;
+            const wMeta = isTC ? LOAD_LIMITS.WEEKLY_TC : week.academicHoursMeta;
             const wReal = isTC ? week.contractReal : week.academicReal;
             const scanEnd = new Date(scannerDate);
             scanEnd.setDate(scannerDate.getDate() + 6);

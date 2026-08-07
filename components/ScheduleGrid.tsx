@@ -190,6 +190,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       syncHours: week.syncHours, asyncHours: week.asyncHours, prepHours: week.prepHours, otherHours: week.otherHours,
       assignHours: week.assignHours, fileLoadHours: week.academicMeta, academicLoad: week.academicReal,
       totalContractHours: week.contractReal, targetLoadForWeek: week.academicMeta,
+      // Meta real para TP (ARCHIVO convertido a horas académicas, ver auditCalculations.ts).
+      academicHoursMeta: week.academicHoursMeta,
       isHolidayInWeek: week.isHolidayWeek, isWeekOutOfSemester
     };
 
@@ -215,7 +217,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       hasAcademicDiscrepancy, hasContractDiscrepancy, hasAuditWarning, hasDailyBreach,
       // week.hasAcademicDiscrepancy ya viene validado contra semanas vecinas si hay
       // feriado (ver isHolidayWeekLoadNormal) — no hace falta anular de nuevo aquí.
-      isDeficit: hasAcademicDiscrepancy && week.academicReal < week.academicMeta - 0.01
+      // TP compara contra Horas Académicas, no contra el ARCHIVO crudo (ver auditCalculations.ts).
+      isDeficit: hasAcademicDiscrepancy && week.academicReal < (instructorType === 'TC' ? week.academicMeta : week.academicHoursMeta) - 0.01
     };
   }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig, semesterEndDateSetting]);
 
@@ -252,7 +255,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       // semanas vecinas cuando hay feriado (ver isHolidayWeekLoadNormal) — no hace falta
       // anular de nuevo por semana con feriado aquí.
       if (!isTC && week.hasAcademicDiscrepancy) {
-        list.push({ date: new Date(scannerDate), type: 'academic', meta: week.academicMeta, real: week.academicReal });
+        list.push({ date: new Date(scannerDate), type: 'academic', meta: week.academicHoursMeta, real: week.academicReal });
       }
       if (isTC && week.hasContractDiscrepancy) {
         list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: week.contractReal });
@@ -356,7 +359,9 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         activeModality={activeModality}
         setActiveModality={setActiveModality}
         currentHours={instructorType === 'TC' ? stats.totalContractHours : stats.academicLoad}
-        maxHours={instructorType === 'TC' ? 46 : stats.fileLoadHours}
+        // TP compara contra Horas Académicas (ARCHIVO convertido), no el ARCHIVO crudo —
+        // mismo criterio que ya usa Auditoría (ver services/auditCalculations.ts).
+        maxHours={instructorType === 'TC' ? 46 : stats.academicHoursMeta}
         suppressWarnings={isSimulationMode || simulationConfig?.ignoreAudit}
       />
 
