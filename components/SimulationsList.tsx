@@ -7,11 +7,12 @@ import { useSearchParams } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
 
 const SimulationsList: React.FC = () => {
-    const { loadScenario } = useData();
+    const { loadScenario, notify, isSimulationMode } = useData();
     const [scenarios, setScenarios] = useState<Scenario[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [_, setSearchParams] = useSearchParams();
     const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+    const [pendingLoadId, setPendingLoadId] = useState<string | null>(null);
 
     const fetchScenarios = async () => {
         setIsLoading(true);
@@ -48,11 +49,11 @@ const SimulationsList: React.FC = () => {
             if (error) throw error;
             setScenarios(prev => prev.filter(s => s.id !== id));
         } catch (e: any) {
-            alert('Error al eliminar: ' + e.message);
+            notify('Error al eliminar: ' + e.message, 'error');
         }
     };
 
-    const handleLoad = async (id: string) => {
+    const doLoad = async (id: string) => {
         const metadata = await loadScenario(id);
         if (metadata?.view && metadata?.filter) {
             setSearchParams({ view: metadata.view, filter: metadata.filter });
@@ -64,11 +65,27 @@ const SimulationsList: React.FC = () => {
         }
     };
 
+    const handleLoad = (id: string) => {
+        // Si ya hay una simulación en curso, cargar otro escenario la sobrescribe sin
+        // avisar — confirmamos primero para no perder cambios sin guardar.
+        if (isSimulationMode) {
+            setPendingLoadId(id);
+            return;
+        }
+        doLoad(id);
+    };
+
+    const confirmLoad = async () => {
+        const id = pendingLoadId;
+        setPendingLoadId(null);
+        if (id) await doLoad(id);
+    };
+
     return (
-        <div className="flex-1 bg-slate-50 p-8 overflow-y-auto">
+        <div className="flex-1 bg-slate-50 p-4 lg:p-8 overflow-y-auto">
             <div className="max-w-5xl mx-auto">
-                <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Simulaciones Guardadas</h2>
-                <p className="text-slate-500 mb-8 font-medium">Gestiona y cargas tus escenarios de prueba previamente guardados.</p>
+                <h2 className="text-lg lg:text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Simulaciones Guardadas</h2>
+                <p className="text-sm text-slate-500 mb-6 lg:mb-8 font-medium">Gestiona y carga tus escenarios de prueba previamente guardados.</p>
 
                 {isLoading ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -148,6 +165,16 @@ const SimulationsList: React.FC = () => {
                 variant="danger"
                 onCancel={() => setPendingDeleteId(null)}
                 onConfirm={confirmDelete}
+            />
+
+            <ConfirmDialog
+                isOpen={pendingLoadId !== null}
+                title="Cargar escenario"
+                message="Ya tienes una simulación en curso. Cargar este escenario reemplazará esos cambios sin guardarlos."
+                confirmLabel="Cargar de todas formas"
+                variant="danger"
+                onCancel={() => setPendingLoadId(null)}
+                onConfirm={confirmLoad}
             />
         </div>
     );

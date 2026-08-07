@@ -4,12 +4,14 @@ import { useData } from '../context/DataContext';
 import { Play, Save, X, CheckCheck, AlertTriangle, Clock } from 'lucide-react';
 import ExtraHoursModal from './ExtraHoursModal';
 import ConfirmDialog from './ConfirmDialog';
+import SaveScenarioModal from './SaveScenarioModal';
 
 const SimulationBar: React.FC = () => {
     const { isSimulationMode, endSimulation, applySimulation, saveScenario, extraHoursConfig, setExtraHoursConfig, holidays, simulationConfig } = useData();
     const [isApplying, setIsApplying] = useState(false);
     const [isExtraHoursModalOpen, setIsExtraHoursModalOpen] = useState(false);
     const [isApplyConfirmOpen, setIsApplyConfirmOpen] = useState(false);
+    const [isSaveScenarioOpen, setIsSaveScenarioOpen] = useState(false);
     const [searchParams] = useSearchParams();
 
     if (!isSimulationMode) return null;
@@ -23,10 +25,9 @@ const SimulationBar: React.FC = () => {
         setIsApplying(false);
     };
 
-    const handleSave = async () => {
-        const name = prompt("Nombre del Escenario (para uso futuro):");
-        if (!name) return;
+    const handleSave = () => setIsSaveScenarioOpen(true);
 
+    const confirmSave = async (name: string) => {
         const currentView = searchParams.get('view') || 'Bloque';
         const currentFilter = searchParams.get('filter') || '';
 
@@ -38,51 +39,55 @@ const SimulationBar: React.FC = () => {
     };
 
     return (
-        <div className="w-full bg-amber-500 text-white px-6 py-3 shadow-md border-b-4 border-amber-600 flex items-center justify-between z-[1000] relative shrink-0">
-            <div className="flex items-center space-x-4">
-                <div className="p-2 bg-white/20 rounded-full animate-pulse">
-                    <AlertTriangle size={24} className="text-white" />
+        <div className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-2xl lg:rounded-3xl shadow-lg shadow-amber-500/20 px-4 py-3 lg:px-5 lg:py-3 mb-4 shrink-0 relative z-[80] flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0 lg:flex-1">
+                <div className="p-2 bg-white/20 rounded-xl shrink-0">
+                    <AlertTriangle size={18} className="text-white" />
                 </div>
-                <div>
-                    <h3 className="font-black text-lg uppercase tracking-widest leading-none">Modo de Prueba (Simulación)</h3>
-                    <p className="text-xs font-bold text-amber-100 mt-1">Los cambios realizados NO se guardan en la base de datos hasta que decidas "Aplicar".</p>
+                <div className="min-w-0">
+                    <h3 className="font-black text-sm lg:text-base uppercase tracking-widest leading-none truncate">Modo de Prueba (Simulación)</h3>
+                    <p className="text-[10px] font-bold text-amber-100 mt-1 leading-snug">Los cambios NO se guardan hasta que decidas "Aplicar".</p>
                 </div>
             </div>
 
-            <div className="flex items-center space-x-3">
+            <div className="flex items-center flex-wrap gap-2 shrink-0">
                 <button
                     onClick={() => setIsExtraHoursModalOpen(true)}
-                    className="flex items-center space-x-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold uppercase text-xs transition-all border border-amber-400/50"
+                    className="flex items-center gap-1.5 px-3 py-2 bg-white/15 hover:bg-white/25 text-white rounded-xl font-bold uppercase text-[10px] tracking-wide transition-all shrink-0"
+                    title="Configurar Horas Extras"
                 >
-                    <Clock size={16} />
+                    <Clock size={14} />
                     <span>Configurar HE</span>
                 </button>
 
                 <button
                     onClick={handleSave}
-                    className="flex items-center space-x-2 px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg font-bold uppercase text-xs transition-all"
+                    className="flex items-center gap-1.5 px-3 py-2 bg-white/15 hover:bg-white/25 text-white rounded-xl font-bold uppercase text-[10px] tracking-wide transition-all shrink-0"
+                    title="Guardar Escenario"
                 >
-                    <Save size={16} />
+                    <Save size={14} />
                     <span>Guardar Escenario</span>
                 </button>
 
                 <button
                     onClick={endSimulation}
-                    className="flex items-center space-x-2 px-4 py-2 bg-slate-900/50 hover:bg-slate-900 text-white rounded-lg font-bold uppercase text-xs transition-all"
+                    className="flex items-center gap-1.5 px-3 py-2 bg-black/20 hover:bg-black/30 text-white rounded-xl font-bold uppercase text-[10px] tracking-wide transition-all shrink-0"
+                    title="Descartar y Salir"
                 >
-                    <X size={16} />
+                    <X size={14} />
                     <span>Descartar y Salir</span>
                 </button>
 
                 <button
                     onClick={handleApply}
                     disabled={isApplying}
-                    className="flex items-center space-x-2 px-6 py-2 bg-white text-amber-600 hover:bg-amber-50 rounded-lg font-black uppercase text-xs shadow-lg transition-all transform hover:scale-105"
+                    className="flex items-center gap-1.5 px-4 py-2 bg-white text-amber-600 hover:bg-amber-50 rounded-xl font-black uppercase text-[10px] tracking-wide shadow-md transition-all active:scale-95 disabled:opacity-60 shrink-0"
+                    title="Aplicar Cambios Reales"
                 >
                     {isApplying ? (
-                        <div className="animate-spin h-4 w-4 border-2 border-amber-600 rounded-full border-t-transparent"></div>
+                        <div className="animate-spin h-3.5 w-3.5 border-2 border-amber-600 rounded-full border-t-transparent"></div>
                     ) : (
-                        <CheckCheck size={16} />
+                        <CheckCheck size={14} />
                     )}
                     <span>{isApplying ? 'Aplicando...' : 'Aplicar Cambios Reales'}</span>
                 </button>
@@ -105,6 +110,12 @@ const SimulationBar: React.FC = () => {
                 variant="danger"
                 onCancel={() => setIsApplyConfirmOpen(false)}
                 onConfirm={confirmApply}
+            />
+
+            <SaveScenarioModal
+                isOpen={isSaveScenarioOpen}
+                onClose={() => setIsSaveScenarioOpen(false)}
+                onSave={confirmSave}
             />
         </div>
     );

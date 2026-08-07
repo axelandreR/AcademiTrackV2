@@ -5,6 +5,7 @@ import { supabase } from '../supabaseClient';
 import { validateInstructorWeek } from '../services/auditService';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE, ACTIVE_PERIODO } from '../constants';
 import { belongsToInstructor, findFuzzyNameMatches, isFuzzyNameMatch, normalizeNameKey, buildInstructorScheduleIndex, getInstructorSchedules } from '../services/businessRules';
+import Toast, { ToastState } from '../components/Toast';
 
 const mapHolidayFromDB = (h: any): HolidayData => ({
   date: parseLocalDBDate(h.date),
@@ -88,10 +89,11 @@ interface DataContextType {
   setExtraHoursConfig: (config: ExtraHoursConfig | null) => void;
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
-  importScheduleToSimulation: (scheduleId: string, targetInstructor: string) => void;
+  importScheduleToSimulation: (scheduleId: string, targetInstructor: string) => boolean;
   applySimulation: () => Promise<void>;
   saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
   loadScenario: (id: string) => Promise<any>;
+  notify: (message: string, type?: 'success' | 'error') => void;
   recalculateInstructorAudit: (instructorName: string, currentSchedules: ProcessedSchedule[], instructorsList?: Instructor[]) => Promise<void>;
   syncInstructorIdInSchedules: (instructor: Instructor) => Promise<void>;
   updateAppSetting: (key: string, value: string) => Promise<void>;
@@ -967,30 +969,28 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [simulationAdmin, setSimulationAdmin] = useState<ProcessedSchedule[]>([]);
   const [simulationConfig, setSimulationConfig] = useState<any>({});
   const [extraHoursConfig, setExtraHoursConfig] = useState<ExtraHoursConfig | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const notify = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+  }, []);
 
-  // Persistencia de HE aislada por instructor
+  // Persistencia de HE aislada por instructor. Antes había un efecto separado que
+  // recargaba automáticamente desde localStorage cada vez que cambiaba
+  // simulationConfig.instructorFilter — eso competía con loadScenario (que también
+  // setea extraHoursConfig, con el valor guardado en el escenario) y podía pisar el
+  // valor recién restaurado con una versión vieja de localStorage del mismo instructor.
+  // Ahora cada punto de entrada (startSimulation / loadScenario) decide explícitamente
+  // el valor correcto, sin un efecto reactivo de por medio.
+  //
+  // La clave preferimos por ID de instructor (estable) en vez de nombre crudo, para
+  // no colisionar entre instructores homónimos; instructorKey cae a instructorFilter
+  // (nombre) para escenarios guardados antes de este cambio, que no lo tienen.
   useEffect(() => {
-    if (isSimulationMode && simulationConfig?.instructorFilter) {
-      const instructor = simulationConfig.instructorFilter;
-      const savedHE = localStorage.getItem(`extraHoursConfig_${instructor}`);
-      if (savedHE) {
-        try {
-          setExtraHoursConfig(JSON.parse(savedHE));
-        } catch (e) {
-          console.error(`Error loading HE for ${instructor}:`, e);
-          setExtraHoursConfig(null);
-        }
-      } else {
-        setExtraHoursConfig(null);
-      }
+    const key = simulationConfig?.instructorKey || simulationConfig?.instructorFilter;
+    if (isSimulationMode && key && extraHoursConfig) {
+      localStorage.setItem(`extraHoursConfig_${key}`, JSON.stringify(extraHoursConfig));
     }
-  }, [isSimulationMode, simulationConfig?.instructorFilter]);
-
-  useEffect(() => {
-    if (isSimulationMode && simulationConfig?.instructorFilter && extraHoursConfig) {
-      localStorage.setItem(`extraHoursConfig_${simulationConfig.instructorFilter}`, JSON.stringify(extraHoursConfig));
-    }
-  }, [extraHoursConfig, isSimulationMode, simulationConfig?.instructorFilter]);
+  }, [extraHoursConfig, isSimulationMode, simulationConfig?.instructorKey, simulationConfig?.instructorFilter]);
 
   const startSimulation = useCallback((instructorFilter?: string) => {
     console.log("Starting Simulation...");
@@ -1016,11 +1016,31 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const matchesFilter = (s: ProcessedSchedule) => instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
         schedulesToClone = schedules.filter(matchesFilter);
         adminToClone = administrativeTasks.filter(matchesFilter);
-        // Set configuration to ignore audit alerts for this focused simulation
-        setSimulationConfig({ instructorFilter, ignoreAudit: true });
+        // Set configuration to ignore audit alerts for this focused simulation.
+        // instructorKey identifica al instructor por ID cuando lo tenemos (evita
+        // colisiones entre homónimos en localStorage); si no, cae al nombre.
+        const instructorKey = instObj?.id || instructorFilter;
+        setSimulationConfig({ instructorFilter, instructorKey, ignoreAudit: true });
+
+        // Cargar la plantilla de Horas Extra guardada para este instructor (si existe).
+        // Se hace explícito aquí, en vez de un efecto reactivo separado, para que no
+        // compita con loadScenario al restaurar un escenario guardado.
+        const savedHE = localStorage.getItem(`extraHoursConfig_${instructorKey}`);
+        if (savedHE) {
+          try {
+            setExtraHoursConfig(JSON.parse(savedHE));
+          } catch (e) {
+            console.error(`Error loading HE for ${instructorKey}:`, e);
+            setExtraHoursConfig(null);
+          }
+        } else {
+          setExtraHoursConfig(null);
+        }
       } else {
-        // Global simulation (standard behavior)
+        // Global simulation (standard behavior) — sin instructor específico no hay
+        // dónde persistir la plantilla de HE, se empieza limpio.
         setSimulationConfig({ ignoreAudit: true });
+        setExtraHoursConfig(null);
       }
 
       setSimulationSchedules(clone(schedulesToClone));
@@ -1028,9 +1048,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setIsSimulationMode(true);
     } catch (e: any) {
       console.error("Error starting simulation:", e);
-      alert("Error al iniciar simulación: " + e.message);
+      notify("Error al iniciar simulación: " + e.message, 'error');
     }
-  }, [schedules, administrativeTasks]);
+  }, [schedules, administrativeTasks, notify]);
 
   const endSimulation = useCallback(() => {
     setIsSimulationMode(false);
@@ -1040,12 +1060,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setSimulationConfig({});
   }, []);
 
-  const importScheduleToSimulation = useCallback((scheduleId: string, targetInstructor: string) => {
+  const importScheduleToSimulation = useCallback((scheduleId: string, targetInstructor: string): boolean => {
     // 1. Find in REAL data source (The Archive)
     const source = [...schedules, ...administrativeTasks].find(s => s.id === scheduleId);
     if (!source) {
-      alert("No se encontró el horario original en el archivo.");
-      return;
+      notify("No se encontró el horario original en el archivo.", 'error');
+      return false;
     }
 
     // 2. Get Target Instructor Metadata
@@ -1074,9 +1094,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setSimulationSchedules(prev => [...prev, newSchedule]);
     }
 
-    // Feedback (Optional, maybe toast later)
-    // alert(`Curso ${newSchedule.courseCode} importado a ${targetInstructor}`);
-  }, [schedules, administrativeTasks, instructors]);
+    return true;
+  }, [schedules, administrativeTasks, instructors, notify]);
 
   // La confirmación previa (acción irreversible: escribe en la BD real) vive en el
   // componente que la dispara — components/SimulationBar.tsx — para poder usar el modal
@@ -1084,18 +1103,22 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const applySimulation = useCallback(async () => {
     setIsLoading(true);
     try {
-      // 1. Identify Changes (Diff Logic - simplified: Replace All or Upsert Changed)
-      // For safety in this MVP, we might want to just bulk update/upsert ALL simulated items that changed.
-      // Or simply: 
-      // A. Delete everything and re-insert? (Risky)
-      // B. Upsert everything? (Safe but heavy)
-      // C. Smart Diff? (Complex)
+      // Alcance real a comparar: si la simulación está filtrada a un instructor
+      // (startSimulation con instructorFilter), 'simulationSchedules'/'simulationAdmin'
+      // SOLO contienen los horarios de ESE instructor. Comparar contra TODOS los
+      // horarios reales del sistema borraría los de todos los demás instructores
+      // (todo lo que no está en la simulación se interpreta como "eliminado").
+      // Por eso acotamos 'realItems' al mismo subconjunto que usó startSimulation,
+      // usando el mismo matching (ID prioritario, nombre como último recurso).
+      const instructorFilter = simulationConfig?.instructorFilter;
+      let realItems: ProcessedSchedule[] = [...schedules, ...administrativeTasks];
+      if (instructorFilter) {
+        const instObj = instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter));
+        const matchesFilter = (s: ProcessedSchedule) => instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
+        realItems = realItems.filter(matchesFilter);
+      }
 
-      // Let's go with B: Upsert everything from simulation to DB.
-      // But we also need to handle DELETIONS.
-      // If an item exists in 'schedules' but not in 'simulationSchedules', it must be deleted.
-
-      const realIds = new Set([...schedules, ...administrativeTasks].map(s => s.id));
+      const realIds = new Set(realItems.map(s => s.id));
       const simIds = new Set([...simulationSchedules, ...simulationAdmin].map(s => s.id));
 
       const toDelete = [...realIds].filter(id => !simIds.has(id));
@@ -1114,21 +1137,37 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (error) throw error;
       }
 
-      // Update Local Real State
-      setSchedules(simulationSchedules);
-      setAdministrativeTasks(simulationAdmin);
+      // Actualizar el estado local: fusionar (quitar lo borrado, reemplazar/agregar lo
+      // subido), NO reemplazar todo el arreglo — de lo contrario una simulación filtrada
+      // borraría del estado local (aunque no de la BD) a todos los demás instructores.
+      const deletedSet = new Set(toDelete);
+      const upsertAcadIds = new Set(simulationSchedules.map(s => s.id));
+      const upsertAdminIds = new Set(simulationAdmin.map(s => s.id));
+
+      setSchedules(prev => [
+        ...prev.filter(s => !deletedSet.has(s.id) && !upsertAcadIds.has(s.id)),
+        ...simulationSchedules
+      ]);
+      setAdministrativeTasks(prev => [
+        ...prev.filter(s => !deletedSet.has(s.id) && !upsertAdminIds.has(s.id)),
+        ...simulationAdmin
+      ]);
 
       // Exit Simulation
       endSimulation();
-      alert("Simulación aplicada correctamente.");
+      notify("Simulación aplicada correctamente.", 'success');
 
     } catch (e: any) {
       console.error("Error applying simulation:", e);
-      alert("Error al aplicar simulación: " + e.message);
+      notify("Error al aplicar simulación: " + e.message, 'error');
+      // El borrado y/o algunos chunks de upsert pudieron haberse aplicado ya en la BD
+      // real antes de fallar; resincronizamos el estado local con lo que realmente
+      // quedó guardado en vez de dejarlo desactualizado.
+      await refreshData();
     } finally {
       setIsLoading(false);
     }
-  }, [schedules, administrativeTasks, simulationSchedules, simulationAdmin]);
+  }, [schedules, administrativeTasks, simulationSchedules, simulationAdmin, simulationConfig, instructors, refreshData, notify]);
 
   // Intercept Cloud Functions
   const saveScheduleCloudWrapper = useCallback(async (items: ProcessedSchedule | ProcessedSchedule[]) => {
@@ -1183,12 +1222,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         data: payload,
       });
       if (error) throw error;
-      alert('Escenario guardado exitosamente.');
+      notify('Escenario guardado exitosamente.', 'success');
     } catch (e: any) {
       console.error('Error saving scenario:', e);
-      alert('Error al guardar escenario: ' + e.message);
+      notify('Error al guardar escenario: ' + e.message, 'error');
     }
-  }, [simulationSchedules, simulationAdmin, simulationConfig]);
+  }, [simulationSchedules, simulationAdmin, simulationConfig, extraHoursConfig, notify]);
 
   const loadScenario = useCallback(async (scenarioId: string) => {
     try {
@@ -1216,17 +1255,18 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setSimulationSchedules(parsed.filter(s => !s.isAdministrative));
         setSimulationAdmin(parsed.filter(s => s.isAdministrative));
         setSimulationConfig(loadedConfig); // Restore config
-        if (data.data?.extraHoursConfig) {
-          setExtraHoursConfig(data.data.extraHoursConfig);
-        }
+        // Siempre explícito (incluso a null): el escenario es la fuente de verdad para
+        // su propia plantilla de HE — si no tenía una guardada, no debe quedar visible
+        // la de una simulación anterior para el mismo instructor en este navegador.
+        setExtraHoursConfig(data.data?.extraHoursConfig ?? null);
         setIsSimulationMode(true);
         return data.data?.metadata;
       }
     } catch (e: any) {
       console.error('Error loading scenario:', e);
-      alert('Error al cargar escenario: ' + e.message);
+      notify('Error al cargar escenario: ' + e.message, 'error');
     }
-  }, []);
+  }, [notify]);
 
   const searchSchedules = useCallback(async (query: string): Promise<ProcessedSchedule[]> => {
     if (!query || query.length < 3) return [];
@@ -1421,7 +1461,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     updateAppSetting,
     recalculateAllInstructorsAudit,
     getAuditCutoffDate,
-    liveAuditByInstructor
+    liveAuditByInstructor,
+    notify
   }), [
     isSimulationMode, simulationSchedules, schedules, simulationAdmin, administrativeTasks,
     searchSchedules, rooms, instructors, holidays, institutionalReferences,
@@ -1436,12 +1477,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     simulationConfig, extraHoursConfig, startSimulation, endSimulation,
     importScheduleToSimulation, applySimulation, saveScenario, loadScenario,
     recalculateInstructorAudit, syncInstructorIdInSchedules, updateAppSetting,
-    recalculateAllInstructorsAudit, getAuditCutoffDate, liveAuditByInstructor
+    recalculateAllInstructorsAudit, getAuditCutoffDate, liveAuditByInstructor, notify
   ]);
 
   return (
     <DataContext.Provider value={contextValue}>
       {children}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </DataContext.Provider>
   );
 };

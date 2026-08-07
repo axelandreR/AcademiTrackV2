@@ -10,7 +10,9 @@ import ExportModal from '../components/ExportModal';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule, ViewType, AppMode, ScheduleCategory, ModalityType, ExportConfig } from '../types';
 import { isAcademicMetaLoad, isContractualLoad, normalizeNameKey, belongsToInstructor, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName } from '../services/businessRules';
-import { DAYS_OF_WEEK, SEMESTER_START_DATE, SEMESTER_END_DATE, CUT_OFF_DATE } from '../constants';
+import { DAYS_OF_WEEK, SEMESTER_START_DATE, SEMESTER_END_DATE, CUT_OFF_DATE, ACTIVE_PERIODO } from '../constants';
+import { buildInstructorEmailSummary } from '../services/instructorEmailSummary';
+import InstructorEmailModal from '../components/InstructorEmailModal';
 import SkeletonGrid from '../components/SkeletonGrid';
 import CommandPalette, { SearchItem } from '../components/CommandPalette';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -417,6 +419,19 @@ const SchedulePage: React.FC = () => {
         });
     }, [allSchedules, viewType, selectedFilter, selectedInstructorId, instructorsMap, instructorsByNameMap, instructors]);
 
+    // Resumen para correo: tabla de asignaciones + variaciones del patrón de días a lo
+    // largo del periodo (ver services/scheduleVariations.ts). Ejecución perezosa: solo se
+    // calcula si el modal está abierto.
+    const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+    const resolvedEmailInstructor = useMemo(() => {
+        if (viewType !== 'Instructor' || !selectedFilter) return undefined;
+        return selectedInstructorId ? instructorsMap[selectedInstructorId] : resolveInstructorByName(selectedFilter, instructorsByNameMap, instructors);
+    }, [viewType, selectedFilter, selectedInstructorId, instructorsMap, instructorsByNameMap, instructors]);
+    const instructorEmailSummary = useMemo(() => {
+        if (!isEmailModalOpen || !resolvedEmailInstructor) return null;
+        return buildInstructorEmailSummary(resolvedEmailInstructor, filteredData, ACTIVE_PERIODO, SEMESTER_START_DATE, SEMESTER_END_DATE);
+    }, [isEmailModalOpen, resolvedEmailInstructor, filteredData]);
+
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col h-screen overflow-hidden">
             <ScheduleHeader
@@ -476,6 +491,7 @@ const SchedulePage: React.FC = () => {
                             weekPickerRef={weekPickerRef}
                             setIsExportModalOpen={setIsExportModalOpen}
                             handleExportAdminTasks={handleExportAdminTasks}
+                            onOpenEmailSummary={() => setIsEmailModalOpen(true)}
                             showAuditPanel={showAuditPanel}
                             setShowAuditPanel={setShowAuditPanel}
                             currentWeekDeficit={currentWeekDeficit}
@@ -521,6 +537,12 @@ const SchedulePage: React.FC = () => {
             </div >
 
             <AuditAlert show={showAuditPanel} deficit={currentWeekDeficit} onClose={() => setShowAuditPanel(false)} />
+
+            <InstructorEmailModal
+                isOpen={isEmailModalOpen}
+                onClose={() => setIsEmailModalOpen(false)}
+                summary={instructorEmailSummary}
+            />
 
             <RecordModal
                 isOpen={isModalOpen}

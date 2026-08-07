@@ -179,9 +179,9 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                                 </tr>
                             </thead>
                             <tbody>
-                                {/* MAÑANA */}
-                                <tr>
-                                    <td className="bg-white p-2 rounded-xl font-black text-slate-500 text-[10px] uppercase tracking-widest text-center">MAÑANA</td>
+                                {/* MAÑANA (agrupada visualmente con su subtotal via fondo compartido) */}
+                                <tr className="bg-amber-50/50">
+                                    <td className="p-2 rounded-tl-xl font-black text-amber-700 text-[10px] uppercase tracking-widest text-center">Mañana</td>
                                     {DAYS_OF_WEEK.map(day => (
                                         <td key={`morning-${day.key}`} className="bg-white p-1.5 rounded-xl border border-slate-100">
                                             <div className="space-y-1">
@@ -201,21 +201,23 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                                         </td>
                                     ))}
                                 </tr>
-                                <tr>
-                                    <td className="p-1.5 font-black text-[9px] text-slate-500 text-right uppercase pr-4 tracking-tighter">Horas Mañana</td>
+                                <tr className="bg-amber-50/50">
+                                    <td className="pb-2 px-2 rounded-bl-xl font-bold text-[8px] text-amber-700/70 text-right uppercase pr-4 tracking-tight">Subtotal</td>
                                     {DAYS_OF_WEEK.map(day => {
                                         const h = shifts[day.key]?.morning ? calculateHours(shifts[day.key]!.morning!.start, shifts[day.key]!.morning!.end) : 0;
                                         return (
-                                            <td key={`h-m-${day.key}`} className={`text-center font-black text-[13px] p-1.5 ${h > 0 ? 'text-amber-800' : 'text-slate-300'}`}>
-                                                {h > 0 ? h.toFixed(2) : '0'}
+                                            <td key={`h-m-${day.key}`} className={`text-center font-black text-[11px] pb-1.5 ${h > 0 ? 'text-amber-700' : 'text-slate-300'}`}>
+                                                {h > 0 ? h.toFixed(2) : '—'}
                                             </td>
                                         );
                                     })}
                                 </tr>
 
-                                {/* TARDE */}
-                                <tr>
-                                    <td className="bg-white p-2 rounded-xl font-black text-slate-500 text-[10px] uppercase tracking-widest text-center font-black">TARDE</td>
+                                <tr><td colSpan={8} className="h-1.5" /></tr>
+
+                                {/* TARDE (agrupada visualmente con su subtotal via fondo compartido) */}
+                                <tr className="bg-slate-100/60">
+                                    <td className="p-2 rounded-tl-xl font-black text-slate-500 text-[10px] uppercase tracking-widest text-center">Tarde</td>
                                     {DAYS_OF_WEEK.map(day => (
                                         <td key={`afternoon-${day.key}`} className="bg-white p-1.5 rounded-xl border border-slate-100">
                                             <div className="space-y-1">
@@ -235,21 +237,23 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                                         </td>
                                     ))}
                                 </tr>
-                                <tr>
-                                    <td className="p-1.5 font-black text-[9px] text-slate-500 text-right uppercase pr-4 tracking-tighter">Horas Tarde</td>
+                                <tr className="bg-slate-100/60">
+                                    <td className="pb-2 px-2 rounded-bl-xl font-bold text-[8px] text-slate-500/80 text-right uppercase pr-4 tracking-tight">Subtotal</td>
                                     {DAYS_OF_WEEK.map(day => {
                                         const h = shifts[day.key]?.afternoon ? calculateHours(shifts[day.key]!.afternoon!.start, shifts[day.key]!.afternoon!.end) : 0;
                                         return (
-                                            <td key={`h-a-${day.key}`} className={`text-center font-black text-[13px] p-1.5 ${h > 0 ? 'text-amber-800' : 'text-slate-300'}`}>
-                                                {h > 0 ? h.toFixed(2) : '0'}
+                                            <td key={`h-a-${day.key}`} className={`text-center font-black text-[11px] pb-1.5 ${h > 0 ? 'text-slate-600' : 'text-slate-300'}`}>
+                                                {h > 0 ? h.toFixed(2) : '—'}
                                             </td>
                                         );
                                     })}
                                 </tr>
 
+                                <tr><td colSpan={8} className="h-1.5" /></tr>
+
                                 {/* TOTALES */}
                                 <tr className="bg-amber-100/50">
-                                    <td className="p-4 rounded-l-xl font-black text-amber-900 text-[11px] uppercase text-center bg-amber-500/20">TOTAL HORAS DÍA</td>
+                                    <td className="p-4 rounded-l-xl font-black text-amber-900 text-[11px] uppercase text-center bg-amber-500/20">Total Horas Día</td>
                                     {DAYS_OF_WEEK.map(day => (
                                         <td key={`total-${day.key}`} className="text-center p-3 font-black text-[16px] text-amber-900">
                                             {getDayTotal(day.key).toFixed(2)}

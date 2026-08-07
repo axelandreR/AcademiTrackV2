@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isContractualLoad, resolveInstructorByName } from '../services/businessRules';
@@ -97,6 +97,25 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   useEffect(() => {
     window.localStorage.setItem('academitrack_schedule_zoom', String(zoomLevel));
   }, [zoomLevel]);
+
+  // El control de zoom flotante vive FUERA del contenedor con scroll (para quedar fijo
+  // en la esquina sin moverse al hacer scroll), pero el encabezado sticky (días +, en
+  // vista Instructor, el panel de Jornada Diaria) vive DENTRO de ese contenedor y puede
+  // cambiar de alto (se expande/colapsa, o cambia con el zoom). Si el control se ancla
+  // con un "top" fijo termina flotando encima del encabezado y tapa el día/fecha que
+  // cae debajo (ej. "Domingo"). Medimos el alto real del encabezado con ResizeObserver
+  // y anclamos el control justo debajo, sin importar cuánto mida en cada momento.
+  const gridHeaderRef = useRef<HTMLDivElement>(null);
+  const [gridHeaderHeight, setGridHeaderHeight] = useState(0);
+  useEffect(() => {
+    const el = gridHeaderRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const update = () => setGridHeaderHeight(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [contentMode, viewType, isJourneyExpanded, zoomLevel]);
 
   const zoomIn = () => setZoomLevel(prev => Math.min(ZOOM_MAX, Math.round((prev + ZOOM_STEP) * 100) / 100));
   const zoomOut = () => setZoomLevel(prev => Math.max(ZOOM_MIN, Math.round((prev - ZOOM_STEP) * 100) / 100));
@@ -367,7 +386,10 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
       <div className="flex-1 flex flex-col min-h-0 relative">
         {contentMode === 'grid' && (
-          <div className="absolute top-3 right-3 z-[95] flex items-center bg-white/95 backdrop-blur border border-slate-200 rounded-2xl shadow-lg p-1">
+          <div
+            className="absolute right-3 z-[95] flex items-center bg-white/95 backdrop-blur border border-slate-200 rounded-2xl shadow-md p-1 transition-[top] duration-150"
+            style={{ top: gridHeaderHeight > 0 ? gridHeaderHeight + 8 : 12 }}
+          >
             <button
               onClick={zoomOut}
               disabled={zoomLevel <= ZOOM_MIN}
@@ -399,7 +421,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         <div className="flex-1 overflow-auto custom-scrollbar relative">
           {contentMode === 'grid' ? (
             <div className="min-w-[820px] md:min-w-[1100px] flex flex-col h-fit" style={{ zoom: zoomLevel } as React.CSSProperties}>
-              <div className="sticky top-0 z-[70] bg-white shadow-sm">
+              <div ref={gridHeaderRef} className="sticky top-0 z-[70] bg-white shadow-sm">
                 <div className="flex border-b border-slate-300 bg-white">
                   <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[10px] uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
                     <div className="flex items-center space-x-1"><span>Reloj</span><ScheduleLegend /></div>

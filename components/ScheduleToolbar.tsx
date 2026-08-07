@@ -4,7 +4,7 @@ import {
     Calendar as CalendarIcon, ChevronRight as ChevronRightIcon,
     Table as TableIcon, LayoutDashboard, Edit3, FileDown,
     Check, X, AlertTriangle, ChevronDown, ChevronUp,
-    Building2, UserRound, TrendingUp
+    Building2, UserRound, TrendingUp, Mail
 } from 'lucide-react';
 import WeekPicker from './WeekPicker';
 import { ViewType, AppMode } from '../types';
@@ -26,6 +26,7 @@ interface ScheduleToolbarProps {
     weekPickerRef: React.RefObject<HTMLDivElement>; // Retained from original
     setIsExportModalOpen: (isOpen: boolean) => void; // Retained from original
     handleExportAdminTasks: () => void; // Retained from original
+    onOpenEmailSummary?: () => void;
     showAuditPanel: boolean;
     setShowAuditPanel: (show: boolean) => void;
     currentWeekDeficit: boolean;
@@ -53,6 +54,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
     weekPickerRef,
     setIsExportModalOpen,
     handleExportAdminTasks,
+    onOpenEmailSummary,
     showAuditPanel,
     setShowAuditPanel,
     currentWeekDeficit,
@@ -77,8 +79,8 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                         {viewType === 'Bloque' ? <LayoutDashboard size={20} className="text-blue-600 lg:w-6 lg:h-6" /> : viewType === 'Aula' ? <Building2 size={20} className="text-orange-600 lg:w-6 lg:h-6" /> : <UserRound size={20} className="text-indigo-600 lg:w-6 lg:h-6" />}
                     </div>
                     <div className="flex flex-col min-w-0 flex-1">
-                        <div className="flex items-center space-x-2">
-                            <h2 className="text-xs sm:text-sm md:text-base lg:text-lg min-[1400px]:text-2xl font-black text-slate-900 tracking-tighter uppercase leading-tight whitespace-normal break-words line-clamp-2">
+                        <div className="flex items-center flex-wrap gap-2">
+                            <h2 className="min-w-0 flex-1 text-xs sm:text-sm md:text-base lg:text-lg min-[1400px]:text-2xl font-black text-slate-900 tracking-tighter uppercase leading-tight whitespace-normal break-words line-clamp-2">
                                 {selectedFilter || 'Sin Selección'}
                             </h2>
 
@@ -86,7 +88,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             {viewType === 'Instructor' && selectedFilter && !isSimulationMode && startSimulation && (
                                 <button
                                     onClick={(e) => { e.stopPropagation(); startSimulation(selectedFilter); }}
-                                    className="ml-2 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-lg border border-indigo-200 transition-colors flex items-center shadow-sm"
+                                    className="shrink-0 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-lg border border-indigo-200 transition-colors flex items-center shadow-sm"
                                     title="Crear Simulación de Horas Extras (Sin Alertas)"
                                 >
                                     Simular
@@ -97,7 +99,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             {viewType === 'Instructor' && isSimulationMode && (
                                 <button
                                     onClick={(e) => { e.stopPropagation(); setIsImportModalOpen(true); }}
-                                    className="ml-2 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 text-[10px] font-black uppercase tracking-widest rounded-lg border border-amber-200 transition-colors flex items-center shadow-sm"
+                                    className="shrink-0 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 text-[10px] font-black uppercase tracking-widest rounded-lg border border-amber-200 transition-colors flex items-center shadow-sm"
                                     title="Buscar y agregar cursos de otros instructores"
                                 >
                                     + Carga Externa
@@ -163,6 +165,12 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                         {viewType === 'Instructor' && selectedFilter && (
                             <button onClick={handleExportAdminTasks} className="p-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm" title="Reporte Tareas Administrativas">
                                 <TrendingUp size={16} />
+                            </button>
+                        )}
+
+                        {viewType === 'Instructor' && selectedFilter && onOpenEmailSummary && (
+                            <button onClick={onOpenEmailSummary} className="p-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm" title="Resumen para Correo">
+                                <Mail size={16} />
                             </button>
                         )}
 

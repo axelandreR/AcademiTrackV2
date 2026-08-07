@@ -58,7 +58,7 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
 
                 {!isSimulationMode && onStartSimulation && appMode === 'editor' && (
                     <button
-                        onClick={() => { console.log('Button clicked'); if (onStartSimulation) onStartSimulation(); }}
+                        onClick={() => onStartSimulation?.()}
                         className="w-full mb-4 flex items-center justify-center space-x-2 bg-amber-50 text-amber-600 hover:bg-amber-100 border border-amber-200 px-4 py-3 rounded-xl transition-all shadow-sm hover:shadow-md group"
                     >
                         <FlaskConical size={18} className="group-hover:rotate-12 transition-transform" />

@@ -9,7 +9,7 @@ interface ImportModalProps {
 }
 
 const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstructor }) => {
-    const { searchSchedules, importScheduleToSimulation } = useData();
+    const { searchSchedules, importScheduleToSimulation, notify } = useData();
     const [searchTerm, setSearchTerm] = useState('');
     const [results, setResults] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
@@ -38,9 +38,11 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
     if (!isOpen) return null;
 
     const handleImport = (scheduleId: string) => {
-        importScheduleToSimulation(scheduleId, targetInstructor);
-        alert("Curso importado. Ahora puedes editarlo en el horario.");
-        onClose();
+        const imported = importScheduleToSimulation(scheduleId, targetInstructor);
+        if (imported) {
+            notify("Curso importado. Ahora puedes editarlo en el horario.", 'success');
+            onClose();
+        }
     };
 
     return (
