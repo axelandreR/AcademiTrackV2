@@ -10,6 +10,9 @@ interface DayEntry {
 interface DailyJourneyPanelProps {
     days: DayEntry[];
     instructorType: 'TC' | 'TP';
+    // Meta semanal (46h fijas para TC, Horas Académicas del ARCHIVO para TP) contra la
+    // que se compara la sumatoria de Jornada Diaria — ver hasMetaMismatch más abajo.
+    weeklyMeta: number;
     timeColumnWidth: string;
     isExpanded: boolean;
     onToggleExpanded: () => void;
@@ -18,9 +21,14 @@ interface DailyJourneyPanelProps {
 const dayHasAlert = (journey: DailyJourneySummary, instructorType: 'TC' | 'TP') =>
     journey.overTarget || journey.missingRefrigerio || (instructorType === 'TC' && journey.belowTarget && journey.hasTasks);
 
-const DailyJourneyPanel: React.FC<DailyJourneyPanelProps> = ({ days, instructorType, timeColumnWidth, isExpanded, onToggleExpanded }) => {
+const DailyJourneyPanel: React.FC<DailyJourneyPanelProps> = ({ days, instructorType, weeklyMeta, timeColumnWidth, isExpanded, onToggleExpanded }) => {
     const weeklyTotal = days.reduce((sum, d) => sum + d.journey.totalHours, 0);
-    const weekHasAlert = days.some(d => dayHasAlert(d.journey, instructorType));
+    // Jornada Diaria mide presencia real (incluye huecos entre bloques, ej. 1 minuto de
+    // separación para evitar un cruce exacto); Auditoría suma solo la duración de cada
+    // bloque. Si no coinciden, hay un hueco en el horario que no debería estar ahí — se
+    // marca en rojo aunque cada día individualmente esté dentro de su límite diario.
+    const hasMetaMismatch = Math.abs(weeklyTotal - weeklyMeta) > 0.01;
+    const weekHasAlert = hasMetaMismatch || days.some(d => dayHasAlert(d.journey, instructorType));
 
     if (!isExpanded) {
         return (
@@ -31,7 +39,12 @@ const DailyJourneyPanel: React.FC<DailyJourneyPanelProps> = ({ days, instructorT
             >
                 <span className={`w-7 h-2.5 rounded-sm ${weekHasAlert ? 'bg-rose-500' : 'bg-emerald-500'}`} />
                 <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Jornada Diaria</span>
-                <span className="text-[9px] font-bold text-slate-400 ml-auto">{weeklyTotal.toFixed(2)}h sem</span>
+                <span
+                    title={hasMetaMismatch ? `No coincide con la Meta (${weeklyMeta.toFixed(2)}h) — probablemente hay un hueco entre bloques.` : undefined}
+                    className={`text-[9px] font-bold ml-auto ${hasMetaMismatch ? 'text-rose-500' : 'text-slate-400'}`}
+                >
+                    {weeklyTotal.toFixed(2)}h sem
+                </span>
                 <ChevronDown size={12} className="text-slate-400" />
             </button>
         );
@@ -46,7 +59,12 @@ const DailyJourneyPanel: React.FC<DailyJourneyPanelProps> = ({ days, instructorT
                 className="flex-shrink-0 p-2 flex flex-col items-center justify-center border-r border-slate-200 bg-slate-50 sticky left-0 z-[80] hover:bg-slate-100 transition-colors"
             >
                 <div className="flex items-center space-x-1 text-slate-400"><Sun size={11} /><span className="text-[9px] font-black uppercase tracking-widest">Jornada</span><ChevronUp size={11} /></div>
-                <span className="text-[11px] font-black text-slate-700 mt-0.5">{weeklyTotal.toFixed(2)}h sem</span>
+                <span
+                    title={hasMetaMismatch ? `No coincide con la Meta (${weeklyMeta.toFixed(2)}h) — probablemente hay un hueco entre bloques.` : undefined}
+                    className={`text-[11px] font-black mt-0.5 ${hasMetaMismatch ? 'text-rose-600' : 'text-slate-700'}`}
+                >
+                    {weeklyTotal.toFixed(2)}h sem
+                </span>
             </button>
             <div className="flex-1 grid grid-cols-7">
                 {days.map(({ key, journey }) => {

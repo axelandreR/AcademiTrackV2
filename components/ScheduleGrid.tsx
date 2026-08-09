@@ -440,6 +440,9 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                   <DailyJourneyPanel
                     days={weeklyJourney}
                     instructorType={instructorType}
+                    // Misma Meta que usa el resto de la app (ScheduleSidebar, AuditFooter):
+                    // 46h fijas para TC, Horas Académicas del ARCHIVO para TP.
+                    weeklyMeta={instructorType === 'TC' ? 46 : stats.academicHoursMeta}
                     timeColumnWidth={TIME_COLUMN_WIDTH}
                     isExpanded={isJourneyExpanded}
                     onToggleExpanded={() => setIsJourneyExpanded(prev => !prev)}
