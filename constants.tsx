@@ -97,6 +97,22 @@ export const TIME_START = 7;
 export const TIME_END = 22;
 export const MAX_ACADEMIC_HOUR = "22:30";
 
+export interface TurnoConfig {
+  key: 'manana' | 'tarde' | 'noche';
+  label: string;
+  startHour: number; // Inclusive, en la misma escala que TIME_START/TIME_END.
+  endHour: number;   // Exclusivo.
+}
+
+// Ventana operativa completa (TIME_START-TIME_END) partida en 3 turnos, usada por el
+// reporte de Ocupabilidad de aulas. Un bloque que cruza un límite (ej. 12:30-14:00)
+// se reparte proporcionalmente entre los turnos que toca.
+export const OCCUPANCY_TURNOS: TurnoConfig[] = [
+  { key: 'manana', label: 'Mañana', startHour: 7, endHour: 13 },
+  { key: 'tarde', label: 'Tarde', startHour: 13, endHour: 19 },
+  { key: 'noche', label: 'Noche', startHour: 19, endHour: 22 },
+];
+
 export interface TimeSlotConfig {
   hour: number;
   minute: number;

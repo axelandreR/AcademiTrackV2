@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     BarChart4, LayoutDashboard, Edit3, Users, MapPin, ArrowRight,
     RefreshCw, AlertTriangle, Upload, TrendingUp, CheckCircle2,
-    Clock, Calendar, Activity, Database, ShieldCheck, CheckCircle, FileText
+    Clock, Calendar, Activity, Database, ShieldCheck, CheckCircle, FileText, Building2
 } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { useAuth } from '../context/AuthContext';
@@ -561,7 +561,7 @@ const LandingPage: React.FC = () => {
                         <div className="w-1.5 h-6 bg-indigo-600 rounded-full" />
                         <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase">Centro de Operaciones</h2>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                         <button onClick={() => navigate('/schedule?view=Bloque')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
                             <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-blue-600 group-hover:text-white transition-all"><LayoutDashboard size={32} /></div>
                             <h3 className="text-2xl font-black text-slate-900 mb-3">Visualizador</h3>
@@ -595,6 +595,13 @@ const LandingPage: React.FC = () => {
                             <h3 className="text-2xl font-black text-slate-900 mb-3">Editor de Carga</h3>
                             <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Inserción de tareas administrativas y personalización de sesiones lógicas.</p>
                             <div className="flex items-center space-x-2 text-amber-600 font-black uppercase text-[10px] tracking-widest">Ejecutar Edición <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
+                        </button>
+
+                        <button onClick={() => navigate('/occupancy')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-16 h-16 bg-cyan-50 text-cyan-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-cyan-600 group-hover:text-white transition-all"><Building2 size={32} /></div>
+                            <h3 className="text-2xl font-black text-slate-900 mb-3">Ocupabilidad</h3>
+                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Uso de aulas por frecuencia (semana/fin de semana) y turno, con reportes y gráficas.</p>
+                            <div className="flex items-center space-x-2 text-cyan-600 font-black uppercase text-[10px] tracking-widest">Ver Reporte <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
                     </div>
                 </section>

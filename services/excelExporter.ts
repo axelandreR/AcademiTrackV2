@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import { ProcessedSchedule, ViewType, Instructor, HolidayData } from '../types';
 import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, isContractualLoad, belongsToInstructor } from './businessRules';
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
+import { RoomOccupancySummary, FrequencyKey, TurnoBucketKey } from './occupancyCalculations';
 
 interface ExcelExportParams {
   data: ProcessedSchedule[];
@@ -855,6 +856,51 @@ export const generateIdealStructureExport = async (schedules: ProcessedSchedule[
   });
 
   worksheet.columns.forEach(col => { col.width = 15; });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+};
+
+export const generateOccupancyExcel = async (summaries: RoomOccupancySummary[]): Promise<Blob> => {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Ocupabilidad');
+
+  const freqLabels: Record<FrequencyKey, string> = { weekday: 'LUN-VIE', weekend: 'SAB-DOM', general: 'GENERAL' };
+  const turnoLabels: Record<TurnoBucketKey, string> = { manana: 'MAÑANA', tarde: 'TARDE', noche: 'NOCHE', allday: 'TODO EL DÍA' };
+  const freqOrder: FrequencyKey[] = ['weekday', 'weekend', 'general'];
+  const turnoOrder: TurnoBucketKey[] = ['manana', 'tarde', 'noche', 'allday'];
+
+  const headerRow1 = worksheet.getRow(1);
+  const headerRow2 = worksheet.getRow(2);
+  const identityHeaders = ['AULA', 'EDIFICIO', 'TIPO', 'CARRERA', 'AFORO'];
+  headerRow1.values = [...identityHeaders, ...freqOrder.flatMap(f => turnoOrder.map(() => freqLabels[f]))];
+  headerRow2.values = [...identityHeaders.map(() => ''), ...freqOrder.flatMap(() => turnoOrder.map(t => turnoLabels[t]))];
+
+  freqOrder.forEach((_, fi) => {
+    const startCol = identityHeaders.length + 1 + fi * turnoOrder.length;
+    worksheet.mergeCells(1, startCol, 1, startCol + turnoOrder.length - 1);
+  });
+  identityHeaders.forEach((_, i) => worksheet.mergeCells(1, i + 1, 2, i + 1));
+
+  [headerRow1, headerRow2].forEach(row => {
+    row.eachCell(c => {
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9 };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    });
+  });
+
+  summaries.forEach(s => {
+    const rowValues: (string | number)[] = [s.room, s.building, s.type, s.career, s.capacity];
+    freqOrder.forEach(f => turnoOrder.forEach(t => rowValues.push(Number(s.matrix[f][t].occupancyPct.toFixed(1)))));
+    const row = worksheet.addRow(rowValues);
+    if (s.hasOverbooking) {
+      row.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; });
+    }
+  });
+
+  worksheet.columns.forEach((col, idx) => { col.width = idx < identityHeaders.length ? 16 : 11; });
 
   const buffer = await workbook.xlsx.writeBuffer();
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

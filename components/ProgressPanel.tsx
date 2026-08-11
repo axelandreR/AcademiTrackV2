@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { SEMESTER_END_DATE } from '../constants';
-import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info, RefreshCw, Settings } from 'lucide-react';
+import { CheckCircle2, Circle, FileCheck, ArrowRight, TrendingUp, Users, Clock, AlertTriangle, X, Info, RefreshCw, Settings, Pencil } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
 import { mapSchedFromDB, parseLocalDBDate } from '../context/DataContext';
+import { Instructor } from '../types';
+import InstructorEditModal from './InstructorEditModal';
 
 const ProgressPanel: React.FC = () => {
     const {
@@ -16,6 +18,7 @@ const ProgressPanel: React.FC = () => {
     } = useData();
     const navigate = useNavigate();
     const [selectedAuditIssuer, setSelectedAuditIssuer] = useState<{ name: string, issues: { week: string, reasons: string[] }[] } | null>(null);
+    const [editingInstructor, setEditingInstructor] = useState<Instructor | null>(null);
     const [showCutoffModal, setShowCutoffModal] = useState(false);
     const [cutoffDraft, setCutoffDraft] = useState('');
     const [isSavingCutoff, setIsSavingCutoff] = useState(false);
@@ -120,6 +123,7 @@ const ProgressPanel: React.FC = () => {
                         {inst.isExported ? <FileCheck size={18} /> : <Circle size={18} />}
                     </button>
                 </div>
+                <button onClick={() => setEditingInstructor(inst)} title="Editar ficha del instructor" className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Pencil size={18} /></button>
                 <button onClick={() => navigate(`/schedule?view=Instructor&filter=${encodeURIComponent(inst.name)}`)} className="p-2 text-slate-300 hover:text-blue-600 transition-colors"><ArrowRight size={18} /></button>
             </div>
         </div>
@@ -311,6 +315,12 @@ const ProgressPanel: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            <InstructorEditModal
+                isOpen={editingInstructor !== null}
+                onClose={() => setEditingInstructor(null)}
+                instructor={editingInstructor}
+            />
         </div>
     );
 };

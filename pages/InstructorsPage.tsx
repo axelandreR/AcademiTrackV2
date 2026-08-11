@@ -6,10 +6,11 @@ import { Instructor } from '../types';
 import { parseInstructorsFile } from '../services/excelParser';
 import { generateInstructoresTemplate } from '../services/templateGenerator';
 import ConfirmDialog from '../components/ConfirmDialog';
+import InstructorEditModal from '../components/InstructorEditModal';
 
 const InstructorsPage: React.FC = () => {
     const navigate = useNavigate();
-    const { instructors, saveInstructorCloud, deleteInstructorCloud, bulkUpsertInstructors } = useData();
+    const { instructors, deleteInstructorCloud, bulkUpsertInstructors } = useData();
 
     const [managementSearch, setManagementSearch] = useState('');
     const [isManagementModalOpen, setIsManagementModalOpen] = useState(false);
@@ -67,27 +68,6 @@ const InstructorsPage: React.FC = () => {
             i.id.includes(managementSearch)
         ),
         [instructors, managementSearch]);
-
-    const handleSaveInstructor = (e: React.FormEvent) => {
-        e.preventDefault();
-        const formData = new FormData(e.currentTarget);
-        const newInst: Instructor = {
-            id: formData.get('id') as string,
-            name: formData.get('name') as string,
-            type: formData.get('type') as 'TC' | 'TP',
-            maxHours: Number(formData.get('maxHours')),
-            specialty: formData.get('specialty') as string,
-            campus: formData.get('campus') as string,
-            status: formData.get('status') as string,
-        };
-
-        if (editingItem) {
-            saveInstructorCloud(newInst);
-        } else {
-            saveInstructorCloud(newInst);
-        }
-        setIsManagementModalOpen(false);
-    };
 
     const handleDelete = (id: string) => setPendingDeleteId(id);
 
@@ -185,34 +165,11 @@ const InstructorsPage: React.FC = () => {
                 </div>
             </main>
 
-            {isManagementModalOpen && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300">
-                    <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col">
-                        <div className="px-10 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
-                            <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">{editingItem ? 'Editar' : 'Crear'} Instructor</h3>
-                            <button onClick={() => setIsManagementModalOpen(false)} className="p-3 hover:bg-slate-200 rounded-full transition-colors"><X size={24} /></button>
-                        </div>
-                        <form onSubmit={handleSaveInstructor} className="p-10 space-y-6">
-                            <div className="grid grid-cols-2 gap-6">
-                                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">ID Instructor</label><input required name="id" defaultValue={editingItem?.id} className="w-full px-4 py-3 bg-slate-100 rounded-2xl font-bold" /></div>
-                                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Nombre Completo</label><input required name="name" defaultValue={editingItem?.name} className="w-full px-4 py-3 bg-slate-100 rounded-2xl font-bold" /></div>
-                            </div>
-                            <div className="grid grid-cols-3 gap-6">
-                                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Tipo</label><select name="type" defaultValue={editingItem?.type} className="w-full px-4 py-3 bg-slate-100 rounded-2xl font-bold"><option value="TC">Tiempo Completo (TC)</option><option value="TP">Tiempo Parcial (TP)</option></select></div>
-                                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Horas Max</label><input type="number" name="maxHours" defaultValue={editingItem?.maxHours} className="w-full px-4 py-3 bg-slate-100 rounded-2xl font-bold" /></div>
-                                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Sede</label><input name="campus" defaultValue={editingItem?.campus} className="w-full px-4 py-3 bg-slate-100 rounded-2xl font-bold" /></div>
-                            </div>
-                            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Especialidad</label><input name="specialty" defaultValue={editingItem?.specialty} className="w-full px-4 py-3 bg-slate-100 rounded-2xl font-bold" /></div>
-                            <input type="hidden" name="status" value="Activo" />
-
-                            <div className="flex justify-end space-x-4 pt-6 border-t border-slate-100">
-                                <button type="button" onClick={() => setIsManagementModalOpen(false)} className="px-8 py-3 text-xs font-black text-slate-500 uppercase tracking-widest">Cancelar</button>
-                                <button type="submit" className="px-10 py-3 bg-slate-900 text-white text-xs font-black rounded-2xl uppercase tracking-widest shadow-xl">Guardar Cambios</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
+            <InstructorEditModal
+                isOpen={isManagementModalOpen}
+                onClose={() => setIsManagementModalOpen(false)}
+                instructor={editingItem}
+            />
 
             <ConfirmDialog
                 isOpen={pendingDeleteId !== null}
