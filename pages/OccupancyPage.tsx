@@ -131,7 +131,7 @@ const OccupancyPage: React.FC = () => {
     const handleExport = async () => {
         setIsExporting(true);
         try {
-            const blob = await generateOccupancyExcel(filtered);
+            const blob = await generateOccupancyExcel(filtered, rooms, allSchedules, holidays, rangeStart, rangeEnd);
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;

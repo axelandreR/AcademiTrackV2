@@ -290,3 +290,99 @@ export const calculateAllRoomsOccupancy = (
         return calculateSingleRoomOccupancy(room, roomSchedules, semesterStart, semesterEnd, holidays, dayOccurrences, availableTemplate, availability);
     });
 };
+
+export interface WeekBucket {
+    start: Date;
+    end: Date;
+    label: string; // "17/08-23/08"
+}
+
+export interface RoomWeeklyLoad {
+    roomKey: string;
+    room: string;
+    building: string;
+    type: string;
+    /** Horas de carga real por semana, alineado 1:1 con el arreglo de semanas usado para calcularlo. */
+    weeklyHours: number[];
+    totalHours: number;
+}
+
+const JS_DOW_TO_DAY_KEY = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
+
+const getStartOfWeek = (d: Date): Date => {
+    const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const day = date.getDay();
+    const diff = date.getDate() - day + (day === 0 ? -6 : 1); // ancla a Lunes
+    date.setDate(diff);
+    return date;
+};
+
+const isHolidayOn = (date: Date, holidays: HolidayData[]): boolean =>
+    holidays.some(h => h.date.getFullYear() === date.getFullYear() && h.date.getMonth() === date.getMonth() && h.date.getDate() === date.getDate());
+
+/**
+ * Parte [rangeStart, rangeEnd] en semanas Lunes-Domingo (misma convención que usa el
+ * resto de la app, ej. generateGlobalAuditExcel) — la primera y última semana se
+ * recortan al rango real si no empiezan/terminan justo en lunes/domingo.
+ */
+export const buildWeekBuckets = (rangeStart: Date, rangeEnd: Date): WeekBucket[] => {
+    const buckets: WeekBucket[] = [];
+    const fmt = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+    let cursor = getStartOfWeek(rangeStart);
+    while (cursor <= rangeEnd) {
+        const weekEndRaw = new Date(cursor);
+        weekEndRaw.setDate(cursor.getDate() + 6);
+        const effStart = cursor < rangeStart ? rangeStart : cursor;
+        const effEnd = weekEndRaw > rangeEnd ? rangeEnd : weekEndRaw;
+        buckets.push({ start: effStart, end: effEnd, label: `${fmt(effStart)}-${fmt(effEnd)}` });
+        const next = new Date(cursor);
+        next.setDate(cursor.getDate() + 7);
+        cursor = next;
+    }
+    return buckets;
+};
+
+/**
+ * Carga real (horas de sesiones presenciales) de cada aula, semana por semana — a
+ * diferencia de calculateAllRoomsOccupancy (que agrega todo el rango de una vez con
+ * aritmética de ocurrencias), aquí sí se recorre día por día dentro de cada semana
+ * porque el resultado que se necesita es justamente el desglose por semana.
+ */
+export const calculateWeeklyRoomLoad = (
+    rooms: RoomData[],
+    schedules: ProcessedSchedule[],
+    holidays: HolidayData[],
+    weeks: WeekBucket[]
+): RoomWeeklyLoad[] => {
+    const index = buildRoomScheduleIndex(schedules);
+
+    return rooms.map(room => {
+        const roomKey = `${room.building} - ${room.room}`;
+        const roomSchedules = index.get(roomKey) || [];
+
+        const weeklyHours = weeks.map(week => {
+            let hours = 0;
+            for (let cursor = new Date(week.start); cursor <= week.end; cursor.setDate(cursor.getDate() + 1)) {
+                if (isHolidayOn(cursor, holidays)) continue;
+                const dayKey = JS_DOW_TO_DAY_KEY[cursor.getDay()];
+                roomSchedules.forEach(block => {
+                    if (!block.days.includes(dayKey)) return;
+                    if (cursor < block.startDate || cursor > block.endDate) return;
+                    const startMin = Math.max(toMinutes(block.startTime), TIME_START * 60);
+                    const endMin = Math.min(toMinutes(block.endTime), TIME_END * 60);
+                    if (endMin > startMin) hours += (endMin - startMin) / 60;
+                });
+            }
+            return Math.round(hours * 100) / 100;
+        });
+
+        return {
+            roomKey,
+            room: room.room,
+            building: room.building,
+            type: room.type,
+            weeklyHours,
+            totalHours: Math.round(weeklyHours.reduce((a, b) => a + b, 0) * 100) / 100,
+        };
+    });
+};

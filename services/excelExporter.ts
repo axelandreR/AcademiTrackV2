@@ -1,8 +1,8 @@
 import ExcelJS from 'exceljs';
-import { ProcessedSchedule, ViewType, Instructor, HolidayData } from '../types';
+import { ProcessedSchedule, ViewType, Instructor, HolidayData, RoomData } from '../types';
 import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, isContractualLoad, belongsToInstructor } from './businessRules';
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
-import { RoomOccupancySummary, FrequencyKey, TurnoBucketKey } from './occupancyCalculations';
+import { RoomOccupancySummary, FrequencyKey, TurnoBucketKey, buildWeekBuckets, calculateWeeklyRoomLoad } from './occupancyCalculations';
 
 interface ExcelExportParams {
   data: ProcessedSchedule[];
@@ -861,9 +861,90 @@ export const generateIdealStructureExport = async (schedules: ProcessedSchedule[
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 };
 
-export const generateOccupancyExcel = async (summaries: RoomOccupancySummary[]): Promise<Blob> => {
+const sectionHeaderStyle = (c: ExcelJS.Cell) => {
+  c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9 };
+  c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+  c.alignment = { horizontal: 'center', vertical: 'middle' };
+  c.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+};
+
+const UNDERUTILIZED_THRESHOLD = 30;
+
+export const generateOccupancyExcel = async (
+  summaries: RoomOccupancySummary[],
+  rooms: RoomData[],
+  schedules: ProcessedSchedule[],
+  holidays: HolidayData[],
+  rangeStart: Date,
+  rangeEnd: Date
+): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet('Ocupabilidad');
+  const fmtDate = (d: Date) => d.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+  // --- Hoja 1: Resumen (informacion compilada) ---
+  const resumen = workbook.addWorksheet('Resumen');
+  resumen.getColumn(1).width = 32;
+  resumen.getColumn(2).width = 18;
+  resumen.getColumn(3).width = 18;
+
+  resumen.getCell('A1').value = 'REPORTE DE OCUPABILIDAD DE AULAS';
+  resumen.getCell('A1').font = { bold: true, size: 14 };
+  resumen.getCell('A2').value = `Rango: ${fmtDate(rangeStart)} - ${fmtDate(rangeEnd)}`;
+  resumen.getCell('A2').font = { italic: true, color: { argb: 'FF64748B' } };
+  resumen.getCell('A3').value = `Generado: ${fmtDate(new Date())}`;
+  resumen.getCell('A3').font = { italic: true, color: { argb: 'FF64748B' } };
+
+  const totalAulas = summaries.length;
+  const avgPct = totalAulas ? summaries.reduce((sum, s) => sum + s.overallPct, 0) / totalAulas : 0;
+  const underutilizedCount = summaries.filter(s => s.overallPct < UNDERUTILIZED_THRESHOLD && s.overallPct > 0).length;
+  const overbookedCount = summaries.filter(s => s.hasOverbooking).length;
+
+  const statRows: [string, string | number][] = [
+    ['Total de Aulas', totalAulas],
+    ['Ocupación Promedio General', `${avgPct.toFixed(1)}%`],
+    [`Aulas Subutilizadas (<${UNDERUTILIZED_THRESHOLD}%)`, underutilizedCount],
+    ['Aulas con Posible Doble Reserva (>100%)', overbookedCount],
+  ];
+  let row = 5;
+  statRows.forEach(([label, value]) => {
+    resumen.getCell(`A${row}`).value = label;
+    resumen.getCell(`A${row}`).font = { bold: true };
+    resumen.getCell(`B${row}`).value = value;
+    row++;
+  });
+
+  row += 1;
+  resumen.getCell(`A${row}`).value = 'DESGLOSE POR TIPO DE AMBIENTE';
+  ['A', 'B', 'C'].forEach(col => sectionHeaderStyle(resumen.getCell(`${col}${row}`)));
+  resumen.getCell(`B${row}`).value = 'AULAS';
+  resumen.getCell(`C${row}`).value = 'OCUP. PROMEDIO';
+  row++;
+  const byType = new Map<string, RoomOccupancySummary[]>();
+  summaries.forEach(s => { const list = byType.get(s.type) || []; list.push(s); byType.set(s.type, list); });
+  Array.from(byType.entries()).sort((a, b) => a[0].localeCompare(b[0])).forEach(([type, list]) => {
+    resumen.getCell(`A${row}`).value = type;
+    resumen.getCell(`B${row}`).value = list.length;
+    resumen.getCell(`C${row}`).value = `${(list.reduce((s, r) => s + r.overallPct, 0) / list.length).toFixed(1)}%`;
+    row++;
+  });
+
+  row += 1;
+  resumen.getCell(`A${row}`).value = 'DESGLOSE POR EDIFICIO';
+  ['A', 'B', 'C'].forEach(col => sectionHeaderStyle(resumen.getCell(`${col}${row}`)));
+  resumen.getCell(`B${row}`).value = 'AULAS';
+  resumen.getCell(`C${row}`).value = 'OCUP. PROMEDIO';
+  row++;
+  const byBuilding = new Map<string, RoomOccupancySummary[]>();
+  summaries.forEach(s => { const list = byBuilding.get(s.building) || []; list.push(s); byBuilding.set(s.building, list); });
+  Array.from(byBuilding.entries()).sort((a, b) => a[0].localeCompare(b[0])).forEach(([building, list]) => {
+    resumen.getCell(`A${row}`).value = building;
+    resumen.getCell(`B${row}`).value = list.length;
+    resumen.getCell(`C${row}`).value = `${(list.reduce((s, r) => s + r.overallPct, 0) / list.length).toFixed(1)}%`;
+    row++;
+  });
+
+  // --- Hoja 2: Ocupabilidad por Aula (matriz frecuencia x turno, la que ya existía) ---
+  const worksheet = workbook.addWorksheet('Ocupabilidad por Aula');
 
   const freqLabels: Record<FrequencyKey, string> = { weekday: 'LUN-VIE', weekend: 'SAB-DOM', general: 'GENERAL' };
   const turnoLabels: Record<TurnoBucketKey, string> = { manana: 'MAÑANA', tarde: 'TARDE', noche: 'NOCHE', allday: 'TODO EL DÍA' };
@@ -882,25 +963,36 @@ export const generateOccupancyExcel = async (summaries: RoomOccupancySummary[]):
   });
   identityHeaders.forEach((_, i) => worksheet.mergeCells(1, i + 1, 2, i + 1));
 
-  [headerRow1, headerRow2].forEach(row => {
-    row.eachCell(c => {
-      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9 };
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
-      c.alignment = { horizontal: 'center', vertical: 'middle' };
-      c.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-    });
-  });
+  [headerRow1, headerRow2].forEach(r => r.eachCell(c => sectionHeaderStyle(c)));
 
   summaries.forEach(s => {
     const rowValues: (string | number)[] = [s.room, s.building, s.type, s.career, s.capacity];
     freqOrder.forEach(f => turnoOrder.forEach(t => rowValues.push(Number(s.matrix[f][t].occupancyPct.toFixed(1)))));
-    const row = worksheet.addRow(rowValues);
+    const r = worksheet.addRow(rowValues);
     if (s.hasOverbooking) {
-      row.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; });
+      r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; });
     }
   });
 
   worksheet.columns.forEach((col, idx) => { col.width = idx < identityHeaders.length ? 16 : 11; });
+
+  // --- Hoja 3: Carga Semanal (horas reales por aula, semana a semana) ---
+  const weeklySheet = workbook.addWorksheet('Carga Semanal');
+  const weeks = buildWeekBuckets(rangeStart, rangeEnd);
+  const filteredRoomKeys = new Set(summaries.map(s => s.roomKey));
+  const filteredRooms = rooms.filter(r => filteredRoomKeys.has(`${r.building} - ${r.room}`));
+  const weeklyLoads = calculateWeeklyRoomLoad(filteredRooms, schedules, holidays, weeks);
+
+  const weeklyHeaderRow = weeklySheet.getRow(1);
+  const weeklyIdentityHeaders = ['AULA', 'EDIFICIO', 'TIPO'];
+  weeklyHeaderRow.values = [...weeklyIdentityHeaders, ...weeks.map(w => w.label), 'TOTAL'];
+  weeklyHeaderRow.eachCell(c => sectionHeaderStyle(c));
+
+  weeklyLoads.forEach(wl => {
+    weeklySheet.addRow([wl.room, wl.building, wl.type, ...wl.weeklyHours, wl.totalHours]);
+  });
+
+  weeklySheet.columns.forEach((col, idx) => { col.width = idx < weeklyIdentityHeaders.length ? 16 : 11; });
 
   const buffer = await workbook.xlsx.writeBuffer();
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
