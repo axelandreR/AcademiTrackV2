@@ -1,10 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { Scenario } from '../types';
 import { supabase } from '../supabaseClient';
 import { Play, Trash2, Calendar, FileText } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
+import { ACTIVE_PERIODO } from '../constants';
+
+/** El escenario no guarda su periodo aparte — se toma del primer horario que contiene. */
+const derivePeriodo = (scenario: Scenario): string => scenario.data?.schedules?.[0]?.periodo || 'Sin periodo';
 
 const SimulationsList: React.FC = () => {
     const { loadScenario, notify, isSimulationMode } = useData();
@@ -13,6 +17,9 @@ const SimulationsList: React.FC = () => {
     const [_, setSearchParams] = useSearchParams();
     const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
     const [pendingLoadId, setPendingLoadId] = useState<string | null>(null);
+    // Por defecto solo el periodo activo, para no amontonar borradores viejos de
+    // periodos ya cerrados (ej. 202610) junto con los del periodo en curso.
+    const [periodoFilter, setPeriodoFilter] = useState<string>(ACTIVE_PERIODO);
 
     const fetchScenarios = async () => {
         setIsLoading(true);
@@ -81,11 +88,40 @@ const SimulationsList: React.FC = () => {
         if (id) await doLoad(id);
     };
 
+    const periodos = useMemo(
+        () => Array.from(new Set<string>(scenarios.map(derivePeriodo))).sort((a, b) => b.localeCompare(a)),
+        [scenarios]
+    );
+    const filteredScenarios = useMemo(
+        () => periodoFilter === 'all' ? scenarios : scenarios.filter(s => derivePeriodo(s) === periodoFilter),
+        [scenarios, periodoFilter]
+    );
+
     return (
-        <div className="flex-1 bg-slate-50 p-4 lg:p-8 overflow-y-auto">
+        <div className="h-full bg-slate-50 p-4 lg:p-8 overflow-y-auto">
             <div className="max-w-5xl mx-auto">
                 <h2 className="text-lg lg:text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Simulaciones Guardadas</h2>
-                <p className="text-sm text-slate-500 mb-6 lg:mb-8 font-medium">Gestiona y carga tus escenarios de prueba previamente guardados.</p>
+                <p className="text-sm text-slate-500 mb-4 font-medium">Gestiona y carga tus escenarios de prueba previamente guardados.</p>
+
+                {!isLoading && scenarios.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 mb-6 lg:mb-8">
+                        <button
+                            onClick={() => setPeriodoFilter('all')}
+                            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all border ${periodoFilter === 'all' ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'}`}
+                        >
+                            Todos los periodos
+                        </button>
+                        {periodos.map(p => (
+                            <button
+                                key={p}
+                                onClick={() => setPeriodoFilter(p)}
+                                className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all border ${periodoFilter === p ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'}`}
+                            >
+                                {p}
+                            </button>
+                        ))}
+                    </div>
+                )}
 
                 {isLoading ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -101,9 +137,17 @@ const SimulationsList: React.FC = () => {
                         <h3 className="text-lg font-bold text-slate-700">No hay simulaciones guardadas</h3>
                         <p className="text-slate-400 mt-2">Guarda un escenario desde el "Modo de Prueba" para verlo aquí.</p>
                     </div>
+                ) : filteredScenarios.length === 0 ? (
+                    <div className="text-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100">
+                        <div className="bg-amber-50 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-6">
+                            <FileText size={40} className="text-amber-500" />
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-700">Sin simulaciones en este periodo</h3>
+                        <p className="text-slate-400 mt-2">Prueba con "Todos los periodos" para ver el resto de borradores guardados.</p>
+                    </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {scenarios.map(scenario => (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-8">
+                        {filteredScenarios.map(scenario => (
                             <div
                                 key={scenario.id}
                                 className="group bg-white rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-slate-100 overflow-hidden cursor-pointer"

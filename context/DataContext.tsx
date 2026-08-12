@@ -89,10 +89,13 @@ interface DataContextType {
   setExtraHoursConfig: (config: ExtraHoursConfig | null) => void;
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
-  importScheduleToSimulation: (scheduleId: string, targetInstructor: string) => boolean;
+  importScheduleToSimulation: (scheduleId: string | string[], targetInstructor: string) => number;
   applySimulation: () => Promise<void>;
   saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
+  updateScenario: (id: string, metadata?: any) => Promise<void>;
   loadScenario: (id: string) => Promise<any>;
+  currentScenarioId: string | null;
+  currentScenarioName: string | null;
   notify: (message: string, type?: 'success' | 'error') => void;
   recalculateInstructorAudit: (instructorName: string, currentSchedules: ProcessedSchedule[], instructorsList?: Instructor[]) => Promise<void>;
   syncInstructorIdInSchedules: (instructor: Instructor) => Promise<void>;
@@ -969,6 +972,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [simulationAdmin, setSimulationAdmin] = useState<ProcessedSchedule[]>([]);
   const [simulationConfig, setSimulationConfig] = useState<any>({});
   const [extraHoursConfig, setExtraHoursConfig] = useState<ExtraHoursConfig | null>(null);
+  // Escenario guardado del que proviene la simulación actual (si se cargó uno con
+  // loadScenario, o si ya se guardó una vez en esta sesión) — permite que "Guardar
+  // Escenario" ofrezca actualizar el mismo registro en vez de crear uno nuevo siempre.
+  const [currentScenarioId, setCurrentScenarioId] = useState<string | null>(null);
+  const [currentScenarioName, setCurrentScenarioName] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const notify = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -1046,6 +1054,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setSimulationSchedules(clone(schedulesToClone));
       setSimulationAdmin(clone(adminToClone));
       setIsSimulationMode(true);
+      // Simulación nueva, no proviene de ningún escenario guardado — "Guardar
+      // Escenario" debe ofrecer crear uno nuevo directamente, sin la opción de
+      // "actualizar" (no hay a qué escenario actualizar todavía).
+      setCurrentScenarioId(null);
+      setCurrentScenarioName(null);
     } catch (e: any) {
       console.error("Error starting simulation:", e);
       notify("Error al iniciar simulación: " + e.message, 'error');
@@ -1058,43 +1071,52 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setSimulationAdmin([]);
     setExtraHoursConfig(null);
     setSimulationConfig({});
+    setCurrentScenarioId(null);
+    setCurrentScenarioName(null);
   }, []);
 
-  const importScheduleToSimulation = useCallback((scheduleId: string, targetInstructor: string): boolean => {
-    // 1. Find in REAL data source (The Archive)
-    const source = [...schedules, ...administrativeTasks].find(s => s.id === scheduleId);
-    if (!source) {
-      notify("No se encontró el horario original en el archivo.", 'error');
-      return false;
-    }
-
-    // 2. Get Target Instructor Metadata
+  // Acepta uno o varios IDs a la vez — un NRC suele tener más de una fila real (distintos
+  // días/horarios), así que "importar el NRC" trae TODAS sus sesiones en un solo llamado
+  // en vez de obligar a repetir la acción fila por fila y arriesgarse a dejar alguna
+  // atrás. Devuelve cuántas sesiones se importaron con éxito.
+  const importScheduleToSimulation = useCallback((scheduleId: string | string[], targetInstructor: string): number => {
+    const ids = Array.isArray(scheduleId) ? scheduleId : [scheduleId];
+    const archive = [...schedules, ...administrativeTasks];
     const targetInstData = instructors.find(i => i.name === targetInstructor);
     const targetId = targetInstData ? targetInstData.id : '';
 
-    // 3. Clone and Mutate
-    // Using deep copy to ensure no reference issues
-    const clone = JSON.parse(JSON.stringify(source));
+    const newAcad: ProcessedSchedule[] = [];
+    const newAdmin: ProcessedSchedule[] = [];
 
-    // Assign new properties
-    const newSchedule: ProcessedSchedule = {
-      ...clone,
-      id: `sim-imported-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      instructor: targetInstructor,
-      instructorId: targetId,
-      // Ensure Dates are Date objects after JSON parse
-      startDate: new Date(source.startDate),
-      endDate: new Date(source.endDate)
-    };
+    ids.forEach((id, idx) => {
+      const source = archive.find(s => s.id === id);
+      if (!source) return;
 
-    // 4. Add to Simulation State
-    if (newSchedule.isAdministrative) {
-      setSimulationAdmin(prev => [...prev, newSchedule]);
-    } else {
-      setSimulationSchedules(prev => [...prev, newSchedule]);
+      const clone = JSON.parse(JSON.stringify(source));
+      const newSchedule: ProcessedSchedule = {
+        ...clone,
+        // Sufijo de índice para que dos sesiones del mismo NRC importadas en el mismo
+        // milisegundo no colisionen en id.
+        id: `sim-imported-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
+        instructor: targetInstructor,
+        instructorId: targetId,
+        startDate: new Date(source.startDate),
+        endDate: new Date(source.endDate)
+      };
+
+      if (newSchedule.isAdministrative) newAdmin.push(newSchedule);
+      else newAcad.push(newSchedule);
+    });
+
+    if (newAcad.length === 0 && newAdmin.length === 0) {
+      notify("No se encontró el horario original en el archivo.", 'error');
+      return 0;
     }
 
-    return true;
+    if (newAcad.length > 0) setSimulationSchedules(prev => [...prev, ...newAcad]);
+    if (newAdmin.length > 0) setSimulationAdmin(prev => [...prev, ...newAdmin]);
+
+    return newAcad.length + newAdmin.length;
   }, [schedules, administrativeTasks, instructors, notify]);
 
   // La confirmación previa (acción irreversible: escribe en la BD real) vive en el
@@ -1216,16 +1238,46 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         extraHoursConfig // Save extra hours config
       };
 
-      const { error } = await supabase.from('scenarios').insert({
+      const { data, error } = await supabase.from('scenarios').insert({
         name,
         description,
         data: payload,
-      });
+      }).select('id').single();
       if (error) throw error;
+      // A partir de ahora esta simulación "pertenece" al escenario recién creado —
+      // el siguiente "Guardar Escenario" puede actualizarlo en vez de crear otro más.
+      setCurrentScenarioId(data?.id ?? null);
+      setCurrentScenarioName(name);
       notify('Escenario guardado exitosamente.', 'success');
     } catch (e: any) {
       console.error('Error saving scenario:', e);
       notify('Error al guardar escenario: ' + e.message, 'error');
+    }
+  }, [simulationSchedules, simulationAdmin, simulationConfig, extraHoursConfig, notify]);
+
+  // Actualiza el MISMO registro de escenario (en vez de crear uno nuevo) — para cuando
+  // el usuario carga un escenario guardado, sigue editando la simulación, y quiere
+  // guardar esos cambios en el mismo lugar. created_at se refresca a "ahora" a falta de
+  // una columna updated_at, para que la lista lo muestre como el más reciente.
+  const updateScenario = useCallback(async (id: string, metadata: any = null) => {
+    try {
+      const scenarioData = [...simulationSchedules, ...simulationAdmin];
+      const payload = {
+        schedules: scenarioData,
+        metadata,
+        simulationConfig,
+        extraHoursConfig
+      };
+
+      const { error } = await supabase
+        .from('scenarios')
+        .update({ data: payload, created_at: new Date().toISOString() })
+        .eq('id', id);
+      if (error) throw error;
+      notify('Escenario actualizado exitosamente.', 'success');
+    } catch (e: any) {
+      console.error('Error updating scenario:', e);
+      notify('Error al actualizar escenario: ' + e.message, 'error');
     }
   }, [simulationSchedules, simulationAdmin, simulationConfig, extraHoursConfig, notify]);
 
@@ -1260,6 +1312,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         // la de una simulación anterior para el mismo instructor en este navegador.
         setExtraHoursConfig(data.data?.extraHoursConfig ?? null);
         setIsSimulationMode(true);
+        setCurrentScenarioId(data.id);
+        setCurrentScenarioName(data.name);
         return data.data?.metadata;
       }
     } catch (e: any) {
@@ -1455,7 +1509,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     importScheduleToSimulation,
     applySimulation,
     saveScenario,
+    updateScenario,
     loadScenario,
+    currentScenarioId,
+    currentScenarioName,
     recalculateInstructorAudit,
     syncInstructorIdInSchedules,
     updateAppSetting,
@@ -1475,7 +1532,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     instructorsMap, instructorsByNameMap, roomsMap, holidaysMap, careersMap,
     settings, loadSchedulesForFilter, globalSchedulesSummary,
     simulationConfig, extraHoursConfig, startSimulation, endSimulation,
-    importScheduleToSimulation, applySimulation, saveScenario, loadScenario,
+    importScheduleToSimulation, applySimulation, saveScenario, updateScenario, loadScenario,
+    currentScenarioId, currentScenarioName,
     recalculateInstructorAudit, syncInstructorIdInSchedules, updateAppSetting,
     recalculateAllInstructorsAudit, getAuditCutoffDate, liveAuditByInstructor, notify
   ]);

@@ -7,7 +7,7 @@ import ConfirmDialog from './ConfirmDialog';
 import SaveScenarioModal from './SaveScenarioModal';
 
 const SimulationBar: React.FC = () => {
-    const { isSimulationMode, endSimulation, applySimulation, saveScenario, extraHoursConfig, setExtraHoursConfig, holidays, simulationConfig } = useData();
+    const { isSimulationMode, endSimulation, applySimulation, saveScenario, updateScenario, currentScenarioId, currentScenarioName, extraHoursConfig, setExtraHoursConfig, holidays, simulationConfig } = useData();
     const [isApplying, setIsApplying] = useState(false);
     const [isExtraHoursModalOpen, setIsExtraHoursModalOpen] = useState(false);
     const [isApplyConfirmOpen, setIsApplyConfirmOpen] = useState(false);
@@ -27,15 +27,23 @@ const SimulationBar: React.FC = () => {
 
     const handleSave = () => setIsSaveScenarioOpen(true);
 
-    const confirmSave = async (name: string) => {
+    const currentMetadata = () => {
         const currentView = searchParams.get('view') || 'Bloque';
         const currentFilter = searchParams.get('filter') || '';
-
-        await saveScenario(name, '', {
+        return {
             view: currentView,
             filter: currentFilter,
             instructorName: currentView === 'Instructor' ? currentFilter : undefined
-        });
+        };
+    };
+
+    const confirmSaveNew = async (name: string) => {
+        await saveScenario(name, '', currentMetadata());
+    };
+
+    const confirmUpdate = async () => {
+        if (!currentScenarioId) return;
+        await updateScenario(currentScenarioId, currentMetadata());
     };
 
     return (
@@ -115,7 +123,9 @@ const SimulationBar: React.FC = () => {
             <SaveScenarioModal
                 isOpen={isSaveScenarioOpen}
                 onClose={() => setIsSaveScenarioOpen(false)}
-                onSave={confirmSave}
+                onSaveNew={confirmSaveNew}
+                onUpdateExisting={currentScenarioId ? confirmUpdate : undefined}
+                currentScenarioName={currentScenarioName}
             />
         </div>
     );
