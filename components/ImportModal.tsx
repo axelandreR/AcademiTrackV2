@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Plus, BookOpen, UserRound, X, Loader2, LayoutGrid, ChevronRight, Video, MapPin } from 'lucide-react';
+import { Search, Plus, BookOpen, UserRound, X, Loader2, LayoutGrid, ChevronRight, Video, MapPin, Check, CheckSquare } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule } from '../types';
+import { belongsToInstructor, resolveInstructorByName } from '../services/businessRules';
 
 interface ImportModalProps {
     isOpen: boolean;
@@ -61,20 +62,34 @@ const dedupeForDisplay = (sessions: ProcessedSchedule[]): ProcessedSchedule[] =>
     return result;
 };
 
-const NrcGroupCard: React.FC<{ group: NrcGroup; onImport: (sessions: ProcessedSchedule[]) => void }> = ({ group, onImport }) => (
-    <div className="bg-white p-4 rounded-2xl border border-slate-100 hover:border-indigo-200 hover:shadow-md transition-all">
+const NrcGroupCard: React.FC<{
+    group: NrcGroup;
+    onImport: (sessions: ProcessedSchedule[]) => void;
+    selected: boolean;
+    onToggleSelect: (nrc: string) => void;
+}> = ({ group, onImport, selected, onToggleSelect }) => (
+    <div className={`bg-white p-4 rounded-2xl border hover:shadow-md transition-all ${selected ? 'border-indigo-400 ring-2 ring-indigo-100' : 'border-slate-100 hover:border-indigo-200'}`}>
         <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-                <div className="flex items-center flex-wrap gap-2 mb-1">
-                    <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[9px] font-black rounded uppercase tracking-wider border border-blue-100">
-                        NRC: {group.nrc}
-                    </span>
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{group.courseCode}</span>
-                </div>
-                <h3 className="text-xs font-bold text-slate-800 mb-1">{group.courseName}</h3>
-                <div className="flex items-center text-[10px] text-slate-500">
-                    <UserRound size={12} className="mr-1 text-slate-400 shrink-0" />
-                    <span className="font-semibold truncate">{group.instructor || 'Sin Asignar'}</span>
+            <div className="min-w-0 flex-1 flex items-start gap-3">
+                <button
+                    onClick={() => onToggleSelect(group.nrc)}
+                    title="Seleccionar para importación múltiple"
+                    className={`shrink-0 mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${selected ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300 hover:border-indigo-400'}`}
+                >
+                    {selected && <Check size={13} className="text-white" strokeWidth={3} />}
+                </button>
+                <div className="min-w-0 flex-1">
+                    <div className="flex items-center flex-wrap gap-2 mb-1">
+                        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[9px] font-black rounded uppercase tracking-wider border border-blue-100">
+                            NRC: {group.nrc}
+                        </span>
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{group.courseCode}</span>
+                    </div>
+                    <h3 className="text-xs font-bold text-slate-800 mb-1">{group.courseName}</h3>
+                    <div className="flex items-center text-[10px] text-slate-500">
+                        <UserRound size={12} className="mr-1 text-slate-400 shrink-0" />
+                        <span className="font-semibold truncate">{group.instructor || 'Sin Asignar'}</span>
+                    </div>
                 </div>
             </div>
             <button
@@ -87,7 +102,7 @@ const NrcGroupCard: React.FC<{ group: NrcGroup; onImport: (sessions: ProcessedSc
             </button>
         </div>
 
-        <div className="mt-3 pt-3 border-t border-slate-50 space-y-1.5">
+        <div className="mt-3 pt-3 border-t border-slate-50 space-y-1.5 ml-8">
             {dedupeForDisplay(group.sessions).map(s => (
                 <div key={s.id} className="flex items-center text-[10px] text-slate-500 font-mono gap-3">
                     {s.modality === 'virtual' ? <Video size={11} className="text-slate-400 shrink-0" /> : <MapPin size={11} className="text-slate-400 shrink-0" />}
@@ -101,7 +116,7 @@ const NrcGroupCard: React.FC<{ group: NrcGroup; onImport: (sessions: ProcessedSc
 );
 
 const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstructor }) => {
-    const { searchSchedules, importScheduleToSimulation, notify, rawSchedules } = useData();
+    const { searchSchedules, importScheduleToSimulation, notify, rawSchedules, allSchedules, instructors, instructorsByNameMap } = useData();
     const [mode, setMode] = useState<Mode>('bloque');
 
     // --- Modo Bloque ---
@@ -113,8 +128,27 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
     const [nrcResults, setNrcResults] = useState<ProcessedSchedule[]>([]);
     const [loading, setLoading] = useState(false);
 
+    // --- Selección múltiple ---
+    const [selectedNrcs, setSelectedNrcs] = useState<Set<string>>(new Set());
+
     // Solo cursos reales del archivo (no administrativos, esos no tienen bloque/NRC real).
     const archive = useMemo(() => rawSchedules.filter(s => !s.isAdministrative), [rawSchedules]);
+
+    // NRC que el instructor destino ya tiene en su horario simulado (carga original o ya
+    // importada como extra en esta misma sesión) — no debe poder volver a asignarse.
+    // Usa el mismo matching por ID/nombre difuso que el resto de la app (belongsToInstructor)
+    // en vez de comparar el string 'instructor' tal cual: ese campo viene crudo del Excel y
+    // puede venir truncado o con variantes respecto al nombre completo del catálogo.
+    const targetInstructorObj = useMemo(
+        () => resolveInstructorByName(targetInstructor, instructorsByNameMap, instructors),
+        [targetInstructor, instructorsByNameMap, instructors]
+    );
+    const loadedNrcs = useMemo(() => {
+        const matches = targetInstructorObj
+            ? allSchedules.filter(s => belongsToInstructor(targetInstructorObj, s))
+            : allSchedules.filter(s => s.instructor === targetInstructor);
+        return new Set(matches.filter(s => s.nrc).map(s => s.nrc));
+    }, [allSchedules, targetInstructor, targetInstructorObj]);
 
     const blockOptions = useMemo(() => {
         const q = blockQuery.trim().toUpperCase();
@@ -132,8 +166,8 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
     const blockGroups = useMemo(() => {
         if (!selectedBlock) return [];
         const rows = archive.filter(s => s.block === selectedBlock && !isAutoestudio(s));
-        return groupByNrc(rows);
-    }, [archive, selectedBlock]);
+        return groupByNrc(rows).filter(g => !loadedNrcs.has(g.nrc));
+    }, [archive, selectedBlock, loadedNrcs]);
 
     const selectedBlockCareer = useMemo(() => archive.find(s => s.block === selectedBlock)?.career || '', [archive, selectedBlock]);
 
@@ -158,15 +192,53 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
         return () => clearTimeout(timer);
     }, [searchTerm, mode, searchSchedules]);
 
+    // La selección es sobre la lista visible actual — al cambiar de modo, bloque o
+    // búsqueda esa lista cambia por completo, así que la selección anterior ya no aplica.
+    React.useEffect(() => {
+        setSelectedNrcs(new Set());
+    }, [mode, selectedBlock, nrcResults]);
+
     if (!isOpen) return null;
 
-    const nrcGroups = groupByNrc(nrcResults);
+    const nrcGroups = groupByNrc(nrcResults).filter(g => !loadedNrcs.has(g.nrc));
+    const visibleGroups = mode === 'bloque' ? blockGroups : nrcGroups;
+
+    const toggleSelect = (nrc: string) => {
+        setSelectedNrcs(prev => {
+            const next = new Set(prev);
+            if (next.has(nrc)) next.delete(nrc);
+            else next.add(nrc);
+            return next;
+        });
+    };
 
     const handleImportGroup = (sessions: ProcessedSchedule[]) => {
+        const nrc = sessions[0]?.nrc;
+        if (nrc && loadedNrcs.has(nrc)) {
+            notify(`El NRC ${nrc} ya está asignado a ${targetInstructor}. No se puede cargar dos veces en el mismo horario.`, 'error');
+            return;
+        }
         const ids = sessions.map(s => s.id);
         const count = importScheduleToSimulation(ids, targetInstructor);
         if (count > 0) {
             notify(`${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'}. Ahora puedes editarlas en el horario.`, 'success');
+            onClose();
+        }
+    };
+
+    const handleImportSelected = () => {
+        const groups = visibleGroups.filter(g => selectedNrcs.has(g.nrc));
+        const blocked = groups.filter(g => loadedNrcs.has(g.nrc));
+        if (blocked.length > 0) {
+            notify(`Los NRC ${blocked.map(g => g.nrc).join(', ')} ya están asignados a ${targetInstructor} y se omitieron.`, 'error');
+        }
+        const toImport = groups.filter(g => !loadedNrcs.has(g.nrc));
+        const ids = toImport.flatMap(g => g.sessions.map(s => s.id));
+        if (ids.length === 0) return;
+        const count = importScheduleToSimulation(ids, targetInstructor);
+        if (count > 0) {
+            notify(`${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'} de ${toImport.length} NRC. Ahora puedes editarlas en el horario.`, 'success');
+            setSelectedNrcs(new Set());
             onClose();
         }
     };
@@ -273,7 +345,15 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
                                     <p className="text-xs font-bold uppercase tracking-wider text-center px-6">Este bloque no tiene NRC asignables (o todo es Autoestudio/VAEE).</p>
                                 </div>
                             ) : (
-                                blockGroups.map(group => <NrcGroupCard key={group.nrc} group={group} onImport={handleImportGroup} />)
+                                blockGroups.map(group => (
+                                    <NrcGroupCard
+                                        key={group.nrc}
+                                        group={group}
+                                        onImport={handleImportGroup}
+                                        selected={selectedNrcs.has(group.nrc)}
+                                        onToggleSelect={toggleSelect}
+                                    />
+                                ))
                             )}
                         </div>
                     </>
@@ -309,10 +389,42 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
                                     </p>
                                 </div>
                             ) : (
-                                nrcGroups.map(group => <NrcGroupCard key={group.nrc} group={group} onImport={handleImportGroup} />)
+                                nrcGroups.map(group => (
+                                    <NrcGroupCard
+                                        key={group.nrc}
+                                        group={group}
+                                        onImport={handleImportGroup}
+                                        selected={selectedNrcs.has(group.nrc)}
+                                        onToggleSelect={toggleSelect}
+                                    />
+                                ))
                             )}
                         </div>
                     </>
+                )}
+
+                {/* Barra de selección múltiple */}
+                {selectedNrcs.size > 0 && (
+                    <div className="px-4 py-3 bg-indigo-50 border-t border-indigo-100 flex items-center justify-between shrink-0">
+                        <span className="text-xs font-black text-indigo-700">
+                            {selectedNrcs.size} NRC seleccionado{selectedNrcs.size === 1 ? '' : 's'}
+                        </span>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setSelectedNrcs(new Set())}
+                                className="px-3 py-1.5 text-indigo-500 hover:text-indigo-700 text-[10px] font-black uppercase tracking-widest transition-colors"
+                            >
+                                Limpiar
+                            </button>
+                            <button
+                                onClick={handleImportSelected}
+                                className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wide shadow-sm transition-all active:scale-95"
+                            >
+                                <CheckSquare size={14} />
+                                Importar seleccionados
+                            </button>
+                        </div>
+                    </div>
                 )}
 
                 {/* Footer */}
