@@ -1,17 +1,25 @@
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useData } from '../context/DataContext';
-import { Play, Save, X, CheckCheck, AlertTriangle, Clock } from 'lucide-react';
+import { Play, Save, X, CheckCheck, AlertTriangle, Clock, FileSpreadsheet } from 'lucide-react';
 import ExtraHoursModal from './ExtraHoursModal';
 import ConfirmDialog from './ConfirmDialog';
 import SaveScenarioModal from './SaveScenarioModal';
+import WeeklyHEExportModal from './WeeklyHEExportModal';
+import { generateWeeklyHEExcel } from '../services/excelExporter';
+import { resolveInstructorByName } from '../services/businessRules';
 
 const SimulationBar: React.FC = () => {
-    const { isSimulationMode, endSimulation, applySimulation, saveScenario, updateScenario, currentScenarioId, currentScenarioName, extraHoursConfig, setExtraHoursConfig, holidays, simulationConfig } = useData();
+    const {
+        isSimulationMode, endSimulation, applySimulation, saveScenario, updateScenario,
+        currentScenarioId, currentScenarioName, extraHoursConfig, setExtraHoursConfig, holidays,
+        simulationConfig, allSchedules, instructors, instructorsByNameMap, notify
+    } = useData();
     const [isApplying, setIsApplying] = useState(false);
     const [isExtraHoursModalOpen, setIsExtraHoursModalOpen] = useState(false);
     const [isApplyConfirmOpen, setIsApplyConfirmOpen] = useState(false);
     const [isSaveScenarioOpen, setIsSaveScenarioOpen] = useState(false);
+    const [isWeeklyExportOpen, setIsWeeklyExportOpen] = useState(false);
     const [searchParams] = useSearchParams();
 
     if (!isSimulationMode) return null;
@@ -46,6 +54,24 @@ const SimulationBar: React.FC = () => {
         await updateScenario(currentScenarioId, currentMetadata());
     };
 
+    const handleWeeklyExport = async (weekStart: Date) => {
+        const instructorName = simulationConfig?.instructorFilter || '';
+        const instructorObj = resolveInstructorByName(instructorName, instructorsByNameMap, instructors);
+        const instructorType = instructorObj?.type || 'TP';
+        try {
+            const blob = await generateWeeklyHEExcel({ instructorName, instructorType, weekStart, allSchedules, extraHoursConfig, holidays });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Programacion_Semanal_HE_${instructorName.replace(/\s+/g, '_') || 'simulacion'}_${weekStart.toISOString().slice(0, 10)}.xlsx`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            notify('Reporte semanal exportado correctamente.', 'success');
+        } catch (e: any) {
+            notify('Error al generar el reporte semanal: ' + e.message, 'error');
+        }
+    };
+
     return (
         <div className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-2xl lg:rounded-3xl shadow-lg shadow-amber-500/20 px-4 py-3 lg:px-5 lg:py-3 mb-4 shrink-0 relative z-[80] flex flex-col lg:flex-row lg:items-center gap-3">
             <div className="flex items-center gap-3 min-w-0 lg:flex-1">
@@ -76,6 +102,17 @@ const SimulationBar: React.FC = () => {
                     <Save size={14} />
                     <span>Guardar Escenario</span>
                 </button>
+
+                {simulationConfig?.instructorFilter && (
+                    <button
+                        onClick={() => setIsWeeklyExportOpen(true)}
+                        className="flex items-center gap-1.5 px-3 py-2 bg-white/15 hover:bg-white/25 text-white rounded-xl font-bold uppercase text-[10px] tracking-wide transition-all shrink-0"
+                        title="Exportar Semana (Horas Extras)"
+                    >
+                        <FileSpreadsheet size={14} />
+                        <span>Exportar Semana</span>
+                    </button>
+                )}
 
                 <button
                     onClick={endSimulation}
@@ -126,6 +163,12 @@ const SimulationBar: React.FC = () => {
                 onSaveNew={confirmSaveNew}
                 onUpdateExisting={currentScenarioId ? confirmUpdate : undefined}
                 currentScenarioName={currentScenarioName}
+            />
+
+            <WeeklyHEExportModal
+                isOpen={isWeeklyExportOpen}
+                onClose={() => setIsWeeklyExportOpen(false)}
+                onExport={handleWeeklyExport}
             />
         </div>
     );
