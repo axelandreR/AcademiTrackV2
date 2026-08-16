@@ -1,5 +1,6 @@
 import { ProcessedSchedule, Instructor } from '../types';
 import { isPresencialOrComputableAsinc, belongsToInstructor } from './businessRules';
+import { computeDailyJourney } from './dailyJourney';
 
 export interface DailyJourney {
     date: Date;
@@ -54,12 +55,6 @@ const timeToMinutes = (time: string): number => {
     return hh * 60 + mm;
 };
 
-const minutesToTime = (totalMinutes: number): string => {
-    const hh = Math.floor(totalMinutes / 60);
-    const mm = totalMinutes % 60;
-    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-};
-
 const getDayName = (date: Date): string => {
     const days = ['DOM', 'LUN', 'MAR', 'MIE', 'JUE', 'VIE', 'SAB'];
     return days[date.getDay()];
@@ -94,8 +89,9 @@ export const processAttendanceJourneys = (
         return isPresencialOrComputableAsinc(s);
     });
 
-    // 2. Generar un mapa de jornadas diarias
-    const journeyMap: Record<string, DailyJourney> = {};
+    // 2. Generar las jornadas diarias (puede haber 2 por día si hay Refrigerio: una
+    // antes y otra después — nunca un registro para el Refrigerio en sí).
+    const journeys: DailyJourney[] = [];
     const dayNamesMap = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
 
     // Formateador para comparar fechas por día (YYYY-MM-DD)
@@ -133,43 +129,61 @@ export const processAttendanceJourneys = (
         });
 
         if (dayScheds.length > 0) {
-            let minMinutes = 24 * 60;
-            let maxMinutes = 0;
-            let classCourseFound = '';
-            let anyCourseFound = '';
+            // Mismo motor de "Jornada Diaria" (ScheduleGrid, ExportarSemana HE): parte el
+            // día en Mañana/Tarde por el bloque de Refrigerio si existe. Antes esta función
+            // tenía su propia lógica de min/max que ignoraba el Refrigerio y generaba UN
+            // solo registro cubriendo todo el día (incluyendo la hora de refrigerio como si
+            // fuera tiempo de trabajo continuo).
+            const journey = computeDailyJourney(dayScheds, instructor.type);
+            const nonBreakBlocks = dayScheds.filter(s => s.category !== 'refrigerio');
 
-            dayScheds.forEach(s => {
-                const startMin = timeToMinutes(s.startTime);
-                const endMin = timeToMinutes(s.endTime);
-
-                if (startMin < minMinutes) minMinutes = startMin;
-                if (endMin > maxMinutes) maxMinutes = endMin;
-
-                const name = (s.courseName || '').trim();
-                const isAsincrona = normalize(name).includes('ASINCRONA');
-
-                // Si no es administrativa Y no es asíncrona, es una clase real
-                if (!s.isAdministrative && !isAsincrona) {
-                    classCourseFound = name;
-                }
-                if (!anyCourseFound || (!isAsincrona && anyCourseFound.toUpperCase().includes('ASINCRONA'))) {
-                    anyCourseFound = name;
-                }
-            });
-
-            const finalCourseName = classCourseFound || anyCourseFound || 'ASÍNCRONA PRESENCIAL';
-
-            journeyMap[dateKey] = {
-                date: new Date(current),
-                dateStr: current.toLocaleDateString('es-PE'),
-                dayName: getDayName(current),
-                startTime: minutesToTime(minMinutes),
-                endTime: minutesToTime(maxMinutes),
-                totalHours: Number(((maxMinutes - minMinutes) / 60).toFixed(2)),
-                courseName: finalCourseName.toUpperCase(),
-                campus: '06',
-                observations: ''
+            // Determina el nombre de curso a mostrar para un tramo (mañana o tarde),
+            // considerando solo los bloques que caen dentro de ese tramo — nunca el
+            // Refrigerio, que ya se excluyó de nonBreakBlocks.
+            const pickCourseName = (blocks: ProcessedSchedule[]): string => {
+                let classCourseFound = '';
+                let anyCourseFound = '';
+                blocks.forEach(s => {
+                    const name = (s.courseName || '').trim();
+                    const isAsincrona = normalize(name).includes('ASINCRONA');
+                    if (!s.isAdministrative && !isAsincrona) {
+                        classCourseFound = name;
+                    }
+                    if (!anyCourseFound || (!isAsincrona && anyCourseFound.toUpperCase().includes('ASINCRONA'))) {
+                        anyCourseFound = name;
+                    }
+                });
+                return (classCourseFound || anyCourseFound || 'ASÍNCRONA PRESENCIAL').toUpperCase();
             };
+
+            const pushEntry = (shift: { start: string | null; end: string | null; hours: number }, blocks: ProcessedSchedule[]) => {
+                if (!shift.start || !shift.end || shift.hours <= 0) return;
+                journeys.push({
+                    date: new Date(current),
+                    dateStr: current.toLocaleDateString('es-PE'),
+                    dayName: getDayName(current),
+                    startTime: shift.start,
+                    endTime: shift.end,
+                    totalHours: Number(shift.hours.toFixed(2)),
+                    courseName: pickCourseName(blocks),
+                    campus: '06',
+                    observations: ''
+                });
+            };
+
+            if (journey.hasRefrigerio) {
+                const refrigerio = dayScheds.find(s => s.category === 'refrigerio')!;
+                const breakStart = timeToMinutes(refrigerio.startTime);
+                const breakEnd = timeToMinutes(refrigerio.endTime);
+                const beforeBlocks = nonBreakBlocks.filter(s => timeToMinutes(s.endTime) <= breakStart);
+                const afterBlocks = nonBreakBlocks.filter(s => timeToMinutes(s.startTime) >= breakEnd);
+                // Registro antes del Refrigerio y registro después — nunca uno para el
+                // Refrigerio en sí (no se le crea ninguna fila propia).
+                pushEntry(journey.morning, beforeBlocks);
+                pushEntry(journey.afternoon, afterBlocks);
+            } else {
+                pushEntry(journey.morning, nonBreakBlocks);
+            }
         }
 
         current.setDate(current.getDate() + 1);
@@ -179,7 +193,7 @@ export const processAttendanceJourneys = (
     const weeklySummary: { course: string; day: string; start: string; end: string; }[] = [];
     const handled = new Set<string>();
 
-    instructorScheds.forEach(s => {
+    instructorScheds.filter(s => s.category !== 'refrigerio').forEach(s => {
         s.days.forEach(d => {
             const key = `${normalize(s.courseName)}-${normalize(d)}-${s.startTime}-${s.endTime}`;
             if (!handled.has(key)) {
@@ -198,7 +212,7 @@ export const processAttendanceJourneys = (
         instructor,
         periodStart: startDate,
         periodEnd: endDate,
-        journeys: Object.values(journeyMap).sort((a, b) => a.date.getTime() - b.date.getTime()),
+        journeys: journeys.sort((a, b) => a.date.getTime() - b.date.getTime() || a.startTime.localeCompare(b.startTime)),
         weeklyScheduleSummary: weeklySummary
     };
 };
