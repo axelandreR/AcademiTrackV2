@@ -99,6 +99,10 @@ const AttendancePage: React.FC = () => {
 
     const SENATI_LOGO_URL = 'https://afzgvqkiwlfqbidausyi.supabase.co/storage/v1/object/public/assets/LOGO_SENATI.png';
 
+    // Ej. ABAD_JIMENEZ_CRISTY_DARWING_1560476_FA
+    const buildAttendanceFileName = (instructor: Instructor) =>
+        `${instructor.name.replace(/\s+/g, '_')}_${instructor.id}_FA.xlsx`;
+
     const handleDownloadIndividual = async (instructor: Instructor) => {
         const { startDate, endDate } = getAttendancePeriodRange(selectedMonth, selectedYear);
         const data = processAttendanceJourneys(instructor, allSchedules, startDate, endDate);
@@ -113,7 +117,7 @@ const AttendancePage: React.FC = () => {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `FICHA_ASISTENCIA_${instructor.id}_${instructor.name.replace(/\s+/g, '_')}_${selectedMonth}_${selectedYear}.xlsx`;
+            a.download = buildAttendanceFileName(instructor);
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -155,7 +159,7 @@ const AttendancePage: React.FC = () => {
                 const data = processAttendanceJourneys(inst, allSchedules, startDate, endDate);
                 if (data.journeys.length > 0) {
                     const blob = await generateAttendanceExcel(data, SENATI_LOGO_URL);
-                    const fileName = `FICHA_${inst.id}_${inst.name.replace(/\s+/g, '_')}.xlsx`;
+                    const fileName = buildAttendanceFileName(inst);
                     zip.file(fileName, blob);
                     await recordGeneratedStatus(inst.id);
                 }
