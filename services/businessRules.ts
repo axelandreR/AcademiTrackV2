@@ -109,19 +109,19 @@ export const isExcludedFromTotalLoad = (sched: ProcessedSchedule): boolean => {
 };
 
 /**
- * Determina si un bloque es de modalidad presencial o asincrona computable (VAEE/Autoestudio)
- * que debe aparecer en la ficha de asistencia.
+ * Determina si un bloque es presencial y por tanto debe aparecer en la ficha de
+ * asistencia (que solo registra presencia física en sede). La modalidad manda siempre,
+ * incluidas las sesiones Asíncronas/VAEE: una "ASÍNCRONA VIRTUAL" (autoestudio remoto)
+ * no debe aparecer, solo una "ASÍNCRONA PRESENCIAL" — antes esta función incluía TODO
+ * bloque asíncrono sin mirar su modalidad, colando autoestudio remoto en la ficha.
  */
 export const isPresencialOrComputableAsinc = (sched: ProcessedSchedule): boolean => {
     const mod = (sched.modality || '').toUpperCase();
     const meet = (sched.meetingType || '').toUpperCase();
-    const name = (sched.courseName || '').toUpperCase();
-    const activity = (sched.activity || '').toUpperCase();
 
     const isVirtual = mod.includes('VIRTUAL') || meet.includes('VIRTUAL') || meet.includes('REMT');
-    const isAsynchronous = name.includes('ASINCRONA') || meet.includes('VAEE') || activity.includes('AUTOESTUDIO') || sched.category === 'asincrona';
 
-    return !isVirtual || isAsynchronous;
+    return !isVirtual;
 };
 
 const normalizeFuzzyName = (s: string) => (s || '').toString().trim()
