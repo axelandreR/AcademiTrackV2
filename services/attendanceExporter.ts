@@ -2,9 +2,20 @@
 import ExcelJS from 'exceljs';
 import { AttendanceSheetData } from './attendanceService';
 
+// Convierte "HH:MM" a fracción de día (0-1), el formato numérico nativo que usa Excel
+// para horas — necesario para que TOTAL HORAS pueda calcularse con fórmula (=(salida-inicio)*24)
+// en vez de venir como texto precalculado.
+const timeStringToExcelFraction = (t: string): number => {
+    if (!t) return 0;
+    const [h, m] = t.split(':').map(Number);
+    return (h + m / 60) / 24;
+};
 
 export const generateAttendanceExcel = async (data: AttendanceSheetData, logoUrl?: string): Promise<Blob> => {
     const workbook = new ExcelJS.Workbook();
+    // ExcelJS no evalúa fórmulas (no guarda el resultado en caché) — esto obliga a Excel
+    // a recalcular TOTAL HORAS apenas se abre el archivo, en vez de mostrarlo en blanco.
+    workbook.calcProperties.fullCalcOnLoad = true;
     const worksheet = workbook.addWorksheet('Asistencia');
 
     // Manejo de Logo
@@ -170,13 +181,16 @@ export const generateAttendanceExcel = async (data: AttendanceSheetData, logoUrl
             '06', // Siempre "06" según requerimiento
             j.dayName,
             j.dateStr,
-            j.startTime,
+            timeStringToExcelFraction(j.startTime),
             '',
-            j.endTime,
+            timeStringToExcelFraction(j.endTime),
             '',
-            j.totalHours.toFixed(2),
+            { formula: `=(G${currentRow}-E${currentRow})*24`, result: j.totalHours },
             j.observations
         ];
+        row.getCell(5).numFmt = 'hh:mm';
+        row.getCell(7).numFmt = 'hh:mm';
+        row.getCell(9).numFmt = '0.00';
 
         row.eachCell((cell, colNumber) => {
             cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
