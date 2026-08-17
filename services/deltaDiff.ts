@@ -21,15 +21,22 @@ export interface DeltaDiffResult {
 
 const normalize = (v?: string | null): string => String(v ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
 
-// Firma de una sesión (bloque de días+hora+lugar+docente+curso) usada para comparar
-// el contenido real de un NRC, no solo su presencia. Dos NRC son "iguales" si el
-// conjunto de firmas de sus sesiones coincide, sin importar el orden de las filas.
+const normalizeDate = (d?: Date | null): string => {
+    if (!d || isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// Firma de una sesión (bloque de días+hora+lugar+docente+curso+rango de fechas) usada
+// para comparar el contenido real de un NRC, no solo su presencia. Dos NRC son "iguales"
+// si el conjunto de firmas de sus sesiones coincide, sin importar el orden de las filas.
 const rowSignature = (s: ProcessedSchedule): string => {
     const days = [...(s.days || [])].map(normalize).sort().join(',');
     return [
         days,
         normalize(s.startTime),
         normalize(s.endTime),
+        normalizeDate(s.startDate),
+        normalizeDate(s.endDate),
         normalize(s.room),
         normalize(s.building),
         normalize(s.instructorId || s.instructor),
