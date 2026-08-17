@@ -5,6 +5,7 @@ import { useData } from '../context/DataContext';
 import { isContractualLoad, resolveInstructorByName } from '../services/businessRules';
 import { calculateWeeklyAudit } from '../services/auditCalculations';
 import { computeDailyJourney } from '../services/dailyJourney';
+import { detectInstructorConflicts } from '../services/conflictDetection';
 import DailyJourneyPanel from './DailyJourneyPanel';
 import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData, ExtraHoursConfig } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
@@ -37,6 +38,9 @@ interface ScheduleGridProps {
   holidays?: HolidayData[];
   onDeficitStatusChange?: (hasDeficit: boolean) => void;
   contentMode: 'grid' | 'table';
+  // Salto directo a la semana de un cruce de horario detectado en la Auditoría Detallada
+  // (ver AuditModal) — misma mecánica que "Corregir en Horario" del Reporte Global.
+  onJumpToWeek?: (date: Date) => void;
 }
 
 type InstructorType = 'TC' | 'TP';
@@ -57,7 +61,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   onNavigateWeek,
   holidays = [],
   onDeficitStatusChange,
-  contentMode
+  contentMode,
+  onJumpToWeek
 }) => {
   const allTimeSlots = getTimeSlots();
   const { instructorsByNameMap, instructorsMap, simulationConfig, isSimulationMode, extraHoursConfig, settings } = useData();
@@ -283,6 +288,20 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     }
     return list;
   }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType, showAuditModal, semesterEndDateSetting]);
+
+  // Cruces de horario del propio instructor (entre clases, tareas administrativas, o
+  // ambas) — antes solo eran visibles como borde rojo en la grilla, semana por semana,
+  // sin ninguna forma de saber en qué semana(s) del semestre había alguno. `schedules`
+  // ya viene acotado a este instructor (ver resto de este archivo), así que basta con
+  // reusar el mismo detector que usa el Reporte Global filtrando por tipo 'instructor'.
+  const scheduleConflicts = useMemo(() => {
+    if (!showAuditModal || !isInstructorView || !selectedFilterName || simulationConfig?.ignoreAudit) return [];
+    return detectInstructorConflicts(
+      schedules,
+      { start: SEMESTER_START_DATE, end: semesterEndDateSetting },
+      selectedFilterName
+    );
+  }, [schedules, selectedFilterName, isInstructorView, showAuditModal, simulationConfig, semesterEndDateSetting]);
 
   useEffect(() => {
     if (isInstructorView) onDeficitStatusChange?.(stats.hasAuditWarning);
@@ -640,6 +659,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         instructorName={selectedFilterName || ''}
         instructorType={instructorType}
         observations={auditObservations}
+        conflicts={scheduleConflicts}
+        onJumpToWeek={onJumpToWeek ? (date: Date) => { onJumpToWeek(date); setShowAuditModal(false); } : undefined}
       />
     </div>
   );

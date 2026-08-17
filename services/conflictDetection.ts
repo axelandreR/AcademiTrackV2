@@ -187,3 +187,92 @@ export const detectConflicts = (
     roomGroups.forEach((list, room) => findOverlap(list, 'room', room));
     return conflicts;
 };
+
+/**
+ * Cruces de horario de UN instructor contra sí mismo (clases y/o tareas administrativas,
+ * ej. un Refrigerio que empieza antes de que termine la clase anterior) — para el panel
+ * de Auditoría Detallada de la grilla, NO para el Reporte Global.
+ *
+ * A propósito NO reutiliza detectConflicts: ese motor exige más de 2 minutos de
+ * solapamiento (ver `> 2 minutos` más arriba) para no generar ruido en el reporte
+ * semestral completo. Pero la grilla misma resalta en rojo CUALQUIER solapamiento, sin
+ * tolerancia (ver `overlappingIds` en ScheduleGrid.tsx: `start1 < end2 && start2 < end1`).
+ * Si este panel usara el mismo margen de 2 minutos, mostraría "Sin cruces" mientras la
+ * grilla ya está marcando un cruce real en rojo — exactamente la inconsistencia reportada.
+ * `schedules` ya debe venir acotado a un solo instructor (no se agrupa por identidad aquí).
+ */
+export const detectInstructorConflicts = (
+    schedules: ProcessedSchedule[],
+    semesterRange: { start: Date; end: Date },
+    target: string
+): Conflict[] => {
+    const conflicts: Conflict[] = [];
+    const dateMap = new Map<string, ProcessedSchedule[]>();
+    const dayNames = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
+
+    schedules.forEach(s => {
+        if (!s.days || !Array.isArray(s.days) || s.days.length === 0) return;
+
+        const sStart = Math.max(s.startDate.getTime(), semesterRange.start.getTime());
+        const sEnd = Math.min(s.endDate.getTime(), SEMESTER_END_DATE.getTime(), semesterRange.end.getTime());
+        if (sStart > sEnd) return;
+
+        for (let d = new Date(sStart); d.getTime() <= sEnd; d.setDate(d.getDate() + 1)) {
+            if (d > SEMESTER_END_DATE) continue;
+            const dayName = dayNames[d.getDay()];
+            if (!s.days.includes(dayName)) continue;
+
+            const midnight = new Date(d);
+            midnight.setHours(0, 0, 0, 0);
+            const dateKey = midnight.getTime().toString();
+            if (!dateMap.has(dateKey)) dateMap.set(dateKey, []);
+            dateMap.get(dateKey)!.push(s);
+        }
+    });
+
+    for (const [dateKey, activeToday] of dateMap.entries()) {
+        if (activeToday.length < 2) continue;
+
+        for (let i = 0; i < activeToday.length; i++) {
+            for (let j = i + 1; j < activeToday.length; j++) {
+                const a = activeToday[i];
+                const b = activeToday[j];
+                if (a.id === b.id) continue;
+                const isSameTask = a.courseCode === b.courseCode && a.startTime === b.startTime && a.endTime === b.endTime;
+                if (isSameTask) continue;
+
+                const startA = timeToMinutes(a.startTime);
+                const endA = timeToMinutes(a.endTime);
+                const startB = timeToMinutes(b.startTime);
+                const endB = timeToMinutes(b.endTime);
+
+                // Sin margen de tolerancia — mismo criterio exacto que el borde rojo de la grilla.
+                if (startA < endB && startB < endA) {
+                    const overlapStart = Math.max(startA, startB);
+                    const overlapEnd = Math.min(endA, endB);
+                    const startStr = `${Math.floor(overlapStart / 60).toString().padStart(2, '0')}:${(overlapStart % 60).toString().padStart(2, '0')}`;
+                    const endStr = `${Math.floor(overlapEnd / 60).toString().padStart(2, '0')}:${(overlapEnd % 60).toString().padStart(2, '0')}`;
+
+                    const currentDate = new Date(parseInt(dateKey));
+                    const year = currentDate.getFullYear();
+                    const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                    const day = String(currentDate.getDate()).padStart(2, '0');
+                    const dateStr = `${year}-${month}-${day}`;
+
+                    conflicts.push({
+                        type: 'instructor',
+                        target,
+                        weekLabel: `${day} ${currentDate.toLocaleString('es-ES', { month: 'short' })}`,
+                        day: dayNames[currentDate.getDay()],
+                        taskA: a,
+                        taskB: b,
+                        overlapTime: `${startStr} - ${endStr}`,
+                        actualDate: dateStr
+                    });
+                }
+            }
+        }
+    }
+
+    return conflicts;
+};

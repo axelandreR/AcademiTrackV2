@@ -521,6 +521,7 @@ const SchedulePage: React.FC = () => {
                                     onAddAdministrativeTask={handleAddAdministrativeTask}
                                     onNavigate={handleNavigate}
                                     onNavigateWeek={navigateWeek}
+                                    onJumpToWeek={(date) => setCurrentWeekStart(getStartOfWeek(date))}
                                     viewType={viewType}
                                     appMode={appMode}
                                     instructorsData={instructors}

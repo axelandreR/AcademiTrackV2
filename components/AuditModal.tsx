@@ -1,6 +1,7 @@
 
 import React from 'react';
-import { ShieldCheck, X, Activity, CheckCircle, Calendar as CalendarIcon, ShieldAlert, Clock, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, X, Activity, CheckCircle, Calendar as CalendarIcon, ShieldAlert, Clock, AlertTriangle, GitMerge, ArrowRight } from 'lucide-react';
+import { Conflict } from '../services/conflictDetection';
 
 interface AuditObservation {
     date: Date;
@@ -15,9 +16,19 @@ interface AuditModalProps {
     instructorName: string;
     instructorType: 'TC' | 'TP';
     observations: AuditObservation[];
+    conflicts?: Conflict[];
+    // Si no se provee, la sección de conflictos no ofrece salto (ej. contextos sin grilla).
+    onJumpToWeek?: (date: Date) => void;
 }
 
-const AuditModal: React.FC<AuditModalProps> = ({ isOpen, onClose, instructorName, instructorType, observations }) => {
+// Mismo parseo que el ?date= de SchedulePage (año/mes/día locales, sin pasar por el
+// parser de strings de Date para evitar desfases de zona horaria).
+const parseConflictDate = (dateStr: string): Date => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(year, month - 1, day);
+};
+
+const AuditModal: React.FC<AuditModalProps> = ({ isOpen, onClose, instructorName, instructorType, observations, conflicts = [], onJumpToWeek }) => {
     if (!isOpen) return null;
 
     return (
@@ -35,6 +46,44 @@ const AuditModal: React.FC<AuditModalProps> = ({ isOpen, onClose, instructorName
                 </div>
                 <div className="p-10 overflow-y-auto custom-scrollbar flex-1 space-y-10">
                     <section>
+                        <div className="flex items-center justify-between mb-6">
+                            <div className="flex items-center space-x-3">
+                                <div className="p-2 bg-rose-50 text-rose-600 rounded-xl"><GitMerge size={20} /></div>
+                                <h4 className="text-sm font-black uppercase tracking-widest text-slate-700">Cruces de Horario</h4>
+                            </div>
+                            {conflicts.length === 0
+                                ? <div className="flex items-center space-x-2 text-emerald-600 bg-emerald-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><CheckCircle size={14} /><span>Sin cruces</span></div>
+                                : <div className="flex items-center space-x-2 text-rose-600 bg-rose-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><AlertTriangle size={14} /><span>{conflicts.length} detectado{conflicts.length === 1 ? '' : 's'}</span></div>}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {conflicts.map((c, i) => {
+                                const conflictDate = parseConflictDate(c.actualDate);
+                                const clickable = !!onJumpToWeek;
+                                return (
+                                    <button
+                                        key={i}
+                                        type="button"
+                                        disabled={!clickable}
+                                        onClick={() => onJumpToWeek?.(conflictDate)}
+                                        title={clickable ? 'Ir a la semana de este cruce' : undefined}
+                                        className={`p-5 bg-rose-50 border border-rose-100 rounded-3xl flex items-center justify-between text-left w-full transition-all ${clickable ? 'hover:bg-rose-100 hover:border-rose-300 cursor-pointer active:scale-[0.99]' : 'cursor-default'}`}
+                                    >
+                                        <div className="flex items-center space-x-4 min-w-0">
+                                            <GitMerge size={20} className="text-rose-400 shrink-0" />
+                                            <div className="min-w-0">
+                                                <p className="text-[10px] font-black text-rose-800/60 uppercase">{c.weekLabel} · {c.day}</p>
+                                                <p className="text-xs font-black text-rose-900 truncate">{c.taskA.courseName} vs. {c.taskB.courseName}</p>
+                                                <p className="text-[9px] font-bold text-rose-400 uppercase mt-0.5">Solapan: {c.overlapTime}</p>
+                                            </div>
+                                        </div>
+                                        {clickable && <ArrowRight size={16} className="text-rose-400 shrink-0 ml-2" />}
+                                    </button>
+                                );
+                            })}
+                            {conflicts.length === 0 && <div className="col-span-full p-10 border-2 border-dashed border-slate-100 rounded-[32px] flex flex-col items-center justify-center text-slate-300"><CheckCircle size={48} className="mb-4 opacity-20" /><p className="text-xs font-black uppercase tracking-widest">Sin cruces de horario en el semestre.</p></div>}
+                        </div>
+                    </section>
+                    <section className="pt-8 border-t border-slate-100">
                         <div className="flex items-center justify-between mb-6">
                             <div className="flex items-center space-x-3">
                                 <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><Activity size={20} /></div>
