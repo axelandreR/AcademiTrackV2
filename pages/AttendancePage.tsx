@@ -13,7 +13,6 @@ import {
     processAttendanceJourneys,
     AttendanceSheetData
 } from '../services/attendanceService';
-import { isPresencialOrComputableAsinc, belongsToInstructor } from '../services/businessRules';
 import { generateAttendanceExcel } from '../services/attendanceExporter';
 import ConfirmDialog from '../components/ConfirmDialog';
 import JSZip from 'jszip';
@@ -80,18 +79,13 @@ const AttendancePage: React.FC = () => {
 
             return true;
         }).map(inst => {
-            // Calculamos si tiene carga presencial para mostrar aviso
-            const hasPresencial = allSchedules.some(s => {
-                // El ID manda siempre que el bloque lo tenga; el fuzzy match por nombre
-                // solo aplica a bloques legados sin ID.
-                if (!belongsToInstructor(inst, s)) return false;
-
-                // Rango relaxado al año seleccionado para detectar carga futura/pasada
-                const scheduleYear = s.startDate.getFullYear();
-                if (scheduleYear !== selectedYear && s.endDate.getFullYear() !== selectedYear) return false;
-
-                return isPresencialOrComputableAsinc(s);
-            });
+            // Antes este chequeo solo comparaba el AÑO del horario contra selectedYear (sin
+            // mirar mes, ni el rango real de la ficha, ni si el día de semana cae dentro de
+            // esa ventana) — un instructor podía verse "con carga" y habilitado aquí, pero al
+            // descargar processAttendanceJourneys (que sí escanea día por día el rango real)
+            // no encontraba ninguna jornada y tiraba "no tiene carga presencial". Ahora se usa
+            // la MISMA función que genera la ficha, para que nunca se desincronicen.
+            const hasPresencial = processAttendanceJourneys(inst, allSchedules, startDate, endDate).journeys.length > 0;
 
             return { ...inst, hasPresencial };
         });
