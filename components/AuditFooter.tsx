@@ -41,8 +41,13 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
 
     return (
         <div className="border-t-4 border-slate-900 bg-white shrink-0 shadow-[0_-15px_40px_rgba(0,0,0,0.15)] z-[100] relative">
+            {/* Antes solo visible/clickeable por debajo de `xl` — a partir de esa medida el
+                contenido quedaba SIEMPRE expandido (max-h-none), sin forma de contraerlo. En
+                ventanas anchas pero de poca altura eso dejaba casi sin espacio vertical a la
+                grilla. Ahora el toggle es visible en cualquier ancho y el estado expandido/
+                contraído manda siempre, así el usuario recupera espacio cuando lo necesita. */}
             <div
-                className="xl:hidden bg-slate-900 border-b border-white/10 px-8 py-4 flex items-center justify-between text-white cursor-pointer"
+                className="bg-slate-900 border-b border-white/10 px-8 py-4 flex items-center justify-between text-white cursor-pointer"
                 onClick={() => setIsFooterExpanded(!isFooterExpanded)}
             >
                 <div className="flex items-center space-x-4">
@@ -59,14 +64,14 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
 
             <div className={`
         flex flex-col xl:flex-row items-stretch xl:items-center justify-between px-8 bg-slate-900 text-white transition-all duration-300 overflow-hidden
-        ${isFooterExpanded ? 'max-h-[500px] py-6' : 'max-h-0 xl:max-h-none py-0 xl:py-5'}
+        ${isFooterExpanded ? 'max-h-[500px] py-6' : 'max-h-0 py-0'}
       `}>
                 <div className="flex items-center space-x-5">
-                    <div className={`hidden xl:block p-2.5 rounded-xl shadow-lg ${stats.hasAuditWarning ? 'bg-rose-600 animate-pulse' : 'bg-blue-600'}`}>
+                    <div className={`p-2.5 rounded-xl shadow-lg ${stats.hasAuditWarning ? 'bg-rose-600 animate-pulse' : 'bg-blue-600'}`}>
                         {stats.hasAuditWarning ? <AlertTriangle size={20} /> : <CheckCircle size={20} />}
                     </div>
                     <div className="flex items-center gap-4">
-                        <div className="hidden xl:block">
+                        <div>
                             <h3 className="text-sm font-black uppercase tracking-widest leading-none">Carga {instructorType}</h3>
                             <p className={`text-[10px] font-bold uppercase mt-1 ${stats.hasAuditWarning ? 'text-rose-300' : 'text-slate-400'}`}>
                                 {stats.isWeekOutOfSemester

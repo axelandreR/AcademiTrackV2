@@ -182,16 +182,26 @@ export interface ExtraHoursShift {
   end: string;
 }
 
-export interface ExtraHoursConfig {
+export interface ExtraHoursDayShifts {
+  [day: string]: {
+    morning?: ExtraHoursShift;
+    afternoon?: ExtraHoursShift;
+  };
+}
+
+// Un tramo: rango de fechas con su propia programación de días/turnos. Un instructor
+// puede tener varios tramos consecutivos con horarios de HE distintos (ej. 6 semanas con
+// un patrón, luego otro patrón el resto del semestre).
+export interface ExtraHoursSegment {
+  id: string;
   startDate: string;
   endDate: string;
   repeatWeekly: boolean;
-  shifts: {
-    [day: string]: {
-      morning?: ExtraHoursShift;
-      afternoon?: ExtraHoursShift;
-    };
-  };
+  shifts: ExtraHoursDayShifts;
+}
+
+export interface ExtraHoursConfig {
+  segments: ExtraHoursSegment[];
 }
 
 export interface Scenario {

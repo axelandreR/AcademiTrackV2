@@ -4,6 +4,7 @@ import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, is
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 import { RoomOccupancySummary, FrequencyKey, TurnoBucketKey, buildWeekBuckets, calculateWeeklyRoomLoad } from './occupancyCalculations';
 import { computeDailyJourney } from './dailyJourney';
+import { findSegmentForDate, getExtraWindowsForDate, splitTaskFragments } from './extraHoursCalculations';
 
 interface ExcelExportParams {
   data: ProcessedSchedule[];
@@ -65,7 +66,7 @@ const parseLocalDBDateInternal = (dateString: string): Date => {
   return new Date(year, month - 1, day);
 };
 
-export const generateHESummaryExcel = async (config: any, holidays: any[] = [], instructorName?: string): Promise<Blob> => {
+export const generateHESummaryExcel = async (config: ExtraHoursConfig, holidays: any[] = [], instructorName?: string): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Resumen HE');
 
@@ -84,13 +85,8 @@ export const generateHESummaryExcel = async (config: any, holidays: any[] = [], 
     dataStartRow = 4; // Shift data down by one row if instructor name is present
   }
 
-  worksheet.getCell(`A${dataStartRow}`).value = 'Periodo:';
-  worksheet.getCell(`B${dataStartRow}`).value = `${config.startDate || 'No definida'} a ${config.endDate || 'No definida'}`;
-  worksheet.getCell(`A${dataStartRow + 1}`).value = 'Repetición Semanal:';
-  worksheet.getCell(`B${dataStartRow + 1}`).value = config.repeatWeekly ? 'SÍ' : 'NO';
-
-  const headers = ['FECHA', 'DÍA', 'TURNO', 'INICIO', 'FIN', 'TOTAL HORAS'];
-  const headerRow = worksheet.getRow(dataStartRow + 3); // Headers will be 3 rows below the 'Periodo' row
+  const headers = ['TRAMO', 'FECHA', 'DÍA', 'TURNO', 'INICIO', 'FIN', 'TOTAL HORAS'];
+  const headerRow = worksheet.getRow(dataStartRow + 1);
   headerRow.values = headers;
   headerRow.eachCell(c => {
     c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -98,7 +94,7 @@ export const generateHESummaryExcel = async (config: any, holidays: any[] = [], 
     c.alignment = { horizontal: 'center' };
   });
 
-  let currentRow = dataStartRow + 4;
+  let currentRow = dataStartRow + 2;
   let grandTotal = 0;
 
   // Helper para parsear YYYY-MM-DD forzando medianoche local
@@ -110,16 +106,20 @@ export const generateHESummaryExcel = async (config: any, holidays: any[] = [], 
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const start = toLocalDate(config.startDate);
-  const end = toLocalDate(config.endDate);
+  const dayLabels = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
+  const displayDayLabels = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 
-  if (start && end) {
+  (config.segments || []).forEach((segment, segIdx) => {
+    const start = toLocalDate(segment.startDate);
+    const end = toLocalDate(segment.endDate);
+    if (!start || !end) return; // Tramo sin fechas definidas: no hay rango que enumerar
+
+    const tramoLabel = `Tramo ${segIdx + 1} (${segment.startDate} a ${segment.endDate})`;
     const scanner = new Date(start);
     while (scanner <= end) {
       const dayIdx = scanner.getDay();
-      const dayLabels = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
       const dayKey = dayLabels[dayIdx];
-      const displayDay = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIdx];
+      const displayDay = displayDayLabels[dayIdx];
 
       // Verificar feriado comparando solo día/mes/año
       const isHol = holidays.some(h => {
@@ -130,13 +130,13 @@ export const generateHESummaryExcel = async (config: any, holidays: any[] = [], 
       });
 
       if (!isHol) {
-        const shifts = config.shifts?.[dayKey] || {};
-        ['morning', 'afternoon'].forEach(type => {
-          const shift = (shifts as any)[type];
+        const shifts = segment.shifts?.[dayKey] || {};
+        (['morning', 'afternoon'] as const).forEach(type => {
+          const shift = shifts[type];
           if (shift?.start && shift?.end) {
             const h = (timeToMin(shift.end) - timeToMin(shift.start)) / 60;
             const dateStr = `${String(scanner.getDate()).padStart(2, '0')}/${String(scanner.getMonth() + 1).padStart(2, '0')}/${scanner.getFullYear()}`;
-            worksheet.addRow([dateStr, displayDay, type === 'morning' ? 'MAÑANA' : 'TARDE', shift.start, shift.end, Number(h.toFixed(2))]);
+            worksheet.addRow([tramoLabel, dateStr, displayDay, type === 'morning' ? 'MAÑANA' : 'TARDE', shift.start, shift.end, Number(h.toFixed(2))]);
             grandTotal += h;
             currentRow++;
           }
@@ -145,15 +145,15 @@ export const generateHESummaryExcel = async (config: any, holidays: any[] = [], 
 
       scanner.setDate(scanner.getDate() + 1);
     }
-  }
+  });
 
   const totalRow = worksheet.getRow(currentRow + 1);
-  totalRow.getCell(5).value = 'TOTAL GENERAL:';
-  totalRow.getCell(6).value = grandTotal.toFixed(2) + ' hrs';
+  totalRow.getCell(6).value = 'TOTAL GENERAL:';
+  totalRow.getCell(7).value = grandTotal.toFixed(2) + ' hrs';
   totalRow.eachCell(c => c.font = { bold: true });
 
   worksheet.columns = [
-    { width: 12 }, { width: 12 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 15 }
+    { width: 26 }, { width: 12 }, { width: 12 }, { width: 15 }, { width: 12 }, { width: 12 }, { width: 15 }
   ];
 
   const buffer = await workbook.xlsx.writeBuffer();
@@ -310,7 +310,8 @@ export const generateWeeklyHEExcel = async ({ instructorName, instructorType, we
     if (!extraHoursConfig || isHolidayDate(day.date, holidays)) {
       return { morning: { start: null, end: null, hours: 0 }, afternoon: { start: null, end: null, hours: 0 }, totalHours: 0 };
     }
-    const dayShifts = extraHoursConfig.shifts?.[day.key] || {};
+    const segment = findSegmentForDate(extraHoursConfig, day.date);
+    const dayShifts = segment?.shifts[day.key] || {};
     const morning = shiftPart(dayShifts.morning);
     const afternoon = shiftPart(dayShifts.afternoon);
     return { morning, afternoon, totalHours: morning.hours + afternoon.hours };
@@ -559,41 +560,18 @@ export const generateScheduleExcel = async ({ data, type, itemName, scope, custo
           const endSlotIdx = findClosestSlotIdx(sched.endTime, timeSlots) - 1;
 
           if (startSlotIdx !== -1 && endSlotIdx >= startSlotIdx) {
-            const extraWindows: { start: number; end: number }[] = [];
-            let isExtraEnabled = false;
-
-            if (extraHoursConfig && !isHolidayDate(actualDate) &&
-              (!extraHoursConfig.startDate || actualDate >= new Date(extraHoursConfig.startDate)) &&
-              (!extraHoursConfig.endDate || actualDate <= new Date(extraHoursConfig.endDate))) {
-              isExtraEnabled = true;
-              const dayShifts = extraHoursConfig.shifts[DAYS_OF_WEEK[dIdx].key];
-              if (dayShifts?.morning?.start && dayShifts?.morning?.end) {
-                extraWindows.push({ start: timeToMin(dayShifts.morning.start), end: timeToMin(dayShifts.morning.end) });
-              }
-              if (dayShifts?.afternoon?.start && dayShifts?.afternoon?.end) {
-                extraWindows.push({ start: timeToMin(dayShifts.afternoon.start), end: timeToMin(dayShifts.afternoon.end) });
-              }
-            }
+            const extraWindows: { start: number; end: number }[] = extraHoursConfig && !isHolidayDate(actualDate)
+              ? getExtraWindowsForDate(extraHoursConfig, actualDate, DAYS_OF_WEEK[dIdx].key)
+              : [];
 
             const taskStartMin = timeToMin(sched.startTime);
             const taskEndMin = timeToMin(sched.endTime);
+            const fragments = splitTaskFragments(taskStartMin, taskEndMin, extraWindows);
 
-            // Calculate fragments for this task based on extra time windows
-            let splitPoints = new Set<number>([taskStartMin, taskEndMin]);
-            if (isExtraEnabled) {
-              extraWindows.forEach(win => {
-                if (win.start > taskStartMin && win.start < taskEndMin) splitPoints.add(win.start);
-                if (win.end > taskStartMin && win.end < taskEndMin) splitPoints.add(win.end);
-              });
-            }
-
-            const sortedPoints = Array.from(splitPoints).sort((a, b) => a - b);
-
-            for (let i = 0; i < sortedPoints.length - 1; i++) {
-              const fragStart = sortedPoints[i];
-              const fragEnd = sortedPoints[i + 1];
-              const mid = (fragStart + fragEnd) / 2;
-              const isExtra = isExtraEnabled && extraWindows.some(win => mid >= win.start && mid <= win.end);
+            for (const frag of fragments) {
+              const fragStart = frag.start;
+              const fragEnd = frag.end;
+              const isExtra = frag.extra;
 
               const sIdx = findClosestSlotIdx(formatMinutesToTime(fragStart), timeSlots);
               let eIdx = findClosestSlotIdx(formatMinutesToTime(fragEnd), timeSlots) - 1;

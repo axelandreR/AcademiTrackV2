@@ -69,11 +69,12 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
 
     return (
         <div className="flex flex-col mb-4 shrink-0 bg-white p-0 rounded-[24px] lg:rounded-[32px] shadow-sm border border-slate-100 overflow-visible transition-all">
-            <div
-                className="flex flex-col lg:flex-row lg:items-center justify-between p-3 lg:p-4 cursor-pointer lg:cursor-default"
-                onClick={() => { if (window.innerWidth < 1030) setIsInfoAccordionExpanded(!isInfoAccordionExpanded); }}
-            >
-                {/* Título e Icono */}
+            {/* Encabezado siempre visible: nombre, indicador de simulación y selector de
+                semana. El resto (switch grilla/tabla, editor, exportar, iconos extra) vive en
+                el bloque colapsable de abajo — se despliega con clic en cualquier tamaño de
+                pantalla (antes solo colapsaba por debajo de 1030px; en laptop quedaba siempre
+                expandido y se comía espacio de la grilla). */}
+            <div className="flex flex-col min-[900px]:flex-row min-[900px]:items-center justify-between gap-3 p-3 lg:p-4">
                 <div className="flex items-center space-x-3 lg:space-x-4 min-w-0 flex-1">
                     <div className="p-2 lg:p-3 bg-slate-50 rounded-xl lg:rounded-2xl border border-slate-100 shrink-0">
                         {viewType === 'Bloque' ? <LayoutDashboard size={20} className="text-blue-600 lg:w-6 lg:h-6" /> : viewType === 'Aula' ? <Building2 size={20} className="text-orange-600 lg:w-6 lg:h-6" /> : <UserRound size={20} className="text-indigo-600 lg:w-6 lg:h-6" />}
@@ -87,8 +88,8 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             {/* Botón Simular Individual */}
                             {viewType === 'Instructor' && selectedFilter && !isSimulationMode && startSimulation && (
                                 <button
-                                    onClick={(e) => { e.stopPropagation(); startSimulation(selectedFilter); }}
-                                    className="shrink-0 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-lg border border-indigo-200 transition-colors flex items-center shadow-sm"
+                                    onClick={() => startSimulation(selectedFilter)}
+                                    className="shrink-0 px-2 sm:px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-lg border border-indigo-200 transition-colors flex items-center shadow-sm"
                                     title="Crear Simulación de Horas Extras (Sin Alertas)"
                                 >
                                     Simular
@@ -98,33 +99,27 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             {/* Botón Importar Carga (Solo en Simulación) */}
                             {viewType === 'Instructor' && isSimulationMode && (
                                 <button
-                                    onClick={(e) => { e.stopPropagation(); setIsImportModalOpen(true); }}
-                                    className="shrink-0 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 text-[10px] font-black uppercase tracking-widest rounded-lg border border-amber-200 transition-colors flex items-center shadow-sm"
+                                    onClick={() => setIsImportModalOpen(true)}
+                                    className="shrink-0 px-2 sm:px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-lg border border-amber-200 transition-colors flex items-center shadow-sm"
                                     title="Buscar y agregar cursos de otros instructores"
                                 >
                                     + Carga Externa
                                 </button>
                             )}
                         </div>
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mt-0.5 hidden min-[1030px]:block">
+                        <p className="text-[8px] sm:text-[9px] font-black text-slate-400 uppercase tracking-[0.15em] sm:tracking-[0.2em] mt-0.5">
                             {viewType} • {appMode === 'editor' ? 'Edición Activa' : 'Visualización'}
                             {isSimulationMode && <span className="text-indigo-600 ml-1"> • SIMULACIÓN ACTIVA</span>}
                         </p>
                     </div>
-                    {/* Flecha Acordeón (Mobile) */}
-                    <div className="lg:hidden p-1.5 text-slate-400">
-                        {isInfoAccordionExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-                    </div>
                 </div>
 
-                {/* Controles (Desktop: Row, Mobile: Accordion) */}
-                <div className={`${isInfoAccordionExpanded ? 'flex' : 'hidden'} lg:flex flex-col lg:flex-row items-stretch lg:items-center mt-4 lg:mt-0 space-y-4 lg:space-y-0 lg:space-x-4 shrink-0 overflow-visible border-t lg:border-t-0 border-slate-100 pt-4 lg:pt-0`}>
-
-                    {/* Selector de Semana */}
-                    <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl p-1 shadow-inner" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => navigateWeek(-1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"><ChevronRightIcon size={16} className="rotate-180" /></button>
-                        <span className="mx-3 text-[11px] font-black text-slate-600 uppercase tracking-widest min-w-[140px] text-center">{currentWeekStart.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} - {new Date(currentWeekStart.getTime() + 6 * 86400000).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                        <button onClick={() => navigateWeek(1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"><ChevronRightIcon size={16} /></button>
+                <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                    {/* Selector de Semana — visible siempre, incluso con el resto colapsado */}
+                    <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl p-1 shadow-inner">
+                        <button onClick={() => navigateWeek(-1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"><ChevronRightIcon size={14} className="rotate-180 sm:w-4 sm:h-4" /></button>
+                        <span className="mx-2 sm:mx-3 text-[9px] sm:text-[10px] lg:text-[11px] font-black text-slate-600 uppercase tracking-widest min-w-[110px] sm:min-w-[140px] text-center">{currentWeekStart.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} - {new Date(currentWeekStart.getTime() + 6 * 86400000).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                        <button onClick={() => navigateWeek(1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"><ChevronRightIcon size={14} className="sm:w-4 sm:h-4" /></button>
                         <div className="h-4 w-px bg-slate-300 mx-1" />
 
                         <WeekPicker
@@ -136,7 +131,21 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             pickerRef={weekPickerRef}
                         />
                     </div>
-                    <div className="h-8 w-px bg-slate-200 hidden lg:block" />
+
+                    {/* Toggle del resto de opciones — funciona en cualquier ancho */}
+                    <button
+                        onClick={() => setIsInfoAccordionExpanded(!isInfoAccordionExpanded)}
+                        className={`p-2 rounded-xl border transition-all shrink-0 ${isInfoAccordionExpanded ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'}`}
+                        title={isInfoAccordionExpanded ? 'Ocultar opciones' : 'Más opciones'}
+                    >
+                        {isInfoAccordionExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                    </button>
+                </div>
+            </div>
+
+            {/* Controles adicionales — solo visibles al desplegar */}
+            {isInfoAccordionExpanded && (
+                <div className="flex flex-col min-[900px]:flex-row items-stretch min-[900px]:items-center space-y-3 min-[900px]:space-y-0 min-[900px]:space-x-4 shrink-0 overflow-visible border-t border-slate-100 px-3 lg:px-4 py-3 lg:py-4">
 
                     {/* Switch Grid/Table */}
                     <div className="flex bg-slate-100 p-1 rounded-xl self-start lg:self-auto" onClick={(e) => e.stopPropagation()}>
@@ -207,7 +216,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                         </div>
                     )}
                 </div>
-            </div>
+            )}
 
             {/* Modal Importación */}
             {viewType === 'Instructor' && (

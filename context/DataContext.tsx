@@ -5,6 +5,7 @@ import { supabase } from '../supabaseClient';
 import { validateInstructorWeek } from '../services/auditService';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE, ACTIVE_PERIODO } from '../constants';
 import { belongsToInstructor, findFuzzyNameMatches, isFuzzyNameMatch, normalizeNameKey, buildInstructorScheduleIndex, getInstructorSchedules } from '../services/businessRules';
+import { normalizeExtraHoursConfig } from '../services/extraHoursCalculations';
 import Toast, { ToastState } from '../components/Toast';
 
 const mapHolidayFromDB = (h: any): HolidayData => ({
@@ -1036,7 +1037,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const savedHE = localStorage.getItem(`extraHoursConfig_${instructorKey}`);
         if (savedHE) {
           try {
-            setExtraHoursConfig(JSON.parse(savedHE));
+            setExtraHoursConfig(normalizeExtraHoursConfig(JSON.parse(savedHE)));
           } catch (e) {
             console.error(`Error loading HE for ${instructorKey}:`, e);
             setExtraHoursConfig(null);
@@ -1310,7 +1311,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         // Siempre explícito (incluso a null): el escenario es la fuente de verdad para
         // su propia plantilla de HE — si no tenía una guardada, no debe quedar visible
         // la de una simulación anterior para el mismo instructor en este navegador.
-        setExtraHoursConfig(data.data?.extraHoursConfig ?? null);
+        setExtraHoursConfig(normalizeExtraHoursConfig(data.data?.extraHoursConfig));
         setIsSimulationMode(true);
         setCurrentScenarioId(data.id);
         setCurrentScenarioName(data.name);

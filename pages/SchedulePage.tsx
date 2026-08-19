@@ -199,6 +199,13 @@ const SchedulePage: React.FC = () => {
             else prev.delete('id');
             return prev;
         });
+        // En celular el panel lateral ocupa el 100% del ancho (ver NavigationSidebar.tsx,
+        // `w-full` por debajo de `md`) — sin este auto-colapso, elegir un instructor/bloque/
+        // aula no mostraba ningún cambio visible: la grilla quedaba renderizada pero tapada
+        // por el panel a pantalla completa.
+        if (typeof window !== 'undefined' && window.innerWidth < 768) {
+            setIsSidebarVisible(false);
+        }
     };
 
     useEffect(() => {

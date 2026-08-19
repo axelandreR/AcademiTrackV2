@@ -6,6 +6,7 @@ import { isContractualLoad, resolveInstructorByName } from '../services/business
 import { calculateWeeklyAudit } from '../services/auditCalculations';
 import { computeDailyJourney } from '../services/dailyJourney';
 import { detectInstructorConflicts } from '../services/conflictDetection';
+import { getExtraWindowsForDate, splitTaskFragments } from '../services/extraHoursCalculations';
 import DailyJourneyPanel from './DailyJourneyPanel';
 import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCategory, AppMode, ModalityType, HolidayData, ExtraHoursConfig } from '../types';
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
@@ -442,15 +443,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
             <div className="min-w-[820px] md:min-w-[1100px] flex flex-col h-fit" style={{ zoom: zoomLevel } as React.CSSProperties}>
               <div ref={gridHeaderRef} className="sticky top-0 z-[70] bg-white shadow-sm">
                 <div className="flex border-b border-slate-300 bg-white">
-                  <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[10px] uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
+                  <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[8px] min-[480px]:text-[9px] sm:text-[10px] md:text-[11px] lg:text-xs xl:text-sm uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
                     <div className="flex items-center space-x-1"><span>Reloj</span><ScheduleLegend /></div>
                     <Clock size={12} className="mt-1 opacity-50" />
                   </div>
                   <div className="flex-1 grid grid-cols-7">
                     {datesOfWeek.map((day) => (
                       <div key={day.key} className="p-4 text-center border-r border-slate-200 last:border-r-0 flex flex-col items-center justify-center space-y-1 bg-white">
-                        <div className="font-black text-slate-900 text-xs uppercase tracking-tighter">{day.label}</div>
-                        <div className="text-[10px] text-blue-700 font-black bg-blue-50/50 px-3 py-0.5 rounded-full border border-blue-100 shadow-sm">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</div>
+                        <div className="font-black text-slate-900 text-[9px] sm:text-[10.8px] md:text-[12.6px] lg:text-[14.4px] xl:text-[16.2px] uppercase tracking-tighter">{day.label}</div>
+                        <div className="text-[7.2px] sm:text-[8.1px] md:text-[9px] lg:text-[10.8px] xl:text-[12.6px] text-blue-700 font-black bg-blue-50/50 px-3 py-0.5 rounded-full border border-blue-100 shadow-sm">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</div>
                       </div>
                     ))}
                   </div>
@@ -475,8 +476,8 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                     const endLabel = visibleTimeSlots[idx + 1]?.label || addMinutesToLabel(slot.hour, slot.minute, 15);
                     return (
                       <div key={`${slot.hour}-${slot.minute}`} className={`flex items-stretch justify-center divide-x divide-slate-200 border-slate-200 ${visibleTimeSlots[idx + 1]?.isMainHour ? 'border-b border-b-slate-300' : 'border-b border-dotted border-b-slate-200'}`} style={{ height: `${SLOT_HEIGHT}rem` }}>
-                        <span className={`flex-1 flex items-center justify-center font-black tracking-tighter ${slot.isMainHour ? 'text-slate-900 text-[13px]' : 'text-slate-400 text-[9px]'}`}>{slot.label}</span>
-                        <span className={`flex-1 flex items-center justify-center font-bold tracking-tighter ${slot.isMainHour ? 'text-slate-400 text-[11px]' : 'text-slate-300 text-[8px]'}`}>{endLabel}</span>
+                        <span className={`flex-1 flex items-center justify-center font-black tracking-tighter ${slot.isMainHour ? 'text-slate-900 text-[9.5px] sm:text-[12.35px] md:text-[13.3px] lg:text-[15.2px] xl:text-[17.1px]' : 'text-slate-400 text-[6.65px] sm:text-[8.55px] md:text-[9.5px] lg:text-[10.45px]'}`}>{slot.label}</span>
+                        <span className={`flex-1 flex items-center justify-center font-bold tracking-tighter ${slot.isMainHour ? 'text-slate-400 text-[8.55px] sm:text-[10.45px] md:text-[11.4px] lg:text-[13.3px]' : 'text-slate-300 text-[5.7px] sm:text-[7.6px] md:text-[8.55px] lg:text-[9.5px]'}`}>{endLabel}</span>
                       </div>
                     );
                   })}
@@ -523,44 +524,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                           // --- Lógica de Split para Horas Extras ---
                           let dayTasks: (ProcessedSchedule & { isExtra?: boolean })[] = [];
 
-                          const checkExtra = isSimulationMode && extraHoursConfig && !holiday &&
-                            (!extraHoursConfig.startDate || new Date(day.date) >= new Date(extraHoursConfig.startDate)) &&
-                            (!extraHoursConfig.endDate || new Date(day.date) <= new Date(extraHoursConfig.endDate));
+                          const extraWindows = isSimulationMode && extraHoursConfig && !holiday
+                            ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key)
+                            : [];
 
-                          if (checkExtra) {
-                            const dayShifts = extraHoursConfig!.shifts[day.key];
+                          if (extraWindows.length > 0) {
                             rawDayTasks.forEach(task => {
                               const taskStart = timeToMinutes(task.startTime);
                               const taskEnd = timeToMinutes(task.endTime);
-                              let fragments: { start: number; end: number; extra: boolean }[] = [];
-
-                              // We merge morning and afternoon shifts if they overlap or are contiguous (though usually they aren't)
-                              // For simplicity, let's treat them separately
-                              const extraWindows: { start: number; end: number }[] = [];
-                              if (dayShifts?.morning?.start && dayShifts?.morning?.end) {
-                                extraWindows.push({ start: timeToMinutes(dayShifts.morning.start), end: timeToMinutes(dayShifts.morning.end) });
-                              }
-                              if (dayShifts?.afternoon?.start && dayShifts?.afternoon?.end) {
-                                extraWindows.push({ start: timeToMinutes(dayShifts.afternoon.start), end: timeToMinutes(dayShifts.afternoon.end) });
-                              }
-
-                              // Find split points
-                              let splitPoints = new Set<number>([taskStart, taskEnd]);
-                              extraWindows.forEach(win => {
-                                if (win.start > taskStart && win.start < taskEnd) splitPoints.add(win.start);
-                                if (win.end > taskStart && win.end < taskEnd) splitPoints.add(win.end);
-                              });
-
-                              const sortedPoints = Array.from(splitPoints).sort((a, b) => a - b);
-                              for (let i = 0; i < sortedPoints.length - 1; i++) {
-                                const s = sortedPoints[i];
-                                const e = sortedPoints[i + 1];
-                                const mid = (s + e) / 2;
-                                const isExtra = extraWindows.some(win => mid >= win.start && mid <= win.end);
-                                fragments.push({ start: s, end: e, extra: isExtra });
-                              }
-
-                              fragments.forEach(frag => {
+                              splitTaskFragments(taskStart, taskEnd, extraWindows).forEach(frag => {
                                 dayTasks.push({
                                   ...task,
                                   startTime: formatMinutesToTime(frag.start),
