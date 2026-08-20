@@ -1,10 +1,9 @@
 import ExcelJS from 'exceljs';
-import { ProcessedSchedule, ViewType, Instructor, HolidayData, RoomData, ExtraHoursConfig, ExtraHoursShift } from '../types';
+import { ProcessedSchedule, ViewType, Instructor, HolidayData, RoomData, ExtraHoursConfig } from '../types';
 import { isOtherFunctionsCourse, isExcludedFromTotalLoad, isAcademicMetaLoad, isContractualLoad, belongsToInstructor } from './businessRules';
 import { getTimeSlots, DAYS_OF_WEEK, getHexColor, SEMESTER_START_DATE, SEMESTER_END_DATE, CONTRACT_HOURS_TC } from '../constants';
 import { RoomOccupancySummary, FrequencyKey, TurnoBucketKey, buildWeekBuckets, calculateWeeklyRoomLoad } from './occupancyCalculations';
-import { computeDailyJourney } from './dailyJourney';
-import { findSegmentForDate, getExtraWindowsForDate, splitTaskFragments } from './extraHoursCalculations';
+import { getExtraWindowsForDate, splitTaskFragments } from './extraHoursCalculations';
 
 interface ExcelExportParams {
   data: ProcessedSchedule[];
@@ -194,12 +193,6 @@ const timeToExcelFraction = (t: string | null | undefined): number | null => {
   return (h + m / 60) / 24;
 };
 
-const shiftPart = (shift?: ExtraHoursShift): ShiftPart => {
-  if (!shift?.start || !shift?.end) return { start: null, end: null, hours: 0 };
-  const hours = Math.max(0, (timeToMin(shift.end) - timeToMin(shift.start)) / 60);
-  return { start: shift.start, end: shift.end, hours };
-};
-
 // Misma comparación día/mes/año usada en generateHESummaryExcel para saltar feriados.
 const isHolidayDate = (date: Date, holidays: HolidayData[]): boolean =>
   holidays.some(h => {
@@ -208,38 +201,82 @@ const isHolidayDate = (date: Date, holidays: HolidayData[]): boolean =>
   });
 
 /**
- * Recorta las porciones de cada bloque del día que caen dentro de alguna ventana de HE
- * (mismo criterio que la grilla y el panel de validación de 46h — ver
- * services/extraHoursCalculations.ts), para que "Jornada Normal" refleje solo lo que NO
- * es hora extra. El Refrigerio se deja siempre entero: computeDailyJourney lo necesita
- * completo para partir el día en mañana/tarde, y nunca debería marcarse como HE.
+ * Recorta las porciones de cada bloque del día (sin incluir el Refrigerio, que nunca es
+ * HE) que caen FUERA de toda ventana de HE — lo que le queda a "Jornada Normal". Mismo
+ * criterio que la grilla y el panel de validación de 46h (ver
+ * services/extraHoursCalculations.ts).
  */
 const buildRegularDaySessions = (daySessions: ProcessedSchedule[], extraWindows: { start: number; end: number }[]): ProcessedSchedule[] => {
-  if (extraWindows.length === 0) return daySessions;
   const regular: ProcessedSchedule[] = [];
   daySessions.forEach(s => {
-    if (s.category === 'refrigerio') { regular.push(s); return; }
+    if (s.category === 'refrigerio') return;
+    if (extraWindows.length === 0) { regular.push(s); return; }
     const taskStart = timeToMin(s.startTime);
     const taskEnd = timeToMin(s.endTime);
     splitTaskFragments(taskStart, taskEnd, extraWindows).forEach(frag => {
       if (!frag.extra) regular.push({ ...s, startTime: formatMinutesToTime(frag.start), endTime: formatMinutesToTime(frag.end) });
     });
   });
-  // Si todo lo que queda es el Refrigerio (todo lo demás del día se marcó como HE),
-  // computeDailyJourney igual arma una jornada degenerada partiendo del propio Refrigerio
-  // (ej. "12:00 a 12:00" y "12:45 a 12:45", ambas de 0h) — mejor mostrar el día en blanco.
-  if (regular.length > 0 && regular.every(s => s.category === 'refrigerio')) return [];
   return regular;
 };
 
 /**
+ * Espejo de buildRegularDaySessions: se queda solo con las porciones que caen DENTRO de
+ * alguna ventana de HE — igual que la grilla marca "(EXTRAS)". Antes "Horas Extra" leía
+ * el tramo configurado tal cual (Configurar HE) sin verificar si ese horario realmente
+ * coincidía con una clase ese día — si quedaba una ventana configurada para un día/tramo
+ * sin ninguna clase real ahí, igual sumaba esas horas fantasma.
+ */
+const buildExtraDaySessions = (daySessions: ProcessedSchedule[], extraWindows: { start: number; end: number }[]): ProcessedSchedule[] => {
+  if (extraWindows.length === 0) return [];
+  const extra: ProcessedSchedule[] = [];
+  daySessions.forEach(s => {
+    if (s.category === 'refrigerio') return;
+    const taskStart = timeToMin(s.startTime);
+    const taskEnd = timeToMin(s.endTime);
+    splitTaskFragments(taskStart, taskEnd, extraWindows).forEach(frag => {
+      if (frag.extra) extra.push({ ...s, startTime: formatMinutesToTime(frag.start), endTime: formatMinutesToTime(frag.end) });
+    });
+  });
+  return extra;
+};
+
+/**
+ * Arma el cuadro Mañana/Tarde de un día a partir de una lista YA FILTRADA de fragmentos
+ * (regulares o de HE, ver arriba) — a diferencia de computeDailyJourney (que ancla
+ * "tarde" al fin del Refrigerio y asume presencia continua hasta el último bloque), acá
+ * el inicio/fin de cada turno sale de los fragmentos que realmente quedaron ahí. Eso
+ * importa cuando se recorta HE del medio o del inicio de un turno: anclar al Refrigerio
+ * inflaba las horas mostradas con tiempo que en realidad era HE (o que no existía).
+ * El corte mañana/tarde usa el Refrigerio real del día (si lo hay) solo para decidir a
+ * qué turno pertenece cada fragmento, no como límite de inicio/fin del turno.
+ */
+const computeShiftSplit = (daySessions: ProcessedSchedule[], fragments: ProcessedSchedule[]): DayShiftSplit => {
+  const refrigerio = daySessions.find(s => s.category === 'refrigerio');
+  const refStartMin = refrigerio ? timeToMin(refrigerio.startTime) : null;
+
+  const morningFrags = refStartMin === null ? fragments : fragments.filter(f => timeToMin(f.startTime) < refStartMin);
+  const afternoonFrags = refStartMin === null ? [] : fragments.filter(f => timeToMin(f.startTime) >= refStartMin);
+
+  const spanOf = (frags: ProcessedSchedule[]): ShiftPart => {
+    if (frags.length === 0) return { start: null, end: null, hours: 0 };
+    const start = Math.min(...frags.map(f => timeToMin(f.startTime)));
+    const end = Math.max(...frags.map(f => timeToMin(f.endTime)));
+    return { start: formatMinutesToTime(start), end: formatMinutesToTime(end), hours: Math.max(0, (end - start) / 60) };
+  };
+
+  const morning = spanOf(morningFrags);
+  const afternoon = spanOf(afternoonFrags);
+  return { morning, afternoon, totalHours: morning.hours + afternoon.hours };
+};
+
+/**
  * Excel especial de simulación: dos tablas con formato Ingreso/Salida x Día (como una
- * ficha de asistencia). La primera con TODO el horario simulado de la semana elegida
- * (computeDailyJourney, el mismo motor de "Jornada Diaria" usado en toda la app, partiendo
- * por el bloque de Refrigerio). La segunda con lo que el usuario marcó explícitamente en
- * "Configurar Horas Extras" para cada día de esa semana (respetando el rango de fechas del
- * config y los feriados) — si un día no tiene Refrigerio o no está en extraHoursConfig,
- * el tramo correspondiente queda vacío.
+ * ficha de asistencia). La primera con lo que NO es hora extra del horario simulado de
+ * la semana elegida (ver buildRegularDaySessions/computeShiftSplit). La segunda con las
+ * porciones reales que sí caen dentro de alguna ventana de "Configurar Horas Extras"
+ * (ver buildExtraDaySessions) — si un día no tiene nada en esa ventana, el tramo
+ * correspondiente queda vacío en vez de mostrar el horario configurado sin verificar.
  */
 export const generateWeeklyHEExcel = async ({ instructorName, instructorType, weekStart, allSchedules, extraHoursConfig, holidays = [] }: WeeklyHEExportParams): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
@@ -374,7 +411,7 @@ export const generateWeeklyHEExcel = async ({ instructorName, instructorType, we
   const fullJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
     const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
     const extraWindows = extraHoursConfig && !isHolidayDate(day.date, holidays) ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key) : [];
-    return computeDailyJourney(buildRegularDaySessions(daySessions, extraWindows), instructorType);
+    return computeShiftSplit(daySessions, buildRegularDaySessions(daySessions, extraWindows));
   });
 
   // Igual que la tabla en pantalla de "Configurar Horas Extras": el patrón semanal
@@ -382,14 +419,9 @@ export const generateWeeklyHEExcel = async ({ instructorName, instructorType, we
   // práctica esos campos suelen quedar vacíos (patrón recurrente indefinido vía
   // "Repetir Semanalmente"), así que exigirlos dejaba la tabla completa en blanco.
   const extraJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
-    if (!extraHoursConfig || isHolidayDate(day.date, holidays)) {
-      return { morning: { start: null, end: null, hours: 0 }, afternoon: { start: null, end: null, hours: 0 }, totalHours: 0 };
-    }
-    const segment = findSegmentForDate(extraHoursConfig, day.date);
-    const dayShifts = segment?.shifts[day.key] || {};
-    const morning = shiftPart(dayShifts.morning);
-    const afternoon = shiftPart(dayShifts.afternoon);
-    return { morning, afternoon, totalHours: morning.hours + afternoon.hours };
+    const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
+    const extraWindows = extraHoursConfig && !isHolidayDate(day.date, holidays) ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key) : [];
+    return computeShiftSplit(daySessions, buildExtraDaySessions(daySessions, extraWindows));
   });
 
   buildGridTable('PROGRAMACIÓN COMPLETA (TODO EL HORARIO)', fullJourneys);
@@ -581,18 +613,13 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
       const fullJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
         const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
         const extraWindows = extraHoursConfig && !isHolidayDate(day.date, holidays) ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key) : [];
-        return computeDailyJourney(buildRegularDaySessions(daySessions, extraWindows), instructorType);
+        return computeShiftSplit(daySessions, buildRegularDaySessions(daySessions, extraWindows));
       });
 
       const extraJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
-        if (!extraHoursConfig || isHolidayDate(day.date, holidays)) {
-          return { morning: { start: null, end: null, hours: 0 }, afternoon: { start: null, end: null, hours: 0 }, totalHours: 0 };
-        }
-        const segment = findSegmentForDate(extraHoursConfig, day.date);
-        const dayShifts = segment?.shifts[day.key] || {};
-        const morning = shiftPart(dayShifts.morning);
-        const afternoon = shiftPart(dayShifts.afternoon);
-        return { morning, afternoon, totalHours: morning.hours + afternoon.hours };
+        const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
+        const extraWindows = extraHoursConfig && !isHolidayDate(day.date, holidays) ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key) : [];
+        return computeShiftSplit(daySessions, buildExtraDaySessions(daySessions, extraWindows));
       });
 
       buildGridTable(colOffset, ROW_JORNADA_TITLE, 'JORNADA NORMAL', HEADER_FILL, datesOfWeek, fullJourneys);
