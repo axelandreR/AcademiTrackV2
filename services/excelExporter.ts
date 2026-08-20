@@ -340,7 +340,8 @@ interface FullPeriodHEExportParams {
 /**
  * Misma pareja de cuadros (Jornada Completa / Horas Extra) que generateWeeklyHEExcel,
  * pero repetida semana a semana para todo el rango donde el instructor tiene horario
- * cargado (acotado al semestre) — así no hace falta exportar semana por semana a mano.
+ * cargado (acotado al semestre) — una al costado de la otra (scroll horizontal), no una
+ * debajo de la otra, así se pueden comparar semanas sin desplazarse verticalmente.
  */
 export const generateFullPeriodHEExcel = async ({ instructorName, instructorType, allSchedules, extraHoursConfig, holidays = [] }: FullPeriodHEExportParams): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
@@ -348,11 +349,8 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
 
   const fmtDate = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 
-  worksheet.mergeCells('A1:H1');
-  const titleCell = worksheet.getCell('A1');
-  titleCell.value = 'PROGRAMACIÓN COMPLETA DEL PERIODO (JORNADA + HORAS EXTRA)';
-  titleCell.font = { bold: true, size: 14, color: { argb: 'FF1E3A8A' } };
-  titleCell.alignment = { horizontal: 'center' };
+  worksheet.getCell('A1').value = 'PROGRAMACIÓN COMPLETA DEL PERIODO (JORNADA + HORAS EXTRA)';
+  worksheet.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FF1E3A8A' } };
 
   worksheet.getCell('A2').value = 'Instructor:';
   worksheet.getCell('B2').value = instructorName.toUpperCase();
@@ -364,69 +362,81 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
   const REFRIGERIO_TEXT = 'FF78350F';
   const THIN_BORDER = { style: 'thin' as const };
 
-  let currentRow = 4;
+  // Bloque de filas FIJO por semana (todas las semanas usan las mismas filas; lo único
+  // que cambia entre semanas es el bloque de columnas donde se escribe).
+  const ROW_JORNADA_TITLE = 5;
+  const ROW_JORNADA_HEADER = 6;
+  const ROW_JORNADA_TOTAL = 12; // title, header, ing1, sal1, refrigerio, ing2, sal2, total
+  const ROW_EXTRA_TITLE = 14;
+  const ROW_EXTRA_HEADER = 15;
+  const ROW_EXTRA_TOTAL = 21;
+  const COLS_PER_WEEK = 8;
+  const GAP_COLS = 1;
 
-  const buildGridTable = (title: string, fill: string, datesOfWeek: { key: string; label: string; date: Date }[], journeys: DayShiftSplit[]) => {
-    worksheet.mergeCells(currentRow, 1, currentRow, 8);
-    const sectionCell = worksheet.getCell(currentRow, 1);
+  const buildGridTable = (colOffset: number, titleRow: number, title: string, fill: string, datesOfWeek: { key: string; label: string; date: Date }[], journeys: DayShiftSplit[]) => {
+    const c1 = colOffset + 1;
+    const c8 = colOffset + 8;
+
+    worksheet.mergeCells(titleRow, c1, titleRow, c8);
+    const sectionCell = worksheet.getCell(titleRow, c1);
     sectionCell.value = title;
     sectionCell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
     sectionCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
     sectionCell.alignment = { horizontal: 'center' };
-    currentRow++;
 
-    const headerRowIdx = currentRow;
-    datesOfWeek.forEach((day, idx) => { worksheet.getCell(headerRowIdx, idx + 2).value = day.label.toUpperCase(); });
-    worksheet.getRow(headerRowIdx).eachCell(c => {
+    const headerRowIdx = titleRow + 1;
+    datesOfWeek.forEach((day, idx) => { worksheet.getCell(headerRowIdx, c1 + 1 + idx).value = day.label.toUpperCase(); });
+    for (let col = c1; col <= c8; col++) {
+      const c = worksheet.getCell(headerRowIdx, col);
       c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL } };
       c.alignment = { horizontal: 'center' };
       c.border = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
-    });
-    currentRow++;
+    }
 
-    const writeShiftRow = (label: string, getValue: (j: DayShiftSplit) => string | null) => {
-      const rowIdx = currentRow;
-      worksheet.getCell(rowIdx, 1).value = label;
-      worksheet.getCell(rowIdx, 1).font = { bold: true };
-      journeys.forEach((j, idx) => { worksheet.getCell(rowIdx, idx + 2).value = getValue(j) || ''; });
-      worksheet.getRow(rowIdx).eachCell(c => {
+    let row = headerRowIdx + 1;
+    const writeShiftRow = (rowIdx: number, label: string, getValue: (j: DayShiftSplit) => string | null) => {
+      journeys.forEach((j, idx) => { worksheet.getCell(rowIdx, c1 + 1 + idx).value = getValue(j) || ''; });
+      for (let col = c1; col <= c8; col++) {
+        const c = worksheet.getCell(rowIdx, col);
         c.alignment = { horizontal: 'center' };
         c.border = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
-      });
-      worksheet.getCell(rowIdx, 1).alignment = { horizontal: 'left' };
-      currentRow++;
+      }
+      const labelCell = worksheet.getCell(rowIdx, c1);
+      labelCell.value = label;
+      labelCell.font = { bold: true };
+      labelCell.alignment = { horizontal: 'left' };
     };
 
-    writeShiftRow('HORA INGRESO:', j => j.morning.start);
-    writeShiftRow('HORA SALIDA:', j => j.morning.end);
+    writeShiftRow(row, 'HORA INGRESO:', j => j.morning.start); row++;
+    writeShiftRow(row, 'HORA SALIDA:', j => j.morning.end); row++;
 
-    const refrigerioRowIdx = currentRow;
-    worksheet.mergeCells(refrigerioRowIdx, 1, refrigerioRowIdx, 8);
-    const refrigerioCell = worksheet.getCell(refrigerioRowIdx, 1);
+    worksheet.mergeCells(row, c1, row, c8);
+    const refrigerioCell = worksheet.getCell(row, c1);
     refrigerioCell.value = 'REFRIGERIO';
     refrigerioCell.font = { bold: true, color: { argb: REFRIGERIO_TEXT } };
     refrigerioCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: REFRIGERIO_FILL } };
     refrigerioCell.alignment = { horizontal: 'center' };
-    currentRow++;
+    row++;
 
-    writeShiftRow('HORA INGRESO:', j => j.afternoon.start);
-    writeShiftRow('HORA SALIDA:', j => j.afternoon.end);
+    writeShiftRow(row, 'HORA INGRESO:', j => j.afternoon.start); row++;
+    writeShiftRow(row, 'HORA SALIDA:', j => j.afternoon.end); row++;
 
     const weekTotal = journeys.reduce((sum, j) => sum + j.totalHours, 0);
-    worksheet.mergeCells(currentRow, 1, currentRow, 7);
-    const totalLabelCell = worksheet.getCell(currentRow, 1);
+    worksheet.mergeCells(row, c1, row, c8 - 1);
+    const totalLabelCell = worksheet.getCell(row, c1);
     totalLabelCell.value = 'TOTAL SEMANAL:';
     totalLabelCell.alignment = { horizontal: 'right' };
     totalLabelCell.font = { bold: true };
-    const totalValueCell = worksheet.getCell(currentRow, 8);
+    const totalValueCell = worksheet.getCell(row, c8);
     totalValueCell.value = `${weekTotal.toFixed(2)} hrs`;
     totalValueCell.font = { bold: true };
-    currentRow += 2;
   };
 
+  const columnWidths: { width: number }[] = [];
+
   if (allSchedules.length === 0) {
-    worksheet.getCell(currentRow, 1).value = 'El instructor no tiene horario cargado en esta simulación.';
+    worksheet.getCell(4, 1).value = 'El instructor no tiene horario cargado en esta simulación.';
   } else {
     const starts = allSchedules.map(s => s.startDate.getTime());
     const ends = allSchedules.map(s => s.endDate.getTime());
@@ -438,7 +448,9 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
     weekStart.setDate(weekStart.getDate() - (dow === 0 ? 6 : dow - 1));
 
     let cursor = weekStart;
+    let weekIdx = 0;
     while (cursor.getTime() <= rangeEnd.getTime()) {
+      const colOffset = weekIdx * (COLS_PER_WEEK + GAP_COLS);
       const datesOfWeek = DAYS_OF_WEEK.map((day, index) => {
         const date = new Date(cursor);
         date.setDate(cursor.getDate() + index);
@@ -446,14 +458,15 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
       });
       const weekEnd = datesOfWeek[datesOfWeek.length - 1].date;
 
-      const weekLabelRow = currentRow;
-      worksheet.mergeCells(weekLabelRow, 1, weekLabelRow, 8);
-      const weekLabelCell = worksheet.getCell(weekLabelRow, 1);
+      const c1 = colOffset + 1;
+      const c8 = colOffset + 8;
+      const weekLabelRow = 4;
+      worksheet.mergeCells(weekLabelRow, c1, weekLabelRow, c8);
+      const weekLabelCell = worksheet.getCell(weekLabelRow, c1);
       weekLabelCell.value = `SEMANA: ${fmtDate(cursor)} — ${fmtDate(weekEnd)}`;
       weekLabelCell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
       weekLabelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
       weekLabelCell.alignment = { horizontal: 'center' };
-      currentRow++;
 
       const fullJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
         const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
@@ -471,19 +484,21 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
         return { morning, afternoon, totalHours: morning.hours + afternoon.hours };
       });
 
-      buildGridTable('JORNADA NORMAL', HEADER_FILL, datesOfWeek, fullJourneys);
-      buildGridTable('HORAS EXTRA', WEEK_FILL, datesOfWeek, extraJourneys);
-      currentRow++;
+      buildGridTable(colOffset, ROW_JORNADA_TITLE, 'JORNADA NORMAL', HEADER_FILL, datesOfWeek, fullJourneys);
+      buildGridTable(colOffset, ROW_EXTRA_TITLE, 'HORAS EXTRA', WEEK_FILL, datesOfWeek, extraJourneys);
+
+      columnWidths.push({ width: 18 });
+      for (let i = 0; i < 7; i++) columnWidths.push({ width: 13 });
+      columnWidths.push({ width: 3 }); // columna de separación entre semanas
 
       cursor = new Date(cursor);
       cursor.setDate(cursor.getDate() + 7);
+      weekIdx++;
     }
   }
 
-  worksheet.columns = [
-    { width: 18 },
-    { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 13 }
-  ];
+  worksheet.columns = columnWidths.length > 0 ? columnWidths : [{ width: 18 }];
+  worksheet.views = [{ state: 'frozen', xSplit: 0, ySplit: 4 }];
 
   const buffer = await workbook.xlsx.writeBuffer();
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
