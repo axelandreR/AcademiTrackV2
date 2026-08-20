@@ -184,6 +184,16 @@ const isScheduleActiveOnExportDate = (sched: ProcessedSchedule, date: Date, dayK
 interface ShiftPart { start: string | null; end: string | null; hours: number; }
 interface DayShiftSplit { morning: ShiftPart; afternoon: ShiftPart; totalHours: number; }
 
+// Excel guarda horas como fracción de día (07:45 -> 7.75/24) — necesario para que
+// TOTAL HORAS DÍA / TOTAL SEMANAL puedan calcularse con fórmula en vez de venir como
+// texto precalculado (mismo criterio que generateAttendanceExcel).
+const timeToExcelFraction = (t: string | null | undefined): number | null => {
+  if (!t) return null;
+  const [h, m] = t.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return null;
+  return (h + m / 60) / 24;
+};
+
 const shiftPart = (shift?: ExtraHoursShift): ShiftPart => {
   if (!shift?.start || !shift?.end) return { start: null, end: null, hours: 0 };
   const hours = Math.max(0, (timeToMin(shift.end) - timeToMin(shift.start)) / 60);
@@ -198,6 +208,31 @@ const isHolidayDate = (date: Date, holidays: HolidayData[]): boolean =>
   });
 
 /**
+ * Recorta las porciones de cada bloque del día que caen dentro de alguna ventana de HE
+ * (mismo criterio que la grilla y el panel de validación de 46h — ver
+ * services/extraHoursCalculations.ts), para que "Jornada Normal" refleje solo lo que NO
+ * es hora extra. El Refrigerio se deja siempre entero: computeDailyJourney lo necesita
+ * completo para partir el día en mañana/tarde, y nunca debería marcarse como HE.
+ */
+const buildRegularDaySessions = (daySessions: ProcessedSchedule[], extraWindows: { start: number; end: number }[]): ProcessedSchedule[] => {
+  if (extraWindows.length === 0) return daySessions;
+  const regular: ProcessedSchedule[] = [];
+  daySessions.forEach(s => {
+    if (s.category === 'refrigerio') { regular.push(s); return; }
+    const taskStart = timeToMin(s.startTime);
+    const taskEnd = timeToMin(s.endTime);
+    splitTaskFragments(taskStart, taskEnd, extraWindows).forEach(frag => {
+      if (!frag.extra) regular.push({ ...s, startTime: formatMinutesToTime(frag.start), endTime: formatMinutesToTime(frag.end) });
+    });
+  });
+  // Si todo lo que queda es el Refrigerio (todo lo demás del día se marcó como HE),
+  // computeDailyJourney igual arma una jornada degenerada partiendo del propio Refrigerio
+  // (ej. "12:00 a 12:00" y "12:45 a 12:45", ambas de 0h) — mejor mostrar el día en blanco.
+  if (regular.length > 0 && regular.every(s => s.category === 'refrigerio')) return [];
+  return regular;
+};
+
+/**
  * Excel especial de simulación: dos tablas con formato Ingreso/Salida x Día (como una
  * ficha de asistencia). La primera con TODO el horario simulado de la semana elegida
  * (computeDailyJourney, el mismo motor de "Jornada Diaria" usado en toda la app, partiendo
@@ -208,6 +243,9 @@ const isHolidayDate = (date: Date, holidays: HolidayData[]): boolean =>
  */
 export const generateWeeklyHEExcel = async ({ instructorName, instructorType, weekStart, allSchedules, extraHoursConfig, holidays = [] }: WeeklyHEExportParams): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
+  // ExcelJS no evalúa fórmulas (no guarda el resultado en caché) — esto obliga a Excel a
+  // recalcular TOTAL HORAS DÍA / TOTAL SEMANAL apenas se abre el archivo.
+  workbook.calcProperties.fullCalcOnLoad = true;
   const worksheet = workbook.addWorksheet('Programación Semanal');
 
   const datesOfWeek = DAYS_OF_WEEK.map((day, index) => {
@@ -257,21 +295,32 @@ export const generateWeeklyHEExcel = async ({ instructorName, instructorType, we
     });
     currentRow++;
 
-    const writeShiftRow = (label: string, getValue: (j: DayShiftSplit) => string | null) => {
+    // Las horas se guardan como fracción de día (numFmt hh:mm) en vez de texto — así
+    // TOTAL HORAS DÍA puede restarlas con fórmula. Una celda sin turno queda vacía (no ''),
+    // para que Excel la trate como 0 en la resta en vez de dar #VALUE!.
+    const writeTimeRow = (label: string, getValue: (j: DayShiftSplit) => string | null): number => {
       const rowIdx = currentRow;
       worksheet.getCell(rowIdx, 1).value = label;
       worksheet.getCell(rowIdx, 1).font = { bold: true };
-      journeys.forEach((j, idx) => { worksheet.getCell(rowIdx, idx + 2).value = getValue(j) || ''; });
+      journeys.forEach((j, idx) => {
+        const frac = timeToExcelFraction(getValue(j));
+        if (frac !== null) {
+          const cell = worksheet.getCell(rowIdx, idx + 2);
+          cell.value = frac;
+          cell.numFmt = 'hh:mm';
+        }
+      });
       worksheet.getRow(rowIdx).eachCell(c => {
         c.alignment = { horizontal: 'center' };
         c.border = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
       });
       worksheet.getCell(rowIdx, 1).alignment = { horizontal: 'left' };
       currentRow++;
+      return rowIdx;
     };
 
-    writeShiftRow('HORA INGRESO:', j => j.morning.start);
-    writeShiftRow('HORA SALIDA:', j => j.morning.end);
+    const ingresoAmRow = writeTimeRow('HORA INGRESO:', j => j.morning.start);
+    const salidaAmRow = writeTimeRow('HORA SALIDA:', j => j.morning.end);
 
     const refrigerioRowIdx = currentRow;
     worksheet.mergeCells(refrigerioRowIdx, 1, refrigerioRowIdx, 8);
@@ -282,24 +331,50 @@ export const generateWeeklyHEExcel = async ({ instructorName, instructorType, we
     refrigerioCell.alignment = { horizontal: 'center' };
     currentRow++;
 
-    writeShiftRow('HORA INGRESO:', j => j.afternoon.start);
-    writeShiftRow('HORA SALIDA:', j => j.afternoon.end);
+    const ingresoPmRow = writeTimeRow('HORA INGRESO:', j => j.afternoon.start);
+    const salidaPmRow = writeTimeRow('HORA SALIDA:', j => j.afternoon.end);
+
+    // TOTAL HORAS DÍA — fórmula por columna: (salida AM - ingreso AM) + (salida PM - ingreso PM), en horas.
+    const totalDiaRow = currentRow;
+    worksheet.getCell(totalDiaRow, 1).value = 'TOTAL HORAS DÍA:';
+    worksheet.getCell(totalDiaRow, 1).font = { bold: true };
+    worksheet.getCell(totalDiaRow, 1).alignment = { horizontal: 'left' };
+    journeys.forEach((j, idx) => {
+      const col = idx + 2;
+      const amSal = worksheet.getCell(salidaAmRow, col).address;
+      const amIng = worksheet.getCell(ingresoAmRow, col).address;
+      const pmSal = worksheet.getCell(salidaPmRow, col).address;
+      const pmIng = worksheet.getCell(ingresoPmRow, col).address;
+      const cell = worksheet.getCell(totalDiaRow, col);
+      cell.value = { formula: `=((${amSal}-${amIng})+(${pmSal}-${pmIng}))*24`, result: j.totalHours };
+      cell.numFmt = '0.00';
+      cell.font = { bold: true };
+    });
+    worksheet.getRow(totalDiaRow).eachCell(c => {
+      c.alignment = c.alignment || { horizontal: 'center' };
+      c.border = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    });
+    currentRow++;
 
     const weekTotal = journeys.reduce((sum, j) => sum + j.totalHours, 0);
+    const totalDiaRange = `${worksheet.getCell(totalDiaRow, 2).address}:${worksheet.getCell(totalDiaRow, 8).address}`;
     worksheet.mergeCells(currentRow, 1, currentRow, 7);
     const totalLabelCell = worksheet.getCell(currentRow, 1);
     totalLabelCell.value = 'TOTAL SEMANAL:';
     totalLabelCell.alignment = { horizontal: 'right' };
     totalLabelCell.font = { bold: true };
     const totalValueCell = worksheet.getCell(currentRow, 8);
-    totalValueCell.value = `${weekTotal.toFixed(2)} hrs`;
+    totalValueCell.value = { formula: `=SUM(${totalDiaRange})`, result: weekTotal };
+    totalValueCell.numFmt = '0.00" hrs"';
     totalValueCell.font = { bold: true };
     currentRow += 3;
   };
 
   const fullJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
     const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
-    return computeDailyJourney(daySessions, instructorType);
+    const extraWindows = extraHoursConfig && !isHolidayDate(day.date, holidays) ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key) : [];
+    return computeDailyJourney(buildRegularDaySessions(daySessions, extraWindows), instructorType);
   });
 
   // Igual que la tabla en pantalla de "Configurar Horas Extras": el patrón semanal
@@ -345,6 +420,9 @@ interface FullPeriodHEExportParams {
  */
 export const generateFullPeriodHEExcel = async ({ instructorName, instructorType, allSchedules, extraHoursConfig, holidays = [] }: FullPeriodHEExportParams): Promise<Blob> => {
   const workbook = new ExcelJS.Workbook();
+  // ExcelJS no evalúa fórmulas (no guarda el resultado en caché) — esto obliga a Excel a
+  // recalcular TOTAL HORAS DÍA / TOTAL SEMANAL apenas se abre el archivo.
+  workbook.calcProperties.fullCalcOnLoad = true;
   const worksheet = workbook.addWorksheet('Programación Completa');
 
   const fmtDate = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
@@ -364,12 +442,8 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
 
   // Bloque de filas FIJO por semana (todas las semanas usan las mismas filas; lo único
   // que cambia entre semanas es el bloque de columnas donde se escribe).
-  const ROW_JORNADA_TITLE = 5;
-  const ROW_JORNADA_HEADER = 6;
-  const ROW_JORNADA_TOTAL = 12; // title, header, ing1, sal1, refrigerio, ing2, sal2, total
-  const ROW_EXTRA_TITLE = 14;
-  const ROW_EXTRA_HEADER = 15;
-  const ROW_EXTRA_TOTAL = 21;
+  const ROW_JORNADA_TITLE = 5; // title, header, ing1, sal1, refrigerio, ing2, sal2, total día, total semanal
+  const ROW_EXTRA_TITLE = 15;
   const COLS_PER_WEEK = 8;
   const GAP_COLS = 1;
 
@@ -395,8 +469,18 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
     }
 
     let row = headerRowIdx + 1;
-    const writeShiftRow = (rowIdx: number, label: string, getValue: (j: DayShiftSplit) => string | null) => {
-      journeys.forEach((j, idx) => { worksheet.getCell(rowIdx, c1 + 1 + idx).value = getValue(j) || ''; });
+    // Las horas se guardan como fracción de día (numFmt hh:mm) en vez de texto — así
+    // TOTAL HORAS DÍA puede restarlas con fórmula. Una celda sin turno queda vacía (no ''),
+    // para que Excel la trate como 0 en la resta en vez de dar #VALUE!.
+    const writeTimeRow = (rowIdx: number, label: string, getValue: (j: DayShiftSplit) => string | null) => {
+      journeys.forEach((j, idx) => {
+        const frac = timeToExcelFraction(getValue(j));
+        if (frac !== null) {
+          const cell = worksheet.getCell(rowIdx, c1 + 1 + idx);
+          cell.value = frac;
+          cell.numFmt = 'hh:mm';
+        }
+      });
       for (let col = c1; col <= c8; col++) {
         const c = worksheet.getCell(rowIdx, col);
         c.alignment = { horizontal: 'center' };
@@ -408,8 +492,8 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
       labelCell.alignment = { horizontal: 'left' };
     };
 
-    writeShiftRow(row, 'HORA INGRESO:', j => j.morning.start); row++;
-    writeShiftRow(row, 'HORA SALIDA:', j => j.morning.end); row++;
+    const ingresoAmRow = row; writeTimeRow(row, 'HORA INGRESO:', j => j.morning.start); row++;
+    const salidaAmRow = row; writeTimeRow(row, 'HORA SALIDA:', j => j.morning.end); row++;
 
     worksheet.mergeCells(row, c1, row, c8);
     const refrigerioCell = worksheet.getCell(row, c1);
@@ -419,17 +503,43 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
     refrigerioCell.alignment = { horizontal: 'center' };
     row++;
 
-    writeShiftRow(row, 'HORA INGRESO:', j => j.afternoon.start); row++;
-    writeShiftRow(row, 'HORA SALIDA:', j => j.afternoon.end); row++;
+    const ingresoPmRow = row; writeTimeRow(row, 'HORA INGRESO:', j => j.afternoon.start); row++;
+    const salidaPmRow = row; writeTimeRow(row, 'HORA SALIDA:', j => j.afternoon.end); row++;
+
+    // TOTAL HORAS DÍA — fórmula por columna: (salida AM - ingreso AM) + (salida PM - ingreso PM), en horas.
+    const totalDiaRow = row;
+    worksheet.getCell(totalDiaRow, c1).value = 'TOTAL HORAS DÍA:';
+    worksheet.getCell(totalDiaRow, c1).font = { bold: true };
+    worksheet.getCell(totalDiaRow, c1).alignment = { horizontal: 'left' };
+    journeys.forEach((j, idx) => {
+      const col = c1 + 1 + idx;
+      const amSal = worksheet.getCell(salidaAmRow, col).address;
+      const amIng = worksheet.getCell(ingresoAmRow, col).address;
+      const pmSal = worksheet.getCell(salidaPmRow, col).address;
+      const pmIng = worksheet.getCell(ingresoPmRow, col).address;
+      const cell = worksheet.getCell(totalDiaRow, col);
+      cell.value = { formula: `=((${amSal}-${amIng})+(${pmSal}-${pmIng}))*24`, result: j.totalHours };
+      cell.numFmt = '0.00';
+      cell.font = { bold: true };
+    });
+    for (let col = c1; col <= c8; col++) {
+      const c = worksheet.getCell(totalDiaRow, col);
+      c.alignment = c.alignment || { horizontal: 'center' };
+      c.border = { top: THIN_BORDER, bottom: THIN_BORDER, left: THIN_BORDER, right: THIN_BORDER };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    }
+    row++;
 
     const weekTotal = journeys.reduce((sum, j) => sum + j.totalHours, 0);
+    const totalDiaRange = `${worksheet.getCell(totalDiaRow, c1 + 1).address}:${worksheet.getCell(totalDiaRow, c8).address}`;
     worksheet.mergeCells(row, c1, row, c8 - 1);
     const totalLabelCell = worksheet.getCell(row, c1);
     totalLabelCell.value = 'TOTAL SEMANAL:';
     totalLabelCell.alignment = { horizontal: 'right' };
     totalLabelCell.font = { bold: true };
     const totalValueCell = worksheet.getCell(row, c8);
-    totalValueCell.value = `${weekTotal.toFixed(2)} hrs`;
+    totalValueCell.value = { formula: `=SUM(${totalDiaRange})`, result: weekTotal };
+    totalValueCell.numFmt = '0.00" hrs"';
     totalValueCell.font = { bold: true };
   };
 
@@ -470,7 +580,8 @@ export const generateFullPeriodHEExcel = async ({ instructorName, instructorType
 
       const fullJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
         const daySessions = allSchedules.filter(s => isScheduleActiveOnExportDate(s, day.date, day.key));
-        return computeDailyJourney(daySessions, instructorType);
+        const extraWindows = extraHoursConfig && !isHolidayDate(day.date, holidays) ? getExtraWindowsForDate(extraHoursConfig, day.date, day.key) : [];
+        return computeDailyJourney(buildRegularDaySessions(daySessions, extraWindows), instructorType);
       });
 
       const extraJourneys: DayShiftSplit[] = datesOfWeek.map(day => {
