@@ -7,7 +7,7 @@ import ExtraHoursModal from './ExtraHoursModal';
 import ConfirmDialog from './ConfirmDialog';
 import SaveScenarioModal from './SaveScenarioModal';
 import WeeklyHEExportModal from './WeeklyHEExportModal';
-import { generateWeeklyHEExcel } from '../services/excelExporter';
+import { generateWeeklyHEExcel, generateFullPeriodHEExcel } from '../services/excelExporter';
 import { resolveInstructorByName, belongsToInstructor } from '../services/businessRules';
 
 const SimulationBar: React.FC = () => {
@@ -21,6 +21,7 @@ const SimulationBar: React.FC = () => {
     const [isApplyConfirmOpen, setIsApplyConfirmOpen] = useState(false);
     const [isSaveScenarioOpen, setIsSaveScenarioOpen] = useState(false);
     const [isWeeklyExportOpen, setIsWeeklyExportOpen] = useState(false);
+    const [isFullPeriodExporting, setIsFullPeriodExporting] = useState(false);
     const [isBannerExpanded, setIsBannerExpanded] = useState(false);
     const [searchParams] = useSearchParams();
 
@@ -85,6 +86,28 @@ const SimulationBar: React.FC = () => {
         }
     };
 
+    // Mismo cuadro (Jornada Normal / Horas Extra, Turno x Día) que "Exportar Semana", pero
+    // repetido para cada semana con horario cargado en la simulación, en un solo archivo.
+    const handleFullPeriodExport = async () => {
+        const instructorName = simulationConfig?.instructorFilter || '';
+        const instructorType = instructorObj?.type || 'TP';
+        setIsFullPeriodExporting(true);
+        try {
+            const blob = await generateFullPeriodHEExcel({ instructorName, instructorType, allSchedules: instructorSchedules, extraHoursConfig, holidays });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Programacion_Completa_HE_${instructorName.replace(/\s+/g, '_') || 'simulacion'}.xlsx`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            notify('Reporte del periodo exportado correctamente.', 'success');
+        } catch (e: any) {
+            notify('Error al generar el reporte del periodo: ' + e.message, 'error');
+        } finally {
+            setIsFullPeriodExporting(false);
+        }
+    };
+
     return (
         <div className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-2xl lg:rounded-3xl shadow-lg shadow-amber-500/20 mb-4 shrink-0 relative z-[80] overflow-hidden">
             {/* Encabezado siempre visible — clic para desplegar/ocultar las acciones. Antes
@@ -136,6 +159,22 @@ const SimulationBar: React.FC = () => {
                     >
                         <FileSpreadsheet size={14} />
                         <span>Exportar Semana</span>
+                    </button>
+                )}
+
+                {simulationConfig?.instructorFilter && (
+                    <button
+                        onClick={handleFullPeriodExport}
+                        disabled={isFullPeriodExporting}
+                        className="flex items-center gap-1.5 px-3 py-2 bg-white/15 hover:bg-white/25 text-white rounded-xl font-bold uppercase text-[10px] tracking-wide transition-all shrink-0 disabled:opacity-60"
+                        title="Exportar Todo el Periodo (Jornada Normal + Horas Extra, semana por semana)"
+                    >
+                        {isFullPeriodExporting ? (
+                            <div className="animate-spin h-3.5 w-3.5 border-2 border-white rounded-full border-t-transparent"></div>
+                        ) : (
+                            <FileSpreadsheet size={14} />
+                        )}
+                        <span>Exportar Periodo</span>
                     </button>
                 )}
 
