@@ -443,15 +443,18 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
             <div className="min-w-[820px] md:min-w-[1100px] flex flex-col h-fit" style={{ zoom: zoomLevel } as React.CSSProperties}>
               <div ref={gridHeaderRef} className="sticky top-0 z-[70] bg-white shadow-sm">
                 <div className="flex border-b border-slate-300 bg-white">
-                  <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-4 flex flex-col items-center justify-center font-black text-slate-400 text-[8px] min-[480px]:text-[9px] sm:text-[10px] md:text-[11px] lg:text-xs xl:text-sm uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
+                  <div style={{ width: TIME_COLUMN_WIDTH }} className="flex-shrink-0 p-2 flex items-center justify-center gap-1.5 font-black text-slate-400 text-[8px] min-[480px]:text-[9px] sm:text-[10px] md:text-[11px] lg:text-xs xl:text-sm uppercase tracking-[0.2em] border-r border-slate-200 bg-slate-50 sticky left-0 z-[80]">
                     <div className="flex items-center space-x-1"><span>Reloj</span><ScheduleLegend /></div>
-                    <Clock size={12} className="mt-1 opacity-50" />
+                    <Clock size={12} className="opacity-50" />
                   </div>
                   <div className="flex-1 grid grid-cols-7">
+                    {/* Abreviado (Lun, Mar...) + fecha en una sola fila para reducir el alto
+                        del encabezado — antes el nombre completo del día y la fecha iban
+                        apilados en dos líneas. */}
                     {datesOfWeek.map((day) => (
-                      <div key={day.key} className="p-4 text-center border-r border-slate-200 last:border-r-0 flex flex-col items-center justify-center space-y-1 bg-white">
-                        <div className="font-black text-slate-900 text-[9px] sm:text-[10.8px] md:text-[12.6px] lg:text-[14.4px] xl:text-[16.2px] uppercase tracking-tighter">{day.label}</div>
-                        <div className="text-[7.2px] sm:text-[8.1px] md:text-[9px] lg:text-[10.8px] xl:text-[12.6px] text-blue-700 font-black bg-blue-50/50 px-3 py-0.5 rounded-full border border-blue-100 shadow-sm">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</div>
+                      <div key={day.key} className="px-2 py-2 text-center border-r border-slate-200 last:border-r-0 flex items-center justify-center gap-1.5 bg-white">
+                        <span className="font-black text-slate-900 text-[9px] sm:text-[10.8px] md:text-[12.6px] lg:text-[14.4px] xl:text-[16.2px] uppercase tracking-tighter">{day.label.slice(0, 3)}</span>
+                        <span className="text-[7.2px] sm:text-[8.1px] md:text-[9px] lg:text-[10.8px] xl:text-[12.6px] text-blue-700 font-black bg-blue-50/50 px-2 py-0.5 rounded-full border border-blue-100 shadow-sm whitespace-nowrap">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</span>
                       </div>
                     ))}
                   </div>
