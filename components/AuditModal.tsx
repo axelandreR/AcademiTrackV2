@@ -5,7 +5,7 @@ import { Conflict } from '../services/conflictDetection';
 
 interface AuditObservation {
     date: Date;
-    type: 'academic' | 'contractual' | 'daily';
+    type: 'academic' | 'contractual' | 'daily' | 'journey';
     meta: number;
     real: number;
 }
@@ -143,6 +143,23 @@ const AuditModal: React.FC<AuditModalProps> = ({ isOpen, onClose, instructorName
                                 </div>
                             ))}
                             {observations.filter(o => o.type === 'daily').length === 0 && <div className="col-span-full p-10 border-2 border-dashed border-slate-100 rounded-[32px] flex flex-col items-center justify-center text-slate-300"><CheckCircle size={48} className="mb-4 opacity-20" /><p className="text-xs font-black uppercase tracking-widest">Jornadas diarias correctas.</p></div>}
+                        </div>
+                    </section>
+                    <section className="pt-8 border-t border-slate-100">
+                        <div className="flex items-center justify-between mb-6">
+                            <div className="flex items-center space-x-3"><div className="p-2 bg-amber-50 text-amber-600 rounded-xl"><GitMerge size={20} /></div><h4 className="text-sm font-black uppercase tracking-widest text-slate-700">Jornada Diaria vs. Auditoría</h4></div>
+                            {observations.filter(o => o.type === 'journey').length === 0
+                                ? <div className="flex items-center space-x-2 text-emerald-600 bg-emerald-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><CheckCircle size={14} /><span>Coinciden</span></div>
+                                : <div className="flex items-center space-x-2 text-amber-600 bg-amber-50 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest"><AlertTriangle size={14} /><span>{observations.filter(o => o.type === 'journey').length} semana{observations.filter(o => o.type === 'journey').length === 1 ? '' : 's'} con desfase</span></div>}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {observations.filter(o => o.type === 'journey').map((obs, i) => (
+                                <div key={i} className="p-5 bg-amber-50/30 border border-amber-100 rounded-3xl flex items-center justify-between">
+                                    <div className="flex items-center space-x-4"><GitMerge size={20} className="text-amber-400" /><div><p className="text-[10px] font-black text-amber-800/60 uppercase">Semana {obs.date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}</p><p className="text-xs font-black text-amber-900">Hay un hueco entre bloques</p></div></div>
+                                    <div className="text-right"><p className="text-[10px] font-black text-amber-600 uppercase">Jornada: {obs.real.toFixed(2)}h · Audit: {obs.meta.toFixed(2)}h</p><p className="text-[9px] font-bold text-amber-400 uppercase">Dif: {((obs.real - obs.meta) * 60).toFixed(0)} min</p></div>
+                                </div>
+                            ))}
+                            {observations.filter(o => o.type === 'journey').length === 0 && <div className="col-span-full p-10 border-2 border-dashed border-slate-100 rounded-[32px] flex flex-col items-center justify-center text-slate-300"><CheckCircle size={48} className="mb-4 opacity-20" /><p className="text-xs font-black uppercase tracking-widest">Jornada Diaria coincide con Auditoría en todo el semestre.</p></div>}
                         </div>
                     </section>
                 </div>

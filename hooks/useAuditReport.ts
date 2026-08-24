@@ -11,7 +11,7 @@ export const useAuditReport = (
     instructors: Instructor[],
     holidays: HolidayData[]
 ) => {
-    const { settings } = useData();
+    const { settings, extraHoursConfigsByInstructor } = useData();
     // Misma fecha de fin de semestre que usa la grilla/Editor (settings.semester_end_date),
     // para que el Reporte Global no discrepe con lo que el usuario ve al editar un horario.
     // NO es la fecha límite de auditoría configurable de Avance de Horarios — esa es a
@@ -30,9 +30,9 @@ export const useAuditReport = (
 
     const auditData: AuditRow[] = useMemo(() => {
         return instructors.map(inst =>
-            calculateInstructorAudit(inst, getInstructorSchedules<ProcessedSchedule>(inst, scheduleIndex), holidays, semesterRange, semesterEndDate)
+            calculateInstructorAudit(inst, getInstructorSchedules<ProcessedSchedule>(inst, scheduleIndex), holidays, semesterRange, semesterEndDate, extraHoursConfigsByInstructor[inst.id] || null)
         );
-    }, [scheduleIndex, instructors, holidays, semesterRange, semesterEndDate]);
+    }, [scheduleIndex, instructors, holidays, semesterRange, semesterEndDate, extraHoursConfigsByInstructor]);
 
     const stats = useMemo(() => ({
         total: auditData.length,

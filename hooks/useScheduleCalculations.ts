@@ -6,7 +6,7 @@ import { calculateWeeklyAudit, isHolidayWeekLoadNormal } from '../services/audit
 import { ProcessedSchedule } from '../types';
 
 export const useScheduleCalculations = (currentWeekStart: Date) => {
-    const { allSchedules, globalSchedulesSummary, instructorsByNameMap, instructorsMap, instructors, holidays, settings } = useData();
+    const { allSchedules, globalSchedulesSummary, instructorsByNameMap, instructorsMap, instructors, holidays, settings, extraHoursConfigsByInstructor } = useData();
     // Memoizado: sin esto, era un objeto Date nuevo en CADA render, lo que le daba a
     // checkInstructorDiscrepancy (useCallback de abajo) una identidad nueva en cada render
     // — eso invalidaba el useMemo de la lista lateral de instructores en SchedulePage.tsx
@@ -36,13 +36,16 @@ export const useScheduleCalculations = (currentWeekStart: Date) => {
             instSchedules = getInstructorSchedules<ProcessedSchedule>(inst, summaryIndex);
         }
 
+        const instExtraHoursConfig = extraHoursConfigsByInstructor[inst.id] || null;
+
         // Único motor de auditoría (ver services/auditCalculations.ts::calculateWeeklyAudit) —
         // misma regla que la grilla, el Reporte Global y Avance de Horarios.
-        const week = calculateWeeklyAudit(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate);
+        const instAuditExempt = inst.hasExtraHoursAssigned === true;
+        const week = calculateWeeklyAudit(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate, false, instExtraHoursConfig, instAuditExempt);
         // Antes, cualquier feriado en la semana anulaba el punto rojo de discrepancia en la
         // lista lateral. Ahora solo se anula si las semanas vecinas (anterior/posterior)
         // también respetan el límite diario — mismo criterio que el motor de auditoría.
-        if (week.isHolidayWeek && isHolidayWeekLoadNormal(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate)) return false;
+        if (week.isHolidayWeek && isHolidayWeekLoadNormal(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate, instExtraHoursConfig, instAuditExempt)) return false;
 
         const isTC = inst.type === 'TC';
         let real = isTC ? week.contractReal : week.academicReal;
@@ -61,7 +64,7 @@ export const useScheduleCalculations = (currentWeekStart: Date) => {
 
         if (week.hasDailyBreach) return true;
         return Math.abs(real - meta) > 0.01;
-    }, [instructorsMap, instructorsByNameMap, instructors, holidays, currentWeekStart, semesterEndDate, allSchedulesIndex, summaryIndex, globalSchedulesSummary]);
+    }, [instructorsMap, instructorsByNameMap, instructors, holidays, currentWeekStart, semesterEndDate, allSchedulesIndex, summaryIndex, globalSchedulesSummary, extraHoursConfigsByInstructor]);
 
     return { checkInstructorDiscrepancy };
 };

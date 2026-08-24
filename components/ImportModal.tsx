@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Plus, BookOpen, UserRound, X, Loader2, LayoutGrid, ChevronRight, Video, MapPin, Check, CheckSquare } from 'lucide-react';
+import { Search, Plus, BookOpen, UserRound, X, Loader2, LayoutGrid, ChevronRight, Video, MapPin, Check, CheckSquare, Clock } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule } from '../types';
 import { belongsToInstructor, resolveInstructorByName } from '../services/businessRules';
@@ -19,6 +19,13 @@ interface NrcGroup {
     instructor: string;
     sessions: ProcessedSchedule[];
 }
+
+// Un NRC está vacante si ninguna de sus sesiones tiene instructor real asignado — es el
+// único caso soportado hoy para marcar "Cobertura Temporal (Horas Extra)" (ver
+// isTempHECoverage en businessRules.ts): cubrir temporalmente a alguien que YA tiene
+// instructor asignado (ej. licencia) queda fuera de alcance por ahora.
+const isVacantGroup = (group: NrcGroup): boolean =>
+    !group.instructor || group.instructor.trim() === '' || group.instructor.toUpperCase() === 'SIN ASIGNAR';
 
 // Mismo criterio usado en toda la app (ScheduleGrid, auditCalculations, businessRules)
 // para identificar sesiones VAEE/Autoestudio — nunca tienen instructor real asignado en
@@ -131,6 +138,13 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
     // --- Selección múltiple ---
     const [selectedNrcs, setSelectedNrcs] = useState<Set<string>>(new Set());
 
+    // --- Cobertura Temporal (Horas Extra) ---
+    // Cuando está activo, la fila nueva que crea importScheduleToSimulation queda marcada
+    // tempHEActive (excluida de Meta/46h del instructor destino, ver businessRules.ts) y
+    // solo se ofrecen NRC vacantes (ver isVacantGroup) — cubrir un NRC que ya tiene
+    // instructor asignado queda fuera de alcance por ahora.
+    const [isTempHECoverage, setIsTempHECoverage] = useState(false);
+
     // Solo cursos reales del archivo (no administrativos, esos no tienen bloque/NRC real).
     const archive = useMemo(() => rawSchedules.filter(s => !s.isAdministrative), [rawSchedules]);
 
@@ -196,12 +210,13 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
     // búsqueda esa lista cambia por completo, así que la selección anterior ya no aplica.
     React.useEffect(() => {
         setSelectedNrcs(new Set());
-    }, [mode, selectedBlock, nrcResults]);
+    }, [mode, selectedBlock, nrcResults, isTempHECoverage]);
 
     if (!isOpen) return null;
 
     const nrcGroups = groupByNrc(nrcResults).filter(g => !loadedNrcs.has(g.nrc));
-    const visibleGroups = mode === 'bloque' ? blockGroups : nrcGroups;
+    const visibleGroups = (mode === 'bloque' ? blockGroups : nrcGroups)
+        .filter(g => !isTempHECoverage || isVacantGroup(g));
 
     const toggleSelect = (nrc: string) => {
         setSelectedNrcs(prev => {
@@ -218,10 +233,21 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
             notify(`El NRC ${nrc} ya está asignado a ${targetInstructor}. No se puede cargar dos veces en el mismo horario.`, 'error');
             return;
         }
+        const sourceInstructor = sessions[0]?.instructor || '';
+        const isVacant = !sourceInstructor || sourceInstructor.trim() === '' || sourceInstructor.toUpperCase() === 'SIN ASIGNAR';
+        if (isTempHECoverage && sessions[0] && !isVacant) {
+            notify('Cobertura temporal solo aplica a NRC vacantes ("Sin asignar").', 'error');
+            return;
+        }
         const ids = sessions.map(s => s.id);
-        const count = importScheduleToSimulation(ids, targetInstructor);
+        const count = importScheduleToSimulation(ids, targetInstructor, isTempHECoverage);
         if (count > 0) {
-            notify(`${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'}. Ahora puedes editarlas en el horario.`, 'success');
+            notify(
+                isTempHECoverage
+                    ? `${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'} como cobertura temporal (HE). El NRC sigue disponible para reasignar cuando llegue el titular.`
+                    : `${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'}. Ahora puedes editarlas en el horario.`,
+                'success'
+            );
             onClose();
         }
     };
@@ -235,9 +261,14 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
         const toImport = groups.filter(g => !loadedNrcs.has(g.nrc));
         const ids = toImport.flatMap(g => g.sessions.map(s => s.id));
         if (ids.length === 0) return;
-        const count = importScheduleToSimulation(ids, targetInstructor);
+        const count = importScheduleToSimulation(ids, targetInstructor, isTempHECoverage);
         if (count > 0) {
-            notify(`${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'} de ${toImport.length} NRC. Ahora puedes editarlas en el horario.`, 'success');
+            notify(
+                isTempHECoverage
+                    ? `${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'} como cobertura temporal (HE) de ${toImport.length} NRC.`
+                    : `${count} sesión${count === 1 ? '' : 'es'} importada${count === 1 ? '' : 's'} de ${toImport.length} NRC. Ahora puedes editarlas en el horario.`,
+                'success'
+            );
             setSelectedNrcs(new Set());
             onClose();
         }
@@ -261,6 +292,26 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
                     <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
                         <X size={20} />
                     </button>
+                </div>
+
+                {/* Cobertura Temporal (Horas Extra) */}
+                <div className="px-4 pt-4 bg-white shrink-0">
+                    <label className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${isTempHECoverage ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
+                        <input
+                            type="checkbox"
+                            checked={isTempHECoverage}
+                            onChange={(e) => setIsTempHECoverage(e.target.checked)}
+                            className="mt-0.5 w-4 h-4 accent-amber-500 shrink-0"
+                        />
+                        <div className="min-w-0">
+                            <span className="flex items-center gap-1.5 text-xs font-black text-amber-700 uppercase tracking-wide">
+                                <Clock size={13} /> Cobertura Temporal (Horas Extra)
+                            </span>
+                            <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                                Solo NRC vacantes ("Sin asignar"). No cuenta para la Meta/46h de {targetInstructor} y el NRC sigue disponible para asignar al titular permanente cuando llegue.
+                            </p>
+                        </div>
+                    </label>
                 </div>
 
                 {/* Selector de Modo */}
@@ -339,13 +390,15 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
                                     <LayoutGrid size={32} className="mb-2 opacity-50" />
                                     <p className="text-xs font-bold uppercase tracking-wider">Busca y selecciona un bloque</p>
                                 </div>
-                            ) : blockGroups.length === 0 ? (
+                            ) : visibleGroups.length === 0 ? (
                                 <div className="flex flex-col items-center justify-center h-48 text-slate-400">
                                     <Search size={32} className="mb-2 opacity-50" />
-                                    <p className="text-xs font-bold uppercase tracking-wider text-center px-6">Este bloque no tiene NRC asignables (o todo es Autoestudio/VAEE).</p>
+                                    <p className="text-xs font-bold uppercase tracking-wider text-center px-6">
+                                        {isTempHECoverage ? 'Este bloque no tiene NRC vacantes ("Sin asignar").' : 'Este bloque no tiene NRC asignables (o todo es Autoestudio/VAEE).'}
+                                    </p>
                                 </div>
                             ) : (
-                                blockGroups.map(group => (
+                                visibleGroups.map(group => (
                                     <NrcGroupCard
                                         key={group.nrc}
                                         group={group}
@@ -381,15 +434,19 @@ const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, targetInstru
                                     <Loader2 size={32} className="mb-2 animate-spin" />
                                     <p className="text-xs font-bold uppercase tracking-wider">Buscando en Archivo...</p>
                                 </div>
-                            ) : nrcGroups.length === 0 ? (
+                            ) : visibleGroups.length === 0 ? (
                                 <div className="flex flex-col items-center justify-center h-48 text-slate-400">
                                     <Search size={32} className="mb-2 opacity-50" />
-                                    <p className="text-xs font-bold uppercase tracking-wider">
-                                        {searchTerm.length < 3 ? 'Ingresa al menos 3 caracteres' : 'No se encontraron resultados'}
+                                    <p className="text-xs font-bold uppercase tracking-wider text-center px-6">
+                                        {searchTerm.length < 3
+                                            ? 'Ingresa al menos 3 caracteres'
+                                            : isTempHECoverage && nrcGroups.length > 0
+                                                ? 'Los resultados encontrados ya tienen instructor asignado — cobertura temporal solo aplica a NRC vacantes.'
+                                                : 'No se encontraron resultados'}
                                     </p>
                                 </div>
                             ) : (
-                                nrcGroups.map(group => (
+                                visibleGroups.map(group => (
                                     <NrcGroupCard
                                         key={group.nrc}
                                         group={group}

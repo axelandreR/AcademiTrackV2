@@ -1,5 +1,6 @@
-import { ProcessedSchedule, Instructor, HolidayData } from '../types';
-import { isAcademicMetaLoad, isContractualLoad, isOtherFunctionsCourse } from './businessRules';
+import { ProcessedSchedule, Instructor, HolidayData, ExtraHoursConfig } from '../types';
+import { isAcademicMetaLoad, isContractualLoad, isOtherFunctionsCourse, isTempHECoverage } from './businessRules';
+import { getExtraWindowsForDate, splitTaskFragments } from './extraHoursCalculations';
 import { timeToMinutes } from '../utils/timeUtils';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE, LOAD_LIMITS, CONTRACT_HOURS_TC } from '../constants';
 
@@ -19,6 +20,13 @@ export interface WeeklyAuditBreakdown {
     // academicMeta/CONTRACT_HOURS_TC como siempre).
     academicHoursMeta: number;
     contractReal: number;
+    // Horas "extra" — de dos fuentes posibles: (a) cobertura temporal de otro instructor
+    // (tempHEActive, ver isTempHECoverage en businessRules.ts), o (b) fragmentos de CUALQUIER
+    // tarea (clase o administrativa) que caen dentro de una ventana de "Configurar HE"
+    // (extraHoursConfig, ver getExtraWindowsForDate/splitTaskFragments) — visibles aparte, NO
+    // suman a academicReal/contractReal ni a la meta, y no disparan
+    // hasAcademicDiscrepancy/hasContractDiscrepancy ni exceso diario.
+    tempHECoverageHours: number;
     isHolidayWeek: boolean;
     hasDailyBreach: boolean;
     hasAcademicDiscrepancy: boolean;
@@ -48,7 +56,18 @@ export const calculateWeeklyAudit = (
     semesterEndDate: Date,
     // Uso interno: evita que la comparación con semanas vecinas (ver isHolidayWeekLoadNormal)
     // encadene recursión al consultar esas mismas semanas vecinas.
-    skipHolidayNeighborCheck: boolean = false
+    skipHolidayNeighborCheck: boolean = false,
+    // Config de "Configurar HE" de ESTE instructor (ver context/DataContext.tsx::
+    // extraHoursConfigsByInstructor) — cuando viene, cualquier fragmento de tarea que caiga
+    // en una ventana marcada como HE se excluye de la Meta/46h igual que tempHEActive.
+    extraHoursConfig: ExtraHoursConfig | null = null,
+    // Instructor.hasExtraHoursAssigned: exención general — no se marca discrepancia
+    // académica/contractual ni exceso de jornada diaria para este instructor, sin
+    // necesidad de marcar curso por curso ni tarea administrativa. Los números reales
+    // (academicReal/contractReal/etc) se siguen calculando normal, solo se suprimen las
+    // banderas de alerta — los choques de horario/aula NO pasan por este motor, siguen
+    // detectándose igual (ver conflictDetection.ts).
+    auditExempt: boolean = false
 ): WeeklyAuditBreakdown => {
     const isTC = instructorType === 'TC';
     const dailyLimitMins = isTC ? LOAD_LIMITS.DAILY_TC * 60 + 0.01 : LOAD_LIMITS.DAILY_TP * 60 + 0.01;
@@ -88,7 +107,7 @@ export const calculateWeeklyAudit = (
         academicMeta += s.weeklyHours;
     }
 
-    let syncMin = 0, asyncMin = 0, otherMin = 0, prepMin = 0, assignMin = 0;
+    let syncMin = 0, asyncMin = 0, otherMin = 0, prepMin = 0, assignMin = 0, tempHECoverageMin = 0;
     let hasDailyBreach = false;
     // Horas Académicas (meta para TP, ver comentario en la interfaz): se acumulan por
     // separado los minutos de cursos del ARCHIVO (no administrativos) según la misma regla
@@ -113,27 +132,57 @@ export const calculateWeeklyAudit = (
             return dayTarget >= start && dayTarget <= end;
         });
 
+        // Ventanas de "Configurar HE" para este día — cualquier tarea (clase o
+        // administrativa) que las cruce se parte en fragmentos normal/extra (ver
+        // splitTaskFragments), igual que ya hace la grilla de Simulación para pintar el
+        // badge "EXTRAS". Sin config, cada tarea es un solo fragmento no-extra.
+        const extraWindows = extraHoursConfig ? getExtraWindowsForDate(extraHoursConfig, day, dayName) : [];
+
         let dayTotalMin = 0;
         dayTasks.forEach(s => {
-            const dur = timeToMinutes(s.endTime) - timeToMinutes(s.startTime);
-            if (isContractualLoad(s)) dayTotalMin += dur;
-
-            // Cursos de "otras funciones" (asesorías, revisión de cuadernos, etc.) van a
-            // OTROS aunque no sean administrativos — se pregunta ANTES que isAcademicMetaLoad
-            // porque esa función devuelve true para todo bloque no-administrativo, lo que
-            // dejaba esta rama inalcanzable (bug confirmado: OTROS siempre mostraba 0.00h).
-            if (!s.isAdministrative && isOtherFunctionsCourse(s)) {
-                otherMin += dur;
-                academicHoursExceptionMin += dur;
-            } else if (isAcademicMetaLoad(s)) {
-                const isAutoestudio = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
-                if (isAutoestudio) asyncMin += dur; else syncMin += dur;
-                if (!s.isAdministrative) academicHoursRegularMin += dur;
-            } else if (s.isAdministrative) {
-                if (s.category === 'preparacion') prepMin += dur;
-                else if (s.category === 'coordinador') otherMin += dur;
-                else if (s.category === 'por_asignar') assignMin += dur;
+            // Cobertura temporal de HE (fila de reemplazo, ver isTempHECoverage): el bloque
+            // ENTERO se cuenta aparte, no participa en el fragmentado por ventana.
+            if (isTempHECoverage(s)) {
+                tempHECoverageMin += timeToMinutes(s.endTime) - timeToMinutes(s.startTime);
+                return;
             }
+
+            const taskStart = timeToMinutes(s.startTime);
+            const taskEnd = timeToMinutes(s.endTime);
+            const fragments = extraWindows.length > 0
+                ? splitTaskFragments(taskStart, taskEnd, extraWindows)
+                : [{ start: taskStart, end: taskEnd, extra: false }];
+
+            fragments.forEach(frag => {
+                const dur = frag.end - frag.start;
+                if (dur <= 0) return;
+
+                // Fragmento dentro de una ventana de HE configurada: aparte, no cuenta para
+                // Meta/46h ni para exceso diario — mismo criterio que tempHEActive arriba.
+                if (frag.extra) {
+                    tempHECoverageMin += dur;
+                    return;
+                }
+
+                if (isContractualLoad(s)) dayTotalMin += dur;
+
+                // Cursos de "otras funciones" (asesorías, revisión de cuadernos, etc.) van a
+                // OTROS aunque no sean administrativos — se pregunta ANTES que isAcademicMetaLoad
+                // porque esa función devuelve true para todo bloque no-administrativo, lo que
+                // dejaba esta rama inalcanzable (bug confirmado: OTROS siempre mostraba 0.00h).
+                if (!s.isAdministrative && isOtherFunctionsCourse(s)) {
+                    otherMin += dur;
+                    academicHoursExceptionMin += dur;
+                } else if (isAcademicMetaLoad(s)) {
+                    const isAutoestudio = s.meetingType === 'VAEE' || (s.activity && s.activity.toUpperCase().includes('AUTOESTUDIO')) || s.category === 'asincrona';
+                    if (isAutoestudio) asyncMin += dur; else syncMin += dur;
+                    if (!s.isAdministrative) academicHoursRegularMin += dur;
+                } else if (s.isAdministrative) {
+                    if (s.category === 'preparacion') prepMin += dur;
+                    else if (s.category === 'coordinador') otherMin += dur;
+                    else if (s.category === 'por_asignar') assignMin += dur;
+                }
+            });
         });
 
         if (dayTotalMin > dailyLimitMins && !isHoliday(day)) hasDailyBreach = true;
@@ -157,20 +206,23 @@ export const calculateWeeklyAudit = (
     // límite diario, asumimos que esta semana sigue el patrón normal y no marcamos alerta: si
     // alguna vecina también tiene un problema real, la alerta de esta semana sí se muestra.
     const suppressWeeklyDiscrepancy = isHolidayWeek && !skipHolidayNeighborCheck &&
-        isHolidayWeekLoadNormal(instructorType, weekStart, instructorSchedules, holidays, semesterEndDate);
+        isHolidayWeekLoadNormal(instructorType, weekStart, instructorSchedules, holidays, semesterEndDate, extraHoursConfig, auditExempt);
 
     // TP: la meta ahora es Horas Académicas (convertida), no el ARCHIVO crudo. TC no cambia
     // (sigue sin usar esta comparación como gate principal — ver hasContractDiscrepancy).
-    const hasAcademicDiscrepancy = !suppressWeeklyDiscrepancy &&
+    // auditExempt (Instructor.hasExtraHoursAssigned) apaga ambas banderas directamente, sin
+    // pasar por suppressWeeklyDiscrepancy — es una exención del instructor, no del feriado.
+    const hasAcademicDiscrepancy = !auditExempt && !suppressWeeklyDiscrepancy &&
         Math.abs(academicReal - (isTC ? academicMeta : academicHoursMeta)) > 0.01;
-    const hasContractDiscrepancy = !suppressWeeklyDiscrepancy && isTC && Math.abs(contractReal - CONTRACT_HOURS_TC) > 0.01;
+    const hasContractDiscrepancy = !auditExempt && !suppressWeeklyDiscrepancy && isTC && Math.abs(contractReal - CONTRACT_HOURS_TC) > 0.01;
+    const hasDailyBreachFinal = !auditExempt && hasDailyBreach;
 
-    const isValid = !hasDailyBreach && (isTC ? !hasContractDiscrepancy : !hasAcademicDiscrepancy);
+    const isValid = !hasDailyBreachFinal && (isTC ? !hasContractDiscrepancy : !hasAcademicDiscrepancy);
 
     return {
         syncHours, asyncHours, otherHours, prepHours: prepMin / 60, assignHours: assignMin / 60,
-        academicReal, academicMeta, academicHoursMeta, contractReal,
-        isHolidayWeek, hasDailyBreach, hasAcademicDiscrepancy, hasContractDiscrepancy, isValid
+        academicReal, academicMeta, academicHoursMeta, contractReal, tempHECoverageHours: tempHECoverageMin / 60,
+        isHolidayWeek, hasDailyBreach: hasDailyBreachFinal, hasAcademicDiscrepancy, hasContractDiscrepancy, isValid
     };
 };
 
@@ -188,7 +240,9 @@ export const isHolidayWeekLoadNormal = (
     weekStart: Date,
     instructorSchedules: ProcessedSchedule[],
     holidays: HolidayData[],
-    semesterEndDate: Date
+    semesterEndDate: Date,
+    extraHoursConfig: ExtraHoursConfig | null = null,
+    auditExempt: boolean = false
 ): boolean => {
     const prevWeekStart = new Date(weekStart);
     prevWeekStart.setDate(weekStart.getDate() - 7);
@@ -200,8 +254,8 @@ export const isHolidayWeekLoadNormal = (
 
     if (!prevAvailable && !nextAvailable) return true;
 
-    const prevOk = !prevAvailable || !calculateWeeklyAudit(instructorType, prevWeekStart, instructorSchedules, holidays, semesterEndDate, true).hasDailyBreach;
-    const nextOk = !nextAvailable || !calculateWeeklyAudit(instructorType, nextWeekStart, instructorSchedules, holidays, semesterEndDate, true).hasDailyBreach;
+    const prevOk = !prevAvailable || !calculateWeeklyAudit(instructorType, prevWeekStart, instructorSchedules, holidays, semesterEndDate, true, extraHoursConfig, auditExempt).hasDailyBreach;
+    const nextOk = !nextAvailable || !calculateWeeklyAudit(instructorType, nextWeekStart, instructorSchedules, holidays, semesterEndDate, true, extraHoursConfig, auditExempt).hasDailyBreach;
 
     return prevOk && nextOk;
 };
@@ -259,7 +313,8 @@ export const calculateInstructorAudit = (
     instSchedules: ProcessedSchedule[],
     holidays: HolidayData[],
     semesterRange: { start: Date; end: Date },
-    semesterEndDate: Date = SEMESTER_END_DATE
+    semesterEndDate: Date = SEMESTER_END_DATE,
+    extraHoursConfig: ExtraHoursConfig | null = null
 ): AuditRow => {
     const { start: globalStart, end: globalEnd } = semesterRange;
     const firstWeekStart = new Date(globalStart);
@@ -268,9 +323,13 @@ export const calculateInstructorAudit = (
     const weekStartAt = firstWeekStart.getTime();
     const weekEndAtTime = weekStartAt + 6 * 24 * 60 * 60 * 1000;
 
+    // instructor.hasExtraHoursAssigned: exención general (ver comentario en
+    // calculateWeeklyAudit) — se lee directo del objeto, no hace falta un parámetro aparte.
+    const auditExempt = instructor.hasExtraHoursAssigned === true;
+
     // S1: semana de referencia para el estado resumen (DEFICIT/EXCESO/OK) que se muestra
     // en la tabla del Reporte Global — usa el motor único (ver calculateWeeklyAudit).
-    const s1 = calculateWeeklyAudit(instructor.type, firstWeekStart, instSchedules, holidays, semesterEndDate);
+    const s1 = calculateWeeklyAudit(instructor.type, firstWeekStart, instSchedules, holidays, semesterEndDate, false, extraHoursConfig, auditExempt);
     const metaCargaS1 = isTC ? LOAD_LIMITS.WEEKLY_TC : s1.academicHoursMeta;
     const cargaRealS1 = isTC ? s1.contractReal : s1.academicReal;
     const hasHolidayS1 = s1.isHolidayWeek;
@@ -282,11 +341,12 @@ export const calculateInstructorAudit = (
     const dailyLimit = isTC ? LOAD_LIMITS.DAILY_TC : LOAD_LIMITS.DAILY_TP;
 
     while (scannerDate <= globalEnd && scannerDate <= semesterEndDate) {
-        const week = calculateWeeklyAudit(instructor.type, scannerDate, instSchedules, holidays, semesterEndDate);
+        const week = calculateWeeklyAudit(instructor.type, scannerDate, instSchedules, holidays, semesterEndDate, false, extraHoursConfig, auditExempt);
 
         if (week.hasDailyBreach) {
             // El motor único no distingue el día exacto del exceso; lo re-derivamos aquí
-            // solo para el detalle del reporte (mismo criterio que antes: por día).
+            // solo para el detalle del reporte (mismo criterio que antes: por día, y
+            // descontando fragmentos en ventana de HE igual que el motor principal).
             for (let i = 0; i < 7; i++) {
                 const d = new Date(scannerDate);
                 d.setDate(scannerDate.getDate() + i);
@@ -299,7 +359,14 @@ export const calculateInstructorAudit = (
                     const end = new Date(s.endDate.getFullYear(), s.endDate.getMonth(), s.endDate.getDate()).getTime();
                     return dTarget >= start && dTarget <= end;
                 });
-                const dayMin = dayTasks.reduce((sum, s) => isContractualLoad(s) ? sum + (timeToMinutes(s.endTime) - timeToMinutes(s.startTime)) : sum, 0);
+                const dExtraWindows = extraHoursConfig ? getExtraWindowsForDate(extraHoursConfig, d, dayName) : [];
+                const dayMin = dayTasks.reduce((sum, s) => {
+                    if (!isContractualLoad(s)) return sum;
+                    const tStart = timeToMinutes(s.startTime);
+                    const tEnd = timeToMinutes(s.endTime);
+                    if (dExtraWindows.length === 0) return sum + (tEnd - tStart);
+                    return sum + splitTaskFragments(tStart, tEnd, dExtraWindows).reduce((fsum, frag) => frag.extra ? fsum : fsum + (frag.end - frag.start), 0);
+                }, 0);
                 const isHol = holidays.some(h => h.date.toDateString() === d.toDateString());
                 if (dayMin / 60 > dailyLimit + 0.01 && !isHol) {
                     discrepancies.push({ weekStart: new Date(d), meta: dailyLimit, real: dayMin / 60, diff: (dayMin / 60) - dailyLimit, type: 'daily_excess' });

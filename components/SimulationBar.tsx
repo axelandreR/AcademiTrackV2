@@ -14,7 +14,7 @@ const SimulationBar: React.FC = () => {
     const {
         isSimulationMode, endSimulation, applySimulation, saveScenario, updateScenario,
         currentScenarioId, currentScenarioName, extraHoursConfig, setExtraHoursConfig, holidays,
-        simulationConfig, allSchedules, instructors, instructorsByNameMap, notify
+        simulationConfig, allSchedules, instructors, instructorsByNameMap, notify, saveInstructorExtraHoursConfig
     } = useData();
     const [isApplying, setIsApplying] = useState(false);
     const [isExtraHoursModalOpen, setIsExtraHoursModalOpen] = useState(false);
@@ -212,7 +212,13 @@ const SimulationBar: React.FC = () => {
                     isOpen={isExtraHoursModalOpen}
                     onClose={() => setIsExtraHoursModalOpen(false)}
                     config={extraHoursConfig}
-                    onSave={(config) => setExtraHoursConfig(config)}
+                    onSave={(config) => {
+                        setExtraHoursConfig(config);
+                        // Persiste en BD (tabla instructor_extra_hours_config) para que el
+                        // motor de auditoría la use también fuera de esta simulación (ver
+                        // DataContext.tsx::saveInstructorExtraHoursConfig).
+                        if (instructorObj) saveInstructorExtraHoursConfig(instructorObj.id, config);
+                    }}
                     holidays={holidays}
                     instructorName={simulationConfig?.instructorFilter}
                     instructorSchedules={instructorSchedules}
@@ -224,9 +230,13 @@ const SimulationBar: React.FC = () => {
                 <ConfirmDialog
                     isOpen={isApplyConfirmOpen}
                     title="Aplicar simulación"
-                    message="Se escribirán los cambios de la simulación en la base de datos real. Esta acción es irreversible."
+                    message={
+                        simulationConfig?.instructorFilter
+                            ? `Se escribirán los cambios de la simulación en la base de datos real. Antes de guardar, se creará automáticamente un respaldo del horario actual de ${simulationConfig.instructorFilter} en "Simulaciones Guardadas" — puedes revertir cargando ese respaldo y volviendo a aplicar.`
+                            : 'Se escribirán los cambios de la simulación en la base de datos real. Esta simulación no está acotada a un instructor, así que no se genera un respaldo automático — esta acción es irreversible.'
+                    }
                     confirmLabel="Aplicar cambios"
-                    variant="danger"
+                    variant={simulationConfig?.instructorFilter ? 'default' : 'danger'}
                     onCancel={() => setIsApplyConfirmOpen(false)}
                     onConfirm={confirmApply}
                 />,

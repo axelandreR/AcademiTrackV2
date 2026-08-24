@@ -1,5 +1,5 @@
 
-import { ProcessedSchedule, Instructor, HolidayData } from '../types';
+import { ProcessedSchedule, Instructor, HolidayData, ExtraHoursConfig } from '../types';
 import { calculateWeeklyAudit } from './auditCalculations';
 import { LOAD_LIMITS } from '../constants';
 
@@ -22,12 +22,13 @@ export const validateInstructorWeek = (
     weekStart: Date,
     schedules: ProcessedSchedule[], // Schedules for this instructor
     holidays: HolidayData[],
-    semesterEndDate: Date
+    semesterEndDate: Date,
+    extraHoursConfig: ExtraHoursConfig | null = null
 ): AuditResult => {
     // week.hasContractDiscrepancy/hasAcademicDiscrepancy/hasDailyBreach ya vienen
     // validados contra semanas vecinas cuando hay feriado (ver isHolidayWeekLoadNormal en
     // auditCalculations.ts) — ya no hace falta anular esta función entera por feriado.
-    const week = calculateWeeklyAudit(instructor.type, weekStart, schedules, holidays, semesterEndDate);
+    const week = calculateWeeklyAudit(instructor.type, weekStart, schedules, holidays, semesterEndDate, false, extraHoursConfig, instructor.hasExtraHoursAssigned === true);
 
     const reasons: string[] = [];
 

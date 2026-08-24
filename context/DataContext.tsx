@@ -88,9 +88,17 @@ interface DataContextType {
   simulationConfig: any;
   extraHoursConfig: ExtraHoursConfig | null;
   setExtraHoursConfig: (config: ExtraHoursConfig | null) => void;
+  // Config de "Configurar HE" persistida en BD por instructor (tabla
+  // instructor_extra_hours_config), disponible SIEMPRE (no solo dentro de una simulación
+  // activa) — la usa el motor de auditoría (calculateWeeklyAudit) para excluir fragmentos
+  // en ventana de HE de la Meta/46h también en vista normal. Ver saveInstructorExtraHoursConfig.
+  extraHoursConfigsByInstructor: Record<string, ExtraHoursConfig>;
+  saveInstructorExtraHoursConfig: (instructorId: string, config: ExtraHoursConfig | null) => Promise<void>;
+  // Exención general de auditoría por instructor (ver Instructor.hasExtraHoursAssigned).
+  toggleInstructorAuditExemption: (instructorId: string, value: boolean) => Promise<void>;
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
-  importScheduleToSimulation: (scheduleId: string | string[], targetInstructor: string) => number;
+  importScheduleToSimulation: (scheduleId: string | string[], targetInstructor: string, tempHECoverage?: boolean) => number;
   applySimulation: () => Promise<void>;
   saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
   updateScenario: (id: string, metadata?: any) => Promise<void>;
@@ -162,7 +170,10 @@ export const mapSchedFromDB = (dbItem: any): ProcessedSchedule => ({
   semestre: dbItem.semestre || '',
   category: dbItem.category,
   isAdministrative: Boolean(dbItem.is_administrative),
-  modality: dbItem.modality
+  modality: dbItem.modality,
+  tempHEActive: Boolean(dbItem.temp_he_active),
+  tempHEInstructor: dbItem.temp_he_instructor || '',
+  tempHEInstructorId: dbItem.temp_he_instructor_id || ''
 });
 
 const mapInstructorToDB = (inst: Instructor) => ({
@@ -172,7 +183,8 @@ const mapInstructorToDB = (inst: Instructor) => ({
   specialty: inst.specialty,
   max_hours: inst.maxHours,
   audit_status: inst.auditStatus,
-  audit_json: inst.auditJson
+  audit_json: inst.auditJson,
+  has_extra_hours_assigned: inst.hasExtraHoursAssigned === true
 });
 
 const mapRoomToDB = (room: RoomData) => ({
@@ -216,7 +228,10 @@ const mapSchedToDB = (appItem: ProcessedSchedule) => ({
   semestre: appItem.semestre || null,
   category: appItem.category || null,
   is_administrative: appItem.isAdministrative === true,
-  modality: appItem.modality || null
+  modality: appItem.modality || null,
+  temp_he_active: appItem.tempHEActive === true,
+  temp_he_instructor: appItem.tempHEInstructor || null,
+  temp_he_instructor_id: appItem.tempHEInstructorId || null
 });
 
 export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -230,6 +245,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [institutionalReferences, setInstitutionalReferences] = useState<InstitutionalReference[]>([]);
   const [settings, setSettings] = useState<Record<string, string>>(DEFAULT_SETTINGS);
   const [exportedInstructors, setExportedInstructors] = useState<Set<string>>(new Set());
+  // Config de "Configurar HE" por instructor, persistida en BD (tabla
+  // instructor_extra_hours_config) — declarada temprano porque recalculateInstructorAudit/
+  // recalculateAllInstructorsAudit (más abajo) ya la referencian dentro de su cuerpo.
+  const [extraHoursConfigsByInstructor, setExtraHoursConfigsByInstructor] = useState<Record<string, ExtraHoursConfig>>({});
 
   useEffect(() => {
     const saved = localStorage.getItem('exportedInstructors');
@@ -298,7 +317,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       if (hasHoliday) continue;
 
-      const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, auditCutoff);
+      const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, auditCutoff, extraHoursConfigsByInstructor[inst.id]);
       totalWeeksChecked++;
       if (validation.isValid) {
         weeksOk++;
@@ -319,7 +338,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     // Update in local state
     setInstructors(prev => prev.map(i => i.id === inst.id ? { ...i, auditStatus: status, auditJson: JSON.stringify(auditIssues) } : i));
-  }, [instructors, holidays, getAuditCutoffDate]);
+  }, [instructors, holidays, getAuditCutoffDate, extraHoursConfigsByInstructor]);
 
   // Guarda un valor en app_settings y lo refleja de inmediato en el estado local.
   const updateAppSetting = useCallback(async (key: string, value: string) => {
@@ -364,7 +383,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
           if (hasHoliday) continue;
 
-          const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, cutoffDate);
+          const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, cutoffDate, extraHoursConfigsByInstructor[inst.id]);
           totalWeeksChecked++;
           if (validation.isValid) {
             weeksOk++;
@@ -393,7 +412,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const r = statusMap.get(i.id);
       return r ? { ...i, auditStatus: r.status, auditJson: r.auditJson } : i;
     }));
-  }, [schedules, administrativeTasks, instructors, holidays]);
+  }, [schedules, administrativeTasks, instructors, holidays, extraHoursConfigsByInstructor]);
 
   /**
    * Vincula el ID de un instructor en bloques legados que llegaron SIN id (datos del
@@ -531,8 +550,25 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           campus: '',
           status: 'Activo',
           auditStatus: i.audit_status,
-          auditJson: i.audit_json
+          auditJson: i.audit_json,
+          hasExtraHoursAssigned: Boolean(i.has_extra_hours_assigned)
         })));
+      }
+
+      // Fetch Extra Hours Config por instructor (ver saveInstructorExtraHoursConfig) —
+      // tabla chica (solo instructores con HE configurada), se carga completa de una vez.
+      const { data: allDbExtraHoursConfig, error: extraHoursError } = await supabase
+        .from('instructor_extra_hours_config')
+        .select('instructor_id, config')
+        .eq('periodo', ACTIVE_PERIODO);
+      if (extraHoursError) throw extraHoursError;
+      if (allDbExtraHoursConfig) {
+        const map: Record<string, ExtraHoursConfig> = {};
+        allDbExtraHoursConfig.forEach((row: any) => {
+          const normalized = normalizeExtraHoursConfig(row.config);
+          if (normalized) map[row.instructor_id] = normalized;
+        });
+        setExtraHoursConfigsByInstructor(map);
       }
 
       // LOAD SCHEDULES FIRST to have them for audit trigger
@@ -581,7 +617,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         campus: '',
         status: 'Activo',
         auditStatus: i.audit_status,
-        auditJson: i.audit_json
+        auditJson: i.audit_json,
+        hasExtraHoursAssigned: Boolean(i.has_extra_hours_assigned)
       }));
 
       setInstructors(instructorsMapped);
@@ -983,23 +1020,58 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setToast({ message, type });
   }, []);
 
-  // Persistencia de HE aislada por instructor. Antes había un efecto separado que
-  // recargaba automáticamente desde localStorage cada vez que cambiaba
-  // simulationConfig.instructorFilter — eso competía con loadScenario (que también
-  // setea extraHoursConfig, con el valor guardado en el escenario) y podía pisar el
-  // valor recién restaurado con una versión vieja de localStorage del mismo instructor.
-  // Ahora cada punto de entrada (startSimulation / loadScenario) decide explícitamente
-  // el valor correcto, sin un efecto reactivo de por medio.
-  //
-  // La clave preferimos por ID de instructor (estable) en vez de nombre crudo, para
-  // no colisionar entre instructores homónimos; instructorKey cae a instructorFilter
-  // (nombre) para escenarios guardados antes de este cambio, que no lo tienen.
-  useEffect(() => {
-    const key = simulationConfig?.instructorKey || simulationConfig?.instructorFilter;
-    if (isSimulationMode && key && extraHoursConfig) {
-      localStorage.setItem(`extraHoursConfig_${key}`, JSON.stringify(extraHoursConfig));
+  // Persiste la config de HE de un instructor en BD (tabla instructor_extra_hours_config)
+  // y refresca el mapa local — llamarla explícitamente (ver onSave de ExtraHoursModal en
+  // SimulationBar.tsx) en vez de un efecto reactivo: un efecto disparado por cada cambio de
+  // extraHoursConfig competía con loadScenario (que también setea extraHoursConfig al
+  // cargar un escenario guardado) y podía escribir un valor que no venía de un "Guardar"
+  // real del usuario.
+  const saveInstructorExtraHoursConfig = useCallback(async (instructorId: string, config: ExtraHoursConfig | null) => {
+    if (!instructorId) return;
+    try {
+      if (config && config.segments.length > 0) {
+        const { error } = await supabase.from('instructor_extra_hours_config').upsert({
+          periodo: ACTIVE_PERIODO,
+          instructor_id: instructorId,
+          config,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'periodo,instructor_id' });
+        if (error) throw error;
+        setExtraHoursConfigsByInstructor(prev => ({ ...prev, [instructorId]: config }));
+      } else {
+        // Config vacía (sin tramos) equivale a "sin HE configurada" — se elimina en vez de
+        // guardar un registro vacío, para que quede consistente con "no tiene config".
+        const { error } = await supabase.from('instructor_extra_hours_config')
+          .delete().eq('periodo', ACTIVE_PERIODO).eq('instructor_id', instructorId);
+        if (error) throw error;
+        setExtraHoursConfigsByInstructor(prev => {
+          const next = { ...prev };
+          delete next[instructorId];
+          return next;
+        });
+      }
+    } catch (e: any) {
+      console.error('Error guardando configuración de Horas Extra:', e);
+      notify('Error al guardar la configuración de Horas Extra: ' + e.message, 'error');
     }
-  }, [extraHoursConfig, isSimulationMode, simulationConfig?.instructorKey, simulationConfig?.instructorFilter]);
+  }, [notify]);
+
+  // Exención general de auditoría para un instructor (ver Instructor.hasExtraHoursAssigned
+  // y calculateWeeklyAudit): no marca discrepancia académica/contractual ni exceso de
+  // jornada diaria para él, sin tener que marcar curso por curso ni tarea administrativa.
+  // Update liviano (no el upsert completo de saveInstructorCloud) para no disparar
+  // syncInstructorIdInSchedules en cada toggle.
+  const toggleInstructorAuditExemption = useCallback(async (instructorId: string, value: boolean) => {
+    try {
+      const { error } = await supabase.from('instructors').update({ has_extra_hours_assigned: value }).eq('id', instructorId);
+      if (error) throw error;
+      setInstructors(prev => prev.map(i => i.id === instructorId ? { ...i, hasExtraHoursAssigned: value } : i));
+      notify(value ? 'Instructor marcado con horas extra asignadas — la auditoría normal queda desactivada para él.' : 'Exención de auditoría retirada — vuelve a aplicar las reglas normales.', 'success');
+    } catch (e: any) {
+      console.error('Error actualizando exención de auditoría:', e);
+      notify('Error al actualizar la exención de auditoría: ' + e.message, 'error');
+    }
+  }, [notify]);
 
   const startSimulation = useCallback((instructorFilter?: string) => {
     console.log("Starting Simulation...");
@@ -1033,17 +1105,27 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         // Cargar la plantilla de Horas Extra guardada para este instructor (si existe).
         // Se hace explícito aquí, en vez de un efecto reactivo separado, para que no
-        // compita con loadScenario al restaurar un escenario guardado.
-        const savedHE = localStorage.getItem(`extraHoursConfig_${instructorKey}`);
-        if (savedHE) {
-          try {
-            setExtraHoursConfig(normalizeExtraHoursConfig(JSON.parse(savedHE)));
-          } catch (e) {
-            console.error(`Error loading HE for ${instructorKey}:`, e);
+        // compita con loadScenario al restaurar un escenario guardado. Fuente de verdad:
+        // extraHoursConfigsByInstructor (BD, ver refreshData). Si no hay nada ahí pero SÍ
+        // hay algo en localStorage (config guardada antes de persistirse en BD), se migra
+        // una sola vez: se usa y se guarda de inmediato en BD para no perderla.
+        const dbConfig = extraHoursConfigsByInstructor[instructorKey];
+        if (dbConfig) {
+          setExtraHoursConfig(dbConfig);
+        } else {
+          const savedHE = localStorage.getItem(`extraHoursConfig_${instructorKey}`);
+          if (savedHE) {
+            try {
+              const migrated = normalizeExtraHoursConfig(JSON.parse(savedHE));
+              setExtraHoursConfig(migrated);
+              if (migrated) saveInstructorExtraHoursConfig(instructorKey, migrated);
+            } catch (e) {
+              console.error(`Error loading HE for ${instructorKey}:`, e);
+              setExtraHoursConfig(null);
+            }
+          } else {
             setExtraHoursConfig(null);
           }
-        } else {
-          setExtraHoursConfig(null);
         }
       } else {
         // Global simulation (standard behavior) — sin instructor específico no hay
@@ -1064,7 +1146,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Error starting simulation:", e);
       notify("Error al iniciar simulación: " + e.message, 'error');
     }
-  }, [schedules, administrativeTasks, notify]);
+  }, [schedules, administrativeTasks, notify, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig]);
 
   const endSimulation = useCallback(() => {
     setIsSimulationMode(false);
@@ -1080,7 +1162,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // días/horarios), así que "importar el NRC" trae TODAS sus sesiones en un solo llamado
   // en vez de obligar a repetir la acción fila por fila y arriesgarse a dejar alguna
   // atrás. Devuelve cuántas sesiones se importaron con éxito.
-  const importScheduleToSimulation = useCallback((scheduleId: string | string[], targetInstructor: string): number => {
+  //
+  // `tempHECoverage`: la fila original (ej. "Sin asignar") NO se toca — este import ya
+  // crea una fila NUEVA con id propio, así que el horario base queda preservado por
+  // construcción. Cuando es true, además se marca tempHEActive en el clon para que el
+  // motor de auditoría (ver businessRules.ts::isTempHECoverage) excluya esas horas de la
+  // Meta/46h del instructor que cubre, sin dejar de contar para choques de horario/aula.
+  const importScheduleToSimulation = useCallback((scheduleId: string | string[], targetInstructor: string, tempHECoverage: boolean = false): number => {
     const ids = Array.isArray(scheduleId) ? scheduleId : [scheduleId];
     const archive = [...schedules, ...administrativeTasks];
     const targetInstData = instructors.find(i => i.name === targetInstructor);
@@ -1101,6 +1189,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         id: `sim-imported-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
         instructor: targetInstructor,
         instructorId: targetId,
+        tempHEActive: tempHECoverage,
         startDate: new Date(source.startDate),
         endDate: new Date(source.endDate)
       };
@@ -1135,10 +1224,37 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // usando el mismo matching (ID prioritario, nombre como último recurso).
       const instructorFilter = simulationConfig?.instructorFilter;
       let realItems: ProcessedSchedule[] = [...schedules, ...administrativeTasks];
+      const instObj = instructorFilter ? instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter)) : undefined;
       if (instructorFilter) {
-        const instObj = instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter));
         const matchesFilter = (s: ProcessedSchedule) => instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
         realItems = realItems.filter(matchesFilter);
+      }
+
+      // Respaldo automático del horario real ANTES de sobreescribirlo: guarda realItems
+      // (tal cual está en la BD ahora, con sus IDs reales) como un escenario más en
+      // "Simulaciones Guardadas". Como usa los mismos IDs, cargar este respaldo más
+      // adelante y volver a aplicar restaura exactamente ese estado (revierte cualquier
+      // fila agregada por HE y cualquier campo modificado). Se guarda uno nuevo en CADA
+      // aplicación (historial completo) — nunca se sobreescribe un respaldo anterior, así
+      // que el horario "sin horas extras" original sigue disponible aunque se aplique
+      // varias veces después. Solo aplica a simulaciones acotadas a un instructor — una
+      // simulación global movería demasiados horarios como para que un respaldo sea útil.
+      if (instructorFilter && instObj && realItems.length > 0) {
+        try {
+          await supabase.from('scenarios').insert({
+            name: `Respaldo Auto — ${instObj.name}`,
+            description: `Horario real de ${instObj.name} justo antes de aplicar cambios de simulación (${new Date().toLocaleString('es-ES')}).`,
+            data: {
+              schedules: realItems,
+              metadata: { view: 'Instructor', filter: instObj.name, instructorName: instObj.name, isAutoBackup: true },
+              simulationConfig: { instructorFilter: instObj.name, instructorKey: instObj.id, ignoreAudit: true },
+              extraHoursConfig: null
+            }
+          });
+        } catch (backupError: any) {
+          console.error('Error creando respaldo automático:', backupError);
+          notify('No se pudo crear el respaldo automático del horario base — continuando de todas formas.', 'error');
+        }
       }
 
       const realIds = new Set(realItems.map(s => s.id));
@@ -1421,7 +1537,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         if (hasHoliday) continue;
 
-        const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, cutoff);
+        const validation = validateInstructorWeek(inst, weekStart, instSchedules, holidays, cutoff, extraHoursConfigsByInstructor[inst.id]);
         totalWeeksChecked++;
         if (validation.isValid) {
           weeksOk++;
@@ -1435,7 +1551,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       map.set(inst.id, { isAuditOk, hasData: true, issues });
     });
     return map;
-  }, [instructors, liveAuditIndex, liveAuditSemesterWeeks, holidays, getAuditCutoffDate]);
+  }, [instructors, liveAuditIndex, liveAuditSemesterWeeks, holidays, getAuditCutoffDate, extraHoursConfigsByInstructor]);
 
   // Mapas normalizados para acceso O(1) (antes estaban como useMemo inline dentro del
   // objeto value, lo que dificultaba memoizar el value completo).
@@ -1505,6 +1621,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     simulationConfig,
     extraHoursConfig,
     setExtraHoursConfig,
+    extraHoursConfigsByInstructor,
+    saveInstructorExtraHoursConfig,
+    toggleInstructorAuditExemption,
     startSimulation,
     endSimulation,
     importScheduleToSimulation,
@@ -1532,7 +1651,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     allSchedules, exportedInstructors, toggleInstructorExported,
     instructorsMap, instructorsByNameMap, roomsMap, holidaysMap, careersMap,
     settings, loadSchedulesForFilter, globalSchedulesSummary,
-    simulationConfig, extraHoursConfig, startSimulation, endSimulation,
+    simulationConfig, extraHoursConfig, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig, toggleInstructorAuditExemption, startSimulation, endSimulation,
     importScheduleToSimulation, applySimulation, saveScenario, updateScenario, loadScenario,
     currentScenarioId, currentScenarioName,
     recalculateInstructorAudit, syncInstructorIdInSchedules, updateAppSetting,

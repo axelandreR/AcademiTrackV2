@@ -33,7 +33,11 @@ export const detectConflicts = (
     // instructors.find(...) DENTRO de un forEach de horarios (O(instructores × horarios),
     // ~890k comparaciones con los volúmenes reales) — confirmado como una causa real de
     // lentitud en "Reporte Global".
-    const relevantSchedules = schedules.filter(s => s.instructor && s.instructor !== 'Sin asignar');
+    // Cobertura temporal de HE (tempHEActive): instructor/instructorId quedan en su valor
+    // base "Sin asignar" a propósito, pero el bloque SÍ debe entrar al chequeo de choques
+    // (bajo el instructor que cubre, via tempHEInstructor* — ver buildInstructorScheduleIndex),
+    // para no perder la protección real contra doble-booking del instructor cobertor.
+    const relevantSchedules = schedules.filter(s => (s.instructor && s.instructor !== 'Sin asignar') || s.tempHEActive);
     const scheduleIndex = buildInstructorScheduleIndex<ProcessedSchedule>(relevantSchedules);
     const claimed = new Set<ProcessedSchedule>();
 
@@ -181,7 +185,11 @@ export const detectConflicts = (
     instGroups.forEach((list) => {
         // Nombre a mostrar: preferimos el más largo/completo del grupo (suele ser el
         // nombre "oficial" del catálogo en vez de una variante abreviada del Excel).
-        const displayName = list.reduce((longest, s) => (s.instructor || '').length > longest.length ? s.instructor : longest, '');
+        // Para bloques de cobertura temporal de HE, si tempHEInstructor no viene poblado
+        // (fila nueva que ya trae el instructor real en el campo normal — ver
+        // buildInstructorScheduleIndex) se usa instructor tal cual.
+        const nameOf = (s: ProcessedSchedule) => (s.tempHEActive && s.tempHEInstructor ? s.tempHEInstructor : s.instructor) || '';
+        const displayName = list.reduce((longest, s) => nameOf(s).length > longest.length ? nameOf(s) : longest, '');
         findOverlap(list, 'instructor', displayName);
     });
     roomGroups.forEach((list, room) => findOverlap(list, 'room', room));

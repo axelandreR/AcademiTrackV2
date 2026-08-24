@@ -82,6 +82,10 @@ export interface Instructor {
   status: string;
   auditStatus?: 'OK' | 'DEFICIT' | 'EXCESS' | 'PENDING' | 'ERROR' | null;
   auditJson?: string | null;
+  // Cuando es true, el motor de auditoría no marca discrepancia académica/contractual ni
+  // exceso de jornada diaria para este instructor (tiene horas extra asignadas en general).
+  // Los choques de horario/aula siguen detectándose normalmente.
+  hasExtraHoursAssigned?: boolean;
 }
 
 export interface RoomData {
@@ -124,6 +128,12 @@ export interface ProcessedSchedule {
   category?: ScheduleCategory;
   isAdministrative?: boolean;
   modality?: ModalityType;
+  // Cobertura temporal de Horas Extra (ver services/businessRules.ts::isTempHECoverage):
+  // el bloque se muestra con tempHEInstructor pero instructor/instructorId conservan el
+  // valor base ("Sin asignar") para poder revertir al llegar el titular permanente.
+  tempHEActive?: boolean;
+  tempHEInstructor?: string;
+  tempHEInstructorId?: string;
 }
 
 export type ViewType = 'Bloque' | 'Aula' | 'Instructor' | 'Simulacion';

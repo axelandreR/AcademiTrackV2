@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { Scenario } from '../types';
 import { supabase } from '../supabaseClient';
-import { Play, Trash2, Calendar, FileText } from 'lucide-react';
+import { Play, Trash2, Calendar, FileText, ShieldCheck } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
 import { ACTIVE_PERIODO } from '../constants';
@@ -155,8 +155,8 @@ const SimulationsList: React.FC = () => {
                             >
                                 <div className="p-6">
                                     <div className="flex justify-between items-start mb-4">
-                                        <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                                            <FileText size={24} />
+                                        <div className={`p-3 rounded-xl transition-colors ${scenario.data?.metadata?.isAutoBackup ? 'bg-amber-50 text-amber-600 group-hover:bg-amber-600 group-hover:text-white' : 'bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white'}`}>
+                                            {scenario.data?.metadata?.isAutoBackup ? <ShieldCheck size={24} /> : <FileText size={24} />}
                                         </div>
                                         <button
                                             onClick={(e) => handleDelete(scenario.id, e)}
@@ -166,6 +166,12 @@ const SimulationsList: React.FC = () => {
                                             <Trash2 size={18} />
                                         </button>
                                     </div>
+
+                                    {scenario.data?.metadata?.isAutoBackup && (
+                                        <div className="text-[10px] font-black text-amber-600 bg-amber-50 px-2 py-1 rounded mb-2 w-fit uppercase tracking-widest">
+                                            Respaldo Automático
+                                        </div>
+                                    )}
 
                                     <h3 className="font-bold text-slate-800 text-lg mb-2 line-clamp-1 group-hover:text-indigo-600 transition-colors">{scenario.name}</h3>
 

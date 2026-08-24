@@ -42,6 +42,12 @@ const EMPTY_SHIFT: ShiftSummary = { start: null, end: null, hours: 0 };
  * bloque de Refrigerio si existe. A diferencia del motor de auditoría (que suma la
  * duración de cada bloque), esto refleja el tiempo real de presencia del docente ese
  * día, incluyendo huecos entre bloques dentro de un mismo turno.
+ *
+ * NOTA: se evaluó cambiar esto a "suma de duración por bloque" (igual criterio que
+ * calculateWeeklyAudit) para que coincida siempre con "Real" del pie de auditoría, pero
+ * se revirtió — eso oculta cualquier hueco real en vez de encontrar su causa. Si
+ * "Jornada Diaria"/Fichas de Asistencia no coincide con "Real", el hueco debe
+ * localizarse y corregirse en los datos del horario, no en esta fórmula.
  */
 export const computeDailyJourney = (
     dayTasks: ProcessedSchedule[],

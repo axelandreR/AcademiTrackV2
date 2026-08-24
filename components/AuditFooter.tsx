@@ -23,6 +23,9 @@ interface AuditFooterProps {
         hasAcademicDiscrepancy: boolean;
         hasContractDiscrepancy: boolean;
         totalContractHours: number;
+        // Horas cubiertas temporalmente por otro instructor via Horas Extra — aparte de la
+        // carga normal, no cuentan para Meta/46h (ver services/businessRules.ts::isTempHECoverage).
+        tempHECoverageHours: number;
     };
     isFooterExpanded: boolean;
     setIsFooterExpanded: (expanded: boolean) => void;
@@ -118,6 +121,12 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Sinc</span><span className="text-base font-black text-slate-200">{stats.syncHours.toFixed(2)}h</span></div>
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Asinc</span><span className="text-base font-black text-slate-200">{stats.asyncHours.toFixed(2)}h</span></div>
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-blue-400 uppercase mb-1">Otros</span><span className="text-base font-black text-blue-300">{stats.otherHours.toFixed(2)}h</span></div>
+                    {stats.tempHECoverageHours > 0 && (
+                        <div className="flex flex-col items-center" title="Horas cubiertas temporalmente via Horas Extra — no cuentan para la Meta/46h">
+                            <span className="text-[8px] font-black text-amber-400 uppercase mb-1">HE Temporal</span>
+                            <span className="text-base font-black text-amber-300">{stats.tempHECoverageHours.toFixed(2)}h</span>
+                        </div>
+                    )}
                     {instructorType === 'TC' && (
                         <>
                             <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">PC</span><span className="text-base font-black text-slate-200">{stats.prepHours.toFixed(2)}h</span></div>

@@ -66,7 +66,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   onJumpToWeek
 }) => {
   const allTimeSlots = getTimeSlots();
-  const { instructorsByNameMap, instructorsMap, simulationConfig, isSimulationMode, extraHoursConfig, settings } = useData();
+  const { instructorsByNameMap, instructorsMap, simulationConfig, isSimulationMode, extraHoursConfig, extraHoursConfigsByInstructor, settings } = useData();
 
   // Misma fecha de fin de semestre configurable que usa el sidebar (settings.semester_end_date),
   // en vez de la constante fija — así la grilla y el punto rojo de Docentes nunca discrepan
@@ -140,6 +140,11 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
   const instructorType = currentInstructorMeta?.type || 'TP';
 
+  // Config de "Configurar HE" persistida en BD para el instructor actual (ver
+  // DataContext.tsx::extraHoursConfigsByInstructor) — el motor de auditoría la usa para
+  // excluir fragmentos en ventana de HE de la Meta/46h, con o sin simulación activa.
+  const currentInstructorExtraHoursConfig = currentInstructorMeta ? extraHoursConfigsByInstructor[currentInstructorMeta.id] || null : null;
+
   useEffect(() => {
     if (!isResizing) return;
     const handleMouseMove = (e: MouseEvent) => {
@@ -206,7 +211,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
   const stats = useMemo(() => {
     const weekStart = datesOfWeek[0].date;
-    const week = calculateWeeklyAudit(instructorType, weekStart, schedules, holidays, semesterEndDateSetting);
+    const week = calculateWeeklyAudit(instructorType, weekStart, schedules, holidays, semesterEndDateSetting, false, currentInstructorExtraHoursConfig, currentInstructorMeta?.hasExtraHoursAssigned === true);
 
     // Una semana está fuera si es después del fin o antes del inicio del semestre
     const isWeekOutOfSemester = datesOfWeek[0].date > semesterEndDateSetting || datesOfWeek[datesOfWeek.length - 1].date < SEMESTER_START_DATE;
@@ -215,6 +220,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       syncHours: week.syncHours, asyncHours: week.asyncHours, prepHours: week.prepHours, otherHours: week.otherHours,
       assignHours: week.assignHours, fileLoadHours: week.academicMeta, academicLoad: week.academicReal,
       totalContractHours: week.contractReal, targetLoadForWeek: week.academicMeta,
+      tempHECoverageHours: week.tempHECoverageHours,
       // Meta real para TP (ARCHIVO convertido a horas académicas, ver auditCalculations.ts).
       academicHoursMeta: week.academicHoursMeta,
       isHolidayInWeek: week.isHolidayWeek, isWeekOutOfSemester
@@ -245,10 +251,10 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       // TP compara contra Horas Académicas, no contra el ARCHIVO crudo (ver auditCalculations.ts).
       isDeficit: hasAcademicDiscrepancy && week.academicReal < (instructorType === 'TC' ? week.academicMeta : week.academicHoursMeta) - 0.01
     };
-  }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig, semesterEndDateSetting]);
+  }, [schedules, datesOfWeek, instructorType, holidays, simulationConfig, semesterEndDateSetting, currentInstructorExtraHoursConfig, currentInstructorMeta?.hasExtraHoursAssigned]);
 
   const auditObservations = useMemo(() => {
-    const list: { date: Date; type: 'academic' | 'contractual' | 'daily'; meta: number; real: number }[] = [];
+    const list: { date: Date; type: 'academic' | 'contractual' | 'daily' | 'journey'; meta: number; real: number }[] = [];
 
     // OPTIMIZACIÓN: Ejecución perezosa. Solo calculamos si el modal está abierto.
     if (!showAuditModal || !isInstructorView || !selectedFilterName || simulationConfig?.ignoreAudit) return list;
@@ -260,7 +266,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
     let scannerDate = new Date(SEMESTER_START_DATE);
 
     while (scannerDate <= semesterEndDateSetting) {
-      const week = calculateWeeklyAudit(instructorType, scannerDate, schedules, holidays, semesterEndDateSetting);
+      const week = calculateWeeklyAudit(instructorType, scannerDate, schedules, holidays, semesterEndDateSetting, false, currentInstructorExtraHoursConfig, currentInstructorMeta?.hasExtraHoursAssigned === true);
 
       if (week.hasDailyBreach) {
         for (let d = 0; d < 7; d++) {
@@ -268,8 +274,16 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
           current.setDate(scannerDate.getDate() + d);
           if (current > semesterEndDateSetting || isHoliday(current)) continue;
 
-          const dayTasks = schedules.filter(s => isScheduleActiveOnDate(s, current, DAYS_OF_WEEK[(current.getDay() + 6) % 7].key));
-          const dayMin = dayTasks.reduce((sum, s) => isContractualLoad(s) ? sum + (timeToMinutes(s.endTime) - timeToMinutes(s.startTime)) : sum, 0);
+          const dayKey = DAYS_OF_WEEK[(current.getDay() + 6) % 7].key;
+          const dayTasks = schedules.filter(s => isScheduleActiveOnDate(s, current, dayKey));
+          const dExtraWindows = currentInstructorExtraHoursConfig ? getExtraWindowsForDate(currentInstructorExtraHoursConfig, current, dayKey) : [];
+          const dayMin = dayTasks.reduce((sum, s) => {
+            if (!isContractualLoad(s)) return sum;
+            const tStart = timeToMinutes(s.startTime);
+            const tEnd = timeToMinutes(s.endTime);
+            if (dExtraWindows.length === 0) return sum + (tEnd - tStart);
+            return sum + splitTaskFragments(tStart, tEnd, dExtraWindows).reduce((fsum, frag) => frag.extra ? fsum : fsum + (frag.end - frag.start), 0);
+          }, 0);
           if (dayMin > dailyLimitMins) {
             list.push({ date: new Date(current), type: 'daily', meta: dailyLimit, real: dayMin / 60 });
           }
@@ -285,10 +299,31 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       if (isTC && week.hasContractDiscrepancy) {
         list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: week.contractReal });
       }
+
+      // Jornada Diaria (presencia real, de la hora más temprana a la más tardía cada día,
+      // con huecos incluidos) vs Auditoría (suma de la duración de cada bloque, ver
+      // week.contractReal) — si difieren en más de 1 minuto en la semana, hay un hueco
+      // entre bloques que debería ser consecutivo (ej. el corrimiento de 1 min del Cardex
+      // entre dos bloques importados por separado). No se corrige solo: se reporta para
+      // que se ubique y ajuste el bloque exacto en los datos del horario.
+      let weekJourneyHours = 0;
+      for (let d = 0; d < 7; d++) {
+        const current = new Date(scannerDate);
+        current.setDate(scannerDate.getDate() + d);
+        if (current > semesterEndDateSetting || isHoliday(current)) continue;
+        const dayKey = DAYS_OF_WEEK[(current.getDay() + 6) % 7].key;
+        const dayTasks = schedules.filter(s => isScheduleActiveOnDate(s, current, dayKey));
+        weekJourneyHours += computeDailyJourney(dayTasks, instructorType).totalHours;
+      }
+      const journeyDiffMin = (weekJourneyHours - week.contractReal) * 60;
+      if (Math.abs(journeyDiffMin) > 1) {
+        list.push({ date: new Date(scannerDate), type: 'journey', meta: week.contractReal, real: weekJourneyHours });
+      }
+
       scannerDate.setDate(scannerDate.getDate() + 7);
     }
     return list;
-  }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType, showAuditModal, semesterEndDateSetting]);
+  }, [schedules, selectedFilterName, isInstructorView, holidays, instructorType, showAuditModal, semesterEndDateSetting, currentInstructorExtraHoursConfig, currentInstructorMeta?.hasExtraHoursAssigned]);
 
   // Cruces de horario del propio instructor (entre clases, tareas administrativas, o
   // ambas) — antes solo eran visibles como borde rojo en la grilla, semana por semana,

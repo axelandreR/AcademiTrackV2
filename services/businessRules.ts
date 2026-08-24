@@ -77,6 +77,7 @@ export const isOtherFunctionsCourse = (sched: ProcessedSchedule): boolean => {
  * Asegura que el ARCHIVO refleje la suma de HORAS SEMANALES del Excel base.
  */
 export const isAcademicMetaLoad = (sched: ProcessedSchedule): boolean => {
+    if (isTempHECoverage(sched)) return false;
     // Si no es administrativa (viene del Excel), se cuenta SIEMPRE para la meta académica
     if (!sched.isAdministrative) {
         return true;
@@ -92,9 +93,21 @@ export const isAcademicMetaLoad = (sched: ProcessedSchedule): boolean => {
 };
 
 /**
+ * Determina si un bloque es cobertura temporal de Horas Extra (ver plan de Simulación de
+ * HE): un NRC que estaba "Sin asignar" y un instructor lo cubre momentáneamente hasta que
+ * llegue el titular permanente. `instructor`/`instructorId` conservan el valor base (Sin
+ * asignar) — el instructor que cubre vive aparte en `tempHEInstructor`/`tempHEInstructorId`.
+ * Estas horas NO deben sumar a la Meta/46h del instructor que cubre (por eso son "extra"),
+ * aunque sí se muestran aparte (ver tempHECoverageHours en auditCalculations.ts).
+ */
+export const isTempHECoverage = (sched: Pick<ProcessedSchedule, 'tempHEActive'>): boolean =>
+    sched.tempHEActive === true;
+
+/**
  * Determina si una tarea suma para el Total Contractual (Meta 46h)
  */
 export const isContractualLoad = (sched: ProcessedSchedule): boolean => {
+    if (isTempHECoverage(sched)) return false;
     if (isExcludedFromTotalLoad(sched)) return false;
     // Todo lo que no sea refrigerio cuenta para las 46h
     return true;
@@ -174,11 +187,27 @@ const normalizeId = (s: string) => (s || '').toString().trim()
  * Esto evita el cruce clásico entre instructores con apellidos parecidos (ej. mismos
  * dos apellidos y distinto nombre de pila), donde antes un bloque ya identificado por
  * ID podía terminar apareciendo también en la carga de otro instructor por el fuzzy match.
+ *
+ * Cobertura temporal de HE (ver isTempHECoverage): cuando tempHEActive es true, el bloque
+ * "pertenece" (para vista de grilla, auditoría Y detección de conflictos) al instructor
+ * que cubre. Hay dos formas válidas de traer ese dato: tempHEInstructorId/tempHEInstructor
+ * (cuando instructorId/instructor quedaron en su valor base "Sin asignar" a propósito), O
+ * directamente instructorId/instructor (cuando el bloque es una fila NUEVA creada solo
+ * para la cobertura — ver importScheduleToSimulation en DataContext.tsx — y ya trae ahí
+ * el instructor real). Solo se usa el camino tempHE* si de verdad trae algo; si no, se cae
+ * al camino normal de instructorId/instructor sin importar tempHEActive. Esto es lo que
+ * hace que un choque de horario del instructor cobertor SÍ siga alertando (ver
+ * conflictDetection.ts) aunque las horas no cuenten para su Meta/46h.
  */
 export const belongsToInstructor = (
     instructor: { id: string; name: string },
-    sched: { instructorId?: string; instructor?: string }
+    sched: { instructorId?: string; instructor?: string; tempHEActive?: boolean; tempHEInstructorId?: string; tempHEInstructor?: string }
 ): boolean => {
+    if (sched.tempHEActive && (sched.tempHEInstructorId || sched.tempHEInstructor)) {
+        const heId = normalizeId(sched.tempHEInstructorId || '');
+        if (heId) return heId === normalizeId(instructor.id);
+        return isFuzzyNameMatch(instructor.name, sched.tempHEInstructor || '');
+    }
     const schedId = normalizeId(sched.instructorId || '');
     if (schedId) {
         return schedId === normalizeId(instructor.id);
@@ -219,20 +248,25 @@ export interface InstructorScheduleIndex<T extends { instructorId?: string; inst
  * varias pantallas (sidebar de Docentes, Avance de Horarios, Reporte Global), fue la causa
  * confirmada de la lentitud al cambiar de vista con ~260 instructores × ~3400 horarios.
  */
-export const buildInstructorScheduleIndex = <T extends { instructorId?: string; instructor?: string }>(
+export const buildInstructorScheduleIndex = <T extends { instructorId?: string; instructor?: string; tempHEActive?: boolean; tempHEInstructorId?: string; tempHEInstructor?: string }>(
     schedules: T[]
 ): InstructorScheduleIndex<T> => {
     const byId = new Map<string, T[]>();
     const unlinked: T[] = [];
     const unlinkedNormalized: string[] = [];
     schedules.forEach(s => {
-        const id = normalizeId(s.instructorId || '');
+        // Cobertura temporal de HE: mismo criterio de fallback que belongsToInstructor
+        // más arriba — usar tempHE* solo si trae algo, si no caer a instructorId/instructor.
+        const useTempHE = s.tempHEActive && (s.tempHEInstructorId || s.tempHEInstructor);
+        const rawId = useTempHE ? (s.tempHEInstructorId || '') : (s.instructorId || '');
+        const rawName = useTempHE ? (s.tempHEInstructor || '') : (s.instructor || '');
+        const id = normalizeId(rawId);
         if (id) {
             const list = byId.get(id);
             if (list) list.push(s); else byId.set(id, [s]);
         } else {
             unlinked.push(s);
-            unlinkedNormalized.push(normalizeFuzzyName(s.instructor || ''));
+            unlinkedNormalized.push(normalizeFuzzyName(rawName));
         }
     });
     return { byId, unlinked, unlinkedNormalized };

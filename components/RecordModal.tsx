@@ -237,6 +237,25 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
             </div>
           )}
 
+          {!formData.isAdministrative && formData.instructor && formData.instructor !== 'Sin asignar' && (
+            <label className={`p-4 rounded-[24px] flex items-start gap-3 cursor-pointer transition-colors border ${formData.tempHEActive ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-transparent hover:border-slate-200'}`}>
+              <input
+                type="checkbox"
+                checked={!!formData.tempHEActive}
+                onChange={e => setFormData({ ...formData, tempHEActive: e.target.checked })}
+                className="mt-0.5 w-4 h-4 accent-amber-500 shrink-0"
+              />
+              <div className="min-w-0">
+                <span className="flex items-center gap-1.5 text-[10px] font-black text-amber-700 uppercase tracking-widest">
+                  <Clock size={14} /> Horas Extra Asignadas
+                </span>
+                <p className="text-[10px] text-slate-500 font-semibold mt-1">
+                  Estas horas no cuentan para la Meta/46h de {formData.instructor} (siguen contando para choques de horario). Úsalo cuando este bloque representa horas extra ya asignadas a este instructor, no carga normal.
+                </p>
+              </div>
+            </label>
+          )}
+
           {/* Sección 1: Identificación (NRC, Código, Bloque) */}
           <div className="space-y-4">
             <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] flex items-center"><Hash size={14} className="mr-2" /> Identificación del Curso</h4>

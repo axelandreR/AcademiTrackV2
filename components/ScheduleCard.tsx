@@ -62,13 +62,17 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
     const durationHours = (timeToMinutes(sched.endTime) - timeToMinutes(sched.startTime)) / 60;
     const isLargeBlock = durationHours >= 1.5;
     const overlapClass = isOverlapping ? 'animate-overlap-error' : '';
+    // Cobertura temporal de HE (ver services/businessRules.ts::isTempHECoverage): anillo
+    // ámbar distintivo para que no se confunda con una asignación permanente — las horas
+    // ya se muestran con el instructor real, pero no cuentan para su Meta/46h.
+    const tempHERingClass = sched.tempHEActive ? 'ring-2 ring-amber-500 ring-offset-1' : '';
 
     return (
         <div
             role="button"
             tabIndex={0}
-            aria-label={`${sched.courseName}, ${sched.startTime} a ${sched.endTime}${sched.instructor ? `, ${sched.instructor}` : ''}${sched.building ? `, ${sched.building} - ${sched.room}` : ''}`}
-            className={`absolute left-[5px] right-[5px] p-2.5 rounded-2xl border-l-[6px] shadow-lg overflow-hidden transition-all hover:scale-[1.015] hover:z-[60] cursor-pointer flex flex-col group z-30 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:z-[60] ${catColor} ${overlapClass}`}
+            aria-label={`${sched.courseName}, ${sched.startTime} a ${sched.endTime}${sched.instructor ? `, ${sched.instructor}` : ''}${sched.building ? `, ${sched.building} - ${sched.room}` : ''}${sched.tempHEActive ? ', Cobertura Temporal HE' : ''}`}
+            className={`absolute left-[5px] right-[5px] p-2.5 rounded-2xl border-l-[6px] shadow-lg overflow-hidden transition-all hover:scale-[1.015] hover:z-[60] cursor-pointer flex flex-col group z-30 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:z-[60] ${catColor} ${overlapClass} ${tempHERingClass}`}
             style={{ top: `${getPosition(sched.startTime)}rem`, height: `${getDurationHeight(sched.startTime, sched.endTime)}rem`, margin: '1px 0' }}
             onClick={(e) => { e.stopPropagation(); onEditRecord?.(sched); }}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onEditRecord?.(sched); } }}
@@ -86,6 +90,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
                     <div className="flex justify-between items-center font-black uppercase text-[8px] opacity-80 mb-1 shrink-0">
                         <span role="link" tabIndex={0} aria-label={`Ver bloque ${sched.block}`} onClick={(e) => { e.stopPropagation(); onNavigate?.('Bloque', sched.block); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onNavigate?.('Bloque', sched.block); } }} className="flex items-center hover:underline focus:outline-none focus:ring-2 focus:ring-blue-600 rounded"><Hash size={8} className="mr-1" />NRC: {sched.nrc} • {sched.block}</span>
                         <div className="flex items-center space-x-1">
+                            {sched.tempHEActive && <span className="bg-amber-500 text-white px-1.5 py-0.5 rounded-full tracking-wide mr-1">HE TEMPORAL</span>}
                             {isExtra && <span className="bg-slate-900 text-white px-1.5 py-0.5 rounded-full tracking-wide mr-1">EXTRAS</span>}
                             {sched.modality === 'presencial' ? <MapPin size={9} /> : <Video size={9} />}
                             <span>{sched.modality?.toUpperCase()}</span>
@@ -119,6 +124,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
             ) : (
                 <div className="flex flex-col h-full items-center justify-center text-center px-1">
                     <h4 className="font-black leading-tight uppercase text-[10px] whitespace-normal break-words">{getShortLabel(sched.courseName)} {sched.category !== 'coordinador' && sched.category !== 'refrigerio' ? `- ${sched.modality?.toUpperCase()}` : ''}</h4>
+                    {sched.tempHEActive && <span className="text-[8px] font-black bg-amber-500 text-white px-1.5 py-0.5 rounded-full tracking-wide mt-0.5">HE TEMPORAL</span>}
                     {isExtra && <span className="text-[8px] font-black bg-slate-900/10 px-1.5 py-0.5 rounded-full tracking-wide mt-0.5">EXTRAS</span>}
                     <div className="font-black border-t border-black/5 w-full pt-1 mt-1 text-[10px]">{sched.startTime} - {sched.endTime}</div>
                 </div>
