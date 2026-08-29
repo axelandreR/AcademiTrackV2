@@ -16,7 +16,6 @@ interface AuthContextType {
     isLoading: boolean;
     isSuperuser: boolean;
     signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-    signUp: (email: string, password: string) => Promise<{ error: string | null }>;
     signOut: () => Promise<void>;
 }
 
@@ -67,13 +66,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return { error: error?.message ?? null };
     };
 
-    const signUp = async (email: string, password: string) => {
-        const { error } = await supabase.auth.signUp({ email, password });
-        return { error: error?.message ?? null };
-    };
-
     const signOut = async () => {
-        await supabase.auth.signOut();
+        // No confiar solo en la limpieza interna del SDK: si el servidor no reconoce la
+        // sesión (huérfana, p.ej. tras rotar las API keys del proyecto) o falla el
+        // refresh del token, supabase-js puede no limpiar el estado local y el botón
+        // "Cerrar sesión" queda sin efecto. Forzamos la salida local siempre.
+        try {
+            await supabase.auth.signOut();
+        } catch {
+            // Ignorado: igual limpiamos el estado local abajo.
+        }
+        setSession(null);
+        setProfile(null);
     };
 
     return (
@@ -84,7 +88,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             isLoading,
             isSuperuser: profile?.role === 'superuser',
             signIn,
-            signUp,
             signOut
         }}>
             {children}

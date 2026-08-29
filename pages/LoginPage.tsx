@@ -3,34 +3,23 @@ import { ShieldCheck, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const LoginPage: React.FC = () => {
-    const { signIn, signUp } = useAuth();
-    const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+    const { signIn } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError(null);
-        setInfoMessage(null);
         setIsSubmitting(true);
 
-        const result = mode === 'signin'
-            ? await signIn(email, password)
-            : await signUp(email, password);
+        const result = await signIn(email, password);
 
         setIsSubmitting(false);
 
         if (result.error) {
             setError(result.error);
-            return;
-        }
-
-        if (mode === 'signup') {
-            setInfoMessage('Cuenta creada. Si tu proyecto requiere confirmación por correo, revisa tu bandeja antes de iniciar sesión.');
-            setMode('signin');
         }
     };
 
@@ -45,7 +34,7 @@ const LoginPage: React.FC = () => {
                         Academi<span className="text-blue-600">Track</span>
                     </h1>
                     <p className="text-sm text-slate-500 font-medium">
-                        {mode === 'signin' ? 'Inicia sesión para continuar' : 'Crea tu cuenta de acceso'}
+                        Inicia sesión para continuar
                     </p>
                 </div>
 
@@ -72,18 +61,13 @@ const LoginPage: React.FC = () => {
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full px-4 py-3 bg-slate-100 border-none rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-600"
                             placeholder="••••••••"
-                            autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                            autoComplete="current-password"
                         />
                     </div>
 
                     {error && (
                         <div className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-xl px-4 py-3">
                             {error}
-                        </div>
-                    )}
-                    {infoMessage && (
-                        <div className="text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-3">
-                            {infoMessage}
                         </div>
                     )}
 
@@ -93,17 +77,9 @@ const LoginPage: React.FC = () => {
                         className="w-full flex items-center justify-center gap-2 bg-slate-900 text-white font-black text-xs uppercase tracking-widest px-6 py-3.5 rounded-xl hover:bg-slate-800 transition-all disabled:opacity-50"
                     >
                         {isSubmitting && <Loader2 size={16} className="animate-spin" />}
-                        {mode === 'signin' ? 'Ingresar' : 'Crear cuenta'}
+                        Ingresar
                     </button>
                 </form>
-
-                <button
-                    type="button"
-                    onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null); setInfoMessage(null); }}
-                    className="w-full text-center text-xs font-bold text-slate-400 hover:text-slate-700 transition-colors"
-                >
-                    {mode === 'signin' ? '¿No tienes cuenta? Regístrate' : '¿Ya tienes cuenta? Inicia sesión'}
-                </button>
             </div>
         </div>
     );

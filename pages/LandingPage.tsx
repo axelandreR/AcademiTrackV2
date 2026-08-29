@@ -498,146 +498,146 @@ const LandingPage: React.FC = () => {
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col animate-in fade-in duration-700 overflow-y-auto custom-scrollbar">
             {/* 1. Header Hero Section */}
-            <header className="px-8 lg:px-20 pt-16 pb-12 bg-white border-b border-slate-100">
-                <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-end justify-between gap-8">
+            <header className="px-4 sm:px-8 lg:px-20 pt-10 sm:pt-16 pb-10 sm:pb-12 bg-white border-b border-slate-100">
+                <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-end justify-between gap-6 sm:gap-8">
                     <div className="space-y-3">
-                        <div className="flex items-center space-x-3 mb-2">
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
                             <div className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-[10px] font-black uppercase tracking-[0.2em]">AcademiTrack v2</div>
                             <div className="flex items-center px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg text-[10px] font-black uppercase tracking-widest" title="La app solo carga horarios de este periodo">
                                 <Calendar size={12} className="mr-1.5" /> Periodo Activo: {ACTIVE_PERIODO}
                             </div>
                             <div className="flex items-center text-slate-400 text-[10px] font-black uppercase tracking-widest"><Clock size={12} className="mr-1" /> Actualizado: {liveStats.lastUpdate}</div>
                         </div>
-                        <h1 className="text-5xl lg:text-6xl font-black text-slate-900 tracking-tighter leading-none">
+                        <h1 className="text-3xl sm:text-4xl lg:text-6xl font-black text-slate-900 tracking-tighter leading-none">
                             Panel <span className="text-indigo-600 italic">Operativo</span>
                         </h1>
-                        <p className="text-lg text-slate-500 font-medium max-w-xl">
+                        <p className="text-sm sm:text-lg text-slate-500 font-medium max-w-xl">
                             Bienvenido al centro de mando académico. Gestione cargas, audite horarios y optimice la programación docente.
                         </p>
                     </div>
 
                     {/* Tarjeta de Cobertura */}
-                    <div className="bg-indigo-50/50 p-6 rounded-[32px] border border-indigo-100 flex items-center space-x-6 min-w-[300px]">
-                        <div className="relative w-16 h-16 flex items-center justify-center">
+                    <div className="bg-indigo-50/50 p-5 sm:p-6 rounded-[28px] sm:rounded-[32px] border border-indigo-100 flex items-center gap-4 sm:gap-6 w-full md:w-auto md:min-w-[280px]">
+                        <div className="relative w-14 h-14 sm:w-16 sm:h-16 flex items-center justify-center shrink-0">
                             <svg className="w-full h-full transform -rotate-90">
                                 <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="6" fill="transparent" className="text-indigo-100" />
                                 <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray={175} strokeDashoffset={175 - (175 * liveStats.coveragePercent) / 100} className="text-indigo-600 transition-all duration-1000" strokeLinecap="round" />
                             </svg>
                             <span className="absolute text-xs font-black text-indigo-700">{liveStats.coveragePercent}%</span>
                         </div>
-                        <div>
+                        <div className="min-w-0">
                             <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Docentes Exportados</p>
-                            <h4 className="text-2xl font-black text-indigo-900">{exportedInstructors.size} <span className="text-sm text-indigo-400 text-normal">/ {liveStats.totalInstructors} Docentes</span></h4>
+                            <h4 className="text-xl sm:text-2xl font-black text-indigo-900 truncate">{exportedInstructors.size} <span className="text-sm text-indigo-400 text-normal">/ {liveStats.totalInstructors} Docentes</span></h4>
                         </div>
                     </div>
                 </div>
             </header>
 
-            <main className="px-8 lg:px-20 py-12 max-w-7xl mx-auto w-full space-y-16">
+            <main className="px-4 sm:px-8 lg:px-20 py-8 sm:py-12 max-w-7xl mx-auto w-full space-y-10 sm:space-y-16">
 
                 {/* 2. Sección de Estadísticas Rápidas */}
-                <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center space-x-4">
-                        <div className="p-4 bg-blue-50 text-blue-600 rounded-2xl"><Activity size={24} /></div>
-                        <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Sesiones Totales</p><h4 className="text-xl font-black text-slate-900">{liveStats.totalSchedules}</h4></div>
+                <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+                    <div className="bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 sm:space-x-4">
+                        <div className="p-3 sm:p-4 bg-blue-50 text-blue-600 rounded-xl sm:rounded-2xl shrink-0"><Activity size={20} className="sm:hidden" /><Activity size={24} className="hidden sm:block" /></div>
+                        <div className="min-w-0"><p className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Sesiones Totales</p><h4 className="text-lg sm:text-xl font-black text-slate-900">{liveStats.totalSchedules}</h4></div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center space-x-4">
-                        <div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl"><Users size={24} /></div>
-                        <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Plantilla Docente</p><h4 className="text-xl font-black text-slate-900">{liveStats.totalInstructors}</h4></div>
+                    <div className="bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 sm:space-x-4">
+                        <div className="p-3 sm:p-4 bg-indigo-50 text-indigo-600 rounded-xl sm:rounded-2xl shrink-0"><Users size={20} className="sm:hidden" /><Users size={24} className="hidden sm:block" /></div>
+                        <div className="min-w-0"><p className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Plantilla Docente</p><h4 className="text-lg sm:text-xl font-black text-slate-900">{liveStats.totalInstructors}</h4></div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center space-x-4">
-                        <div className="p-4 bg-emerald-50 text-emerald-600 rounded-2xl"><MapPin size={24} /></div>
-                        <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Aulas Activas</p><h4 className="text-xl font-black text-slate-900">{liveStats.totalRooms}</h4></div>
+                    <div className="bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 sm:space-x-4">
+                        <div className="p-3 sm:p-4 bg-emerald-50 text-emerald-600 rounded-xl sm:rounded-2xl shrink-0"><MapPin size={20} className="sm:hidden" /><MapPin size={24} className="hidden sm:block" /></div>
+                        <div className="min-w-0"><p className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Aulas Activas</p><h4 className="text-lg sm:text-xl font-black text-slate-900">{liveStats.totalRooms}</h4></div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center space-x-4">
-                        <div className="p-4 bg-amber-50 text-amber-600 rounded-2xl"><Database size={24} /></div>
-                        <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Modo Servidor</p><h4 className="text-xl font-black text-slate-900">Supabase Cloud</h4></div>
+                    <div className="bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3 sm:space-x-4">
+                        <div className="p-3 sm:p-4 bg-amber-50 text-amber-600 rounded-xl sm:rounded-2xl shrink-0"><Database size={20} className="sm:hidden" /><Database size={24} className="hidden sm:block" /></div>
+                        <div className="min-w-0"><p className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Modo Servidor</p><h4 className="text-lg sm:text-xl font-black text-slate-900 truncate">Supabase Cloud</h4></div>
                     </div>
                 </section>
 
                 {/* 3. Módulos Operativos (Los más importantes) */}
-                <section className="space-y-6">
+                <section className="space-y-5">
                     <div className="flex items-center space-x-3">
                         <div className="w-1.5 h-6 bg-indigo-600 rounded-full" />
                         <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase">Centro de Operaciones</h2>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                        <button onClick={() => navigate('/schedule?view=Bloque')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
-                            <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-blue-600 group-hover:text-white transition-all"><LayoutDashboard size={32} /></div>
-                            <h3 className="text-2xl font-black text-slate-900 mb-3">Visualizador</h3>
-                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Grilla dinámica para monitoreo de bloques y ambientes en tiempo real.</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5">
+                        <button onClick={() => navigate('/schedule?view=Bloque')} className="group bg-white p-6 rounded-[28px] shadow-lg hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-5 group-hover:bg-blue-600 group-hover:text-white transition-all"><LayoutDashboard size={22} /></div>
+                            <h3 className="text-lg font-black text-slate-900 mb-2">Visualizador</h3>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed mb-5">Grilla dinámica para monitoreo de bloques y ambientes en tiempo real.</p>
                             <div className="flex items-center space-x-2 text-blue-600 font-black uppercase text-[10px] tracking-widest">Acceder Ahora <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
 
-                        <button onClick={() => navigate('/progress')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
-                            <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-emerald-600 group-hover:text-white transition-all"><TrendingUp size={32} /></div>
-                            <h3 className="text-2xl font-black text-slate-900 mb-3">Auditoría Individual</h3>
-                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Revisión profunda, generación de hojas de carga y exportación masiva.</p>
+                        <button onClick={() => navigate('/progress')} className="group bg-white p-6 rounded-[28px] shadow-lg hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mb-5 group-hover:bg-emerald-600 group-hover:text-white transition-all"><TrendingUp size={22} /></div>
+                            <h3 className="text-lg font-black text-slate-900 mb-2">Auditoría Individual</h3>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed mb-5">Revisión profunda, generación de hojas de carga y exportación masiva.</p>
                             <div className="flex items-center space-x-2 text-emerald-600 font-black uppercase text-[10px] tracking-widest">Revisar Avance <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
 
-                        <button onClick={() => navigate('/attendance')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
-                            <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-blue-600 group-hover:text-white transition-all"><FileText size={32} /></div>
-                            <h3 className="text-2xl font-black text-slate-900 mb-3">Fichas de Asistencia</h3>
-                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Gestión de jornadas TP presenciales y generación de documentos para planilla.</p>
+                        <button onClick={() => navigate('/attendance')} className="group bg-white p-6 rounded-[28px] shadow-lg hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-5 group-hover:bg-blue-600 group-hover:text-white transition-all"><FileText size={22} /></div>
+                            <h3 className="text-lg font-black text-slate-900 mb-2">Fichas de Asistencia</h3>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed mb-5">Gestión de jornadas TP presenciales y generación de documentos para planilla.</p>
                             <div className="flex items-center space-x-2 text-blue-600 font-black uppercase text-[10px] tracking-widest">Generar Fichas <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
 
-                        <button onClick={() => navigate('/reports')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
-                            <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-indigo-600 group-hover:text-white transition-all"><BarChart4 size={32} /></div>
-                            <h3 className="text-2xl font-black text-slate-900 mb-3">Reporte Global</h3>
-                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Dashboard avanzado de conflictos, excesos de jornada y equilibrio de carga.</p>
+                        <button onClick={() => navigate('/reports')} className="group bg-white p-6 rounded-[28px] shadow-lg hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mb-5 group-hover:bg-indigo-600 group-hover:text-white transition-all"><BarChart4 size={22} /></div>
+                            <h3 className="text-lg font-black text-slate-900 mb-2">Reporte Global</h3>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed mb-5">Dashboard avanzado de conflictos, excesos de jornada y equilibrio de carga.</p>
                             <div className="flex items-center space-x-2 text-indigo-600 font-black uppercase text-[10px] tracking-widest">Analizar Ciclo <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
 
-                        <button onClick={() => navigate('/schedule?view=Instructor&mode=editor')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
-                            <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-amber-600 group-hover:text-white transition-all"><Edit3 size={32} /></div>
-                            <h3 className="text-2xl font-black text-slate-900 mb-3">Editor de Carga</h3>
-                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Inserción de tareas administrativas y personalización de sesiones lógicas.</p>
+                        <button onClick={() => navigate('/schedule?view=Instructor&mode=editor')} className="group bg-white p-6 rounded-[28px] shadow-lg hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center mb-5 group-hover:bg-amber-600 group-hover:text-white transition-all"><Edit3 size={22} /></div>
+                            <h3 className="text-lg font-black text-slate-900 mb-2">Editor de Carga</h3>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed mb-5">Inserción de tareas administrativas y personalización de sesiones lógicas.</p>
                             <div className="flex items-center space-x-2 text-amber-600 font-black uppercase text-[10px] tracking-widest">Ejecutar Edición <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
 
-                        <button onClick={() => navigate('/occupancy')} className="group bg-white p-10 rounded-[40px] shadow-xl hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
-                            <div className="w-16 h-16 bg-cyan-50 text-cyan-600 rounded-2xl flex items-center justify-center mb-8 group-hover:bg-cyan-600 group-hover:text-white transition-all"><Building2 size={32} /></div>
-                            <h3 className="text-2xl font-black text-slate-900 mb-3">Ocupabilidad</h3>
-                            <p className="text-sm text-slate-400 font-bold leading-relaxed mb-8">Uso de aulas por frecuencia (semana/fin de semana) y turno, con reportes y gráficas.</p>
+                        <button onClick={() => navigate('/occupancy')} className="group bg-white p-6 rounded-[28px] shadow-lg hover:shadow-indigo-200/50 border border-slate-50 text-left transition-all hover:-translate-y-1">
+                            <div className="w-12 h-12 bg-cyan-50 text-cyan-600 rounded-xl flex items-center justify-center mb-5 group-hover:bg-cyan-600 group-hover:text-white transition-all"><Building2 size={22} /></div>
+                            <h3 className="text-lg font-black text-slate-900 mb-2">Ocupabilidad</h3>
+                            <p className="text-xs text-slate-400 font-bold leading-relaxed mb-5">Uso de aulas por frecuencia (semana/fin de semana) y turno, con reportes y gráficas.</p>
                             <div className="flex items-center space-x-2 text-cyan-600 font-black uppercase text-[10px] tracking-widest">Ver Reporte <ArrowRight size={14} className="ml-1 group-hover:translate-x-1 transition-transform" /></div>
                         </button>
                     </div>
                 </section>
 
                 {/* 4. Sección de Gestión de Base y Configuración */}
-                <section className="bg-slate-900 rounded-[40px] p-12 text-white relative overflow-hidden shadow-2xl">
-                    <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-12">
-                        <div className="space-y-4 max-w-md">
-                            <h2 className="text-3xl font-black tracking-tight leading-none">Gestión de la Información</h2>
-                            <p className="text-slate-400 font-medium">Administre las entidades base del sistema o actualice la programación completa vía Excel.</p>
+                <section className="bg-slate-900 rounded-[28px] sm:rounded-[40px] p-6 sm:p-10 lg:p-12 text-white relative overflow-hidden shadow-2xl">
+                    <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-8 lg:gap-12">
+                        <div className="space-y-3 sm:space-y-4 max-w-md">
+                            <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-none">Gestión de la Información</h2>
+                            <p className="text-sm sm:text-base text-slate-400 font-medium">Administre las entidades base del sistema o actualice la programación completa vía Excel.</p>
                         </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-6 w-full">
-                            <button onClick={() => navigate('/instructors')} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
-                                <Users size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 sm:gap-4 lg:gap-6 w-full">
+                            <button onClick={() => navigate('/instructors')} className="p-4 sm:p-5 bg-slate-800 hover:bg-slate-700 rounded-2xl transition-all flex flex-col items-center text-center space-y-2 sm:space-y-3 group border border-slate-700">
+                                <Users size={20} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Instructores</span>
                             </button>
-                            <button onClick={() => navigate('/rooms')} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
-                                <MapPin size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
+                            <button onClick={() => navigate('/rooms')} className="p-4 sm:p-5 bg-slate-800 hover:bg-slate-700 rounded-2xl transition-all flex flex-col items-center text-center space-y-2 sm:space-y-3 group border border-slate-700">
+                                <MapPin size={20} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Ambientes</span>
                             </button>
-                            <button onClick={() => navigate('/archive')} className="p-6 bg-slate-800 hover:bg-blue-600 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700 shadow-xl shadow-blue-900/10">
-                                <Database size={24} className="text-blue-400 group-hover:text-white group-hover:scale-110 transition-all" />
+                            <button onClick={() => navigate('/archive')} className="p-4 sm:p-5 bg-slate-800 hover:bg-blue-600 rounded-2xl transition-all flex flex-col items-center text-center space-y-2 sm:space-y-3 group border border-slate-700 shadow-xl shadow-blue-900/10">
+                                <Database size={20} className="text-blue-400 group-hover:text-white group-hover:scale-110 transition-all" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300 group-hover:text-white">Registro Base</span>
                             </button>
-                            <button onClick={() => setIsUpdating(true)} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
-                                <Upload size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
+                            <button onClick={() => setIsUpdating(true)} className="p-4 sm:p-5 bg-slate-800 hover:bg-slate-700 rounded-2xl transition-all flex flex-col items-center text-center space-y-2 sm:space-y-3 group border border-slate-700">
+                                <Upload size={20} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Actualizar Excel</span>
                             </button>
-                            <button onClick={() => setShowRecoveryModal(true)} className="p-6 bg-emerald-600 hover:bg-emerald-500 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group shadow-xl shadow-emerald-900/40 border border-emerald-400 lg:col-span-1 sm:col-span-2">
-                                <RefreshCw size={24} className="text-white group-hover:rotate-180 transition-transform duration-500" />
+                            <button onClick={() => setShowRecoveryModal(true)} className="p-4 sm:p-5 bg-emerald-600 hover:bg-emerald-500 rounded-2xl transition-all flex flex-col items-center text-center space-y-2 sm:space-y-3 group shadow-xl shadow-emerald-900/40 border border-emerald-400">
+                                <RefreshCw size={20} className="text-white group-hover:rotate-180 transition-transform duration-500" />
                                 <span className="text-[10px] font-black uppercase tracking-widest text-white">Recuperar Tareas</span>
                             </button>
                             {isSuperuser && (
-                                <button onClick={() => navigate('/users')} className="p-6 bg-slate-800 hover:bg-slate-700 rounded-3xl transition-all flex flex-col items-center text-center space-y-3 group border border-slate-700">
-                                    <ShieldCheck size={24} className="text-indigo-400 group-hover:scale-110 transition-transform" />
+                                <button onClick={() => navigate('/users')} className="p-4 sm:p-5 bg-slate-800 hover:bg-slate-700 rounded-2xl transition-all flex flex-col items-center text-center space-y-2 sm:space-y-3 group border border-slate-700">
+                                    <ShieldCheck size={20} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                                     <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Usuarios</span>
                                 </button>
                             )}
