@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule } from '../types';
 import { Search, Edit2, UserMinus, Calendar, MapPin, Clock, Filter, ArrowLeft } from 'lucide-react';
@@ -6,24 +6,40 @@ import { useNavigate } from 'react-router-dom';
 import ArchiveEditModal from '../components/ArchiveEditModal';
 import ConfirmDialog from '../components/ConfirmDialog';
 
+// Con ~5,500 registros del periodo activo, filtrar y volver a pintar la tabla en CADA
+// tecla (y sin límite de filas) es lo que se sentía como demora al escribir el NRC: un
+// término corto ("3") puede matchear miles de filas y el DOM las renderiza todas antes
+// de que termines de escribir el siguiente dígito. Debounce + tope de resultados lo
+// resuelve sin cambiar el comportamiento de búsqueda.
+const SEARCH_DEBOUNCE_MS = 250;
+const MAX_RESULTS = 100;
+
 const ArchiveManagerPage: React.FC = () => {
     const { allSchedules, isLoading, saveScheduleCloud } = useData();
     const [searchTerm, setSearchTerm] = useState('');
+    const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
     const [filterType, setFilterType] = useState<'all' | 'academic' | 'admin'>('all');
     const [editingSchedule, setEditingSchedule] = useState<ProcessedSchedule | null>(null);
     const [pendingRemoval, setPendingRemoval] = useState<ProcessedSchedule | null>(null);
     const navigate = useNavigate();
 
-    // Filtrado de datos
-    const filteredSchedules = useMemo(() => {
-        if (!searchTerm && filterType === 'all') return [];
+    useEffect(() => {
+        const timer = setTimeout(() => setDebouncedSearchTerm(searchTerm), SEARCH_DEBOUNCE_MS);
+        return () => clearTimeout(timer);
+    }, [searchTerm]);
 
+    // Filtrado de datos (usa el término debounced, no el que se está tecleando)
+    const matchingSchedules = useMemo(() => {
+        if (!debouncedSearchTerm && filterType === 'all') return [];
+
+        const term = debouncedSearchTerm.toLowerCase();
         return allSchedules.filter(s => {
             const matchesSearch =
-                s.nrc?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                s.courseName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                s.instructor?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                s.courseCode?.toLowerCase().includes(searchTerm.toLowerCase());
+                !term ||
+                s.nrc?.toLowerCase().includes(term) ||
+                s.courseName?.toLowerCase().includes(term) ||
+                s.instructor?.toLowerCase().includes(term) ||
+                s.courseCode?.toLowerCase().includes(term);
 
             const matchesType =
                 filterType === 'all' ||
@@ -32,7 +48,10 @@ const ArchiveManagerPage: React.FC = () => {
 
             return matchesSearch && matchesType;
         });
-    }, [allSchedules, searchTerm, filterType]);
+    }, [allSchedules, debouncedSearchTerm, filterType]);
+
+    const filteredSchedules = useMemo(() => matchingSchedules.slice(0, MAX_RESULTS), [matchingSchedules]);
+    const hiddenResultsCount = matchingSchedules.length - filteredSchedules.length;
 
     const isSearchActive = searchTerm.length > 0 || filterType !== 'all';
 
@@ -215,6 +234,11 @@ const ArchiveManagerPage: React.FC = () => {
                                 ))}
                             </tbody>
                         </table>
+                        {hiddenResultsCount > 0 && (
+                            <div className="py-4 px-6 bg-amber-50 border-t border-amber-100 text-center text-xs font-bold text-amber-700">
+                                Mostrando los primeros {MAX_RESULTS} de {matchingSchedules.length} resultados — refina la búsqueda (ej. agrega más dígitos del NRC) para ver el resto.
+                            </div>
+                        )}
                         {filteredSchedules.length === 0 && (
                             <div className="py-24 flex flex-col items-center justify-center text-slate-400">
                                 {!isSearchActive ? (
