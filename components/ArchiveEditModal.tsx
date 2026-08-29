@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Save, User, Clock, Calendar, MapPin, Hash, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
+import { X, Save, User, Clock, Calendar, MapPin, Hash, AlertTriangle, RefreshCw, Trash2, Scissors } from 'lucide-react';
 import { ProcessedSchedule, Instructor, HolidayData } from '../types';
 import { useData } from '../context/DataContext';
 import { DAYS_OF_WEEK } from '../constants';
@@ -7,20 +7,36 @@ import { DAYS_OF_WEEK } from '../constants';
 interface ArchiveEditModalProps {
     isOpen: boolean;
     onClose: () => void;
-    onSave: (record: ProcessedSchedule) => Promise<void>;
+    onSave: (record: ProcessedSchedule | ProcessedSchedule[]) => Promise<void>;
     schedule: ProcessedSchedule | null;
 }
+
+const toDateInput = (d?: Date | string) => {
+    if (!d) return '';
+    const date = d instanceof Date ? d : new Date(d);
+    if (isNaN(date.getTime())) return '';
+    return date.toISOString().split('T')[0];
+};
 
 const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, onSave, schedule }) => {
     const { instructors, holidays } = useData();
     const [formData, setFormData] = useState<Partial<ProcessedSchedule>>({});
     const [isSaving, setIsSaving] = useState(false);
     const [instructorSearch, setInstructorSearch] = useState('');
+    // Dividir Vigencia: en vez de sobrescribir el único registro del NRC, permite dejar el
+    // bloque actual tal como está hasta el día anterior a una fecha de corte, e insertar un
+    // registro nuevo (mismo NRC/curso/docente) desde esa fecha con los valores editados en
+    // el formulario (horario, aula, etc.) -- evita tener que tocar la BD a mano cada vez que
+    // un NRC cambia de horario a mitad de semestre.
+    const [splitEnabled, setSplitEnabled] = useState(false);
+    const [splitDate, setSplitDate] = useState('');
 
     useEffect(() => {
         if (schedule) {
             setFormData({ ...schedule });
             setInstructorSearch(schedule.instructor || '');
+            setSplitEnabled(false);
+            setSplitDate('');
         }
     }, [schedule, isOpen]);
 
@@ -85,6 +101,18 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
         setFormData({ ...formData, days: newDays });
     };
 
+    // Límites válidos para la fecha de corte: debe caer estrictamente dentro de la
+    // vigencia ACTUAL del registro (si no, no hay nada que dividir de un lado o del otro).
+    const originalStart = schedule ? (schedule.startDate instanceof Date ? schedule.startDate : new Date(schedule.startDate)) : null;
+    const originalEnd = schedule ? (schedule.endDate instanceof Date ? schedule.endDate : new Date(schedule.endDate)) : null;
+    const minSplitDate = useMemo(() => {
+        if (!originalStart) return '';
+        const d = new Date(originalStart);
+        d.setDate(d.getDate() + 1);
+        return toDateInput(d);
+    }, [originalStart]);
+    const maxSplitDate = useMemo(() => toDateInput(originalEnd || undefined), [originalEnd]);
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!formData.nrc) {
@@ -94,6 +122,41 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
 
         if (!formData.days || formData.days.length === 0) {
             alert("Debe seleccionar al menos un día");
+            return;
+        }
+
+        if (splitEnabled) {
+            if (!splitDate) {
+                alert("Selecciona la fecha desde la cual aplican los nuevos valores.");
+                return;
+            }
+            const cutoff = new Date(splitDate + 'T00:00:00');
+            if (!originalStart || !originalEnd || cutoff <= originalStart || cutoff > originalEnd) {
+                alert("La fecha de corte debe estar dentro de la vigencia actual del bloque (después del inicio y hasta el fin actuales).");
+                return;
+            }
+
+            const dayBeforeCutoff = new Date(cutoff);
+            dayBeforeCutoff.setDate(dayBeforeCutoff.getDate() - 1);
+
+            const keptTramo: ProcessedSchedule = { ...(schedule as ProcessedSchedule), endDate: dayBeforeCutoff };
+            const newTramo: ProcessedSchedule = {
+                ...(formData as ProcessedSchedule),
+                id: `split-${Date.now()}`,
+                startDate: cutoff,
+                endDate: originalEnd,
+                weeklyHours: suggestedHours,
+            };
+
+            setIsSaving(true);
+            try {
+                await onSave([keptTramo, newTramo]);
+                onClose();
+            } catch (error) {
+                console.error(error);
+            } finally {
+                setIsSaving(false);
+            }
             return;
         }
 
@@ -219,9 +282,10 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
                                 <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
                                 <input
                                     type="date"
+                                    disabled={splitEnabled}
                                     value={formData.startDate ? (formData.startDate instanceof Date ? formData.startDate.toISOString().split('T')[0] : new Date(formData.startDate).toISOString().split('T')[0]) : ''}
                                     onChange={e => setFormData({ ...formData, startDate: new Date(e.target.value + 'T00:00:00') })}
-                                    className="w-full pl-10 pr-4 py-3 bg-slate-100 border-transparent rounded-2xl text-sm font-bold focus:bg-white focus:border-blue-500 transition-all outline-none"
+                                    className="w-full pl-10 pr-4 py-3 bg-slate-100 border-transparent rounded-2xl text-sm font-bold focus:bg-white focus:border-blue-500 transition-all outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                                 />
                             </div>
                         </div>
@@ -231,15 +295,66 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
                                 <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
                                 <input
                                     type="date"
+                                    disabled={splitEnabled}
                                     value={formData.endDate ? (formData.endDate instanceof Date ? formData.endDate.toISOString().split('T')[0] : new Date(formData.endDate).toISOString().split('T')[0]) : ''}
                                     onChange={e => setFormData({ ...formData, endDate: new Date(e.target.value + 'T00:00:00') })}
-                                    className="w-full pl-10 pr-4 py-3 bg-slate-100 border-transparent rounded-2xl text-sm font-bold focus:bg-white focus:border-blue-500 transition-all outline-none"
+                                    className="w-full pl-10 pr-4 py-3 bg-slate-100 border-transparent rounded-2xl text-sm font-bold focus:bg-white focus:border-blue-500 transition-all outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                                 />
                             </div>
                         </div>
+                        {splitEnabled && (
+                            <p className="col-span-2 -mt-2 text-[10px] font-bold text-violet-500 uppercase tracking-wide">
+                                Bloqueadas mientras "Dividir Vigencia" está activo: la vigencia de cada tramo se calcula automáticamente a partir de la fecha de corte.
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Dividir Vigencia */}
+                    <div className={`rounded-[24px] border p-6 space-y-4 transition-colors ${splitEnabled ? 'bg-violet-50 border-violet-200' : 'bg-slate-50 border-slate-100'}`}>
+                        <label className="flex items-start gap-3 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={splitEnabled}
+                                onChange={e => setSplitEnabled(e.target.checked)}
+                                className="mt-0.5 w-4 h-4 accent-violet-600 shrink-0"
+                            />
+                            <div>
+                                <span className="flex items-center gap-1.5 text-[10px] font-black text-violet-700 uppercase tracking-widest">
+                                    <Scissors size={14} /> Dividir Vigencia (cambio a mitad de semestre)
+                                </span>
+                                <p className="text-xs text-slate-500 font-semibold mt-1">
+                                    El bloque se mantiene tal como está ahora hasta el día anterior a la fecha que elijas. Desde esa fecha en adelante se crea un registro nuevo con los valores que edites abajo (horario, aula, docente, etc.), sin sobrescribir el original.
+                                </p>
+                            </div>
+                        </label>
+
+                        {splitEnabled && (
+                            <div className="space-y-2 pl-7">
+                                <label className="text-[10px] font-black text-violet-700 uppercase tracking-widest ml-1">Los nuevos valores aplican desde</label>
+                                <div className="relative max-w-[220px]">
+                                    <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-violet-300" size={16} />
+                                    <input
+                                        type="date"
+                                        value={splitDate}
+                                        min={minSplitDate}
+                                        max={maxSplitDate}
+                                        onChange={e => setSplitDate(e.target.value)}
+                                        className="w-full pl-10 pr-4 py-3 bg-white border border-violet-200 rounded-2xl text-sm font-bold focus:border-violet-500 focus:ring-4 focus:ring-violet-500/10 transition-all outline-none"
+                                    />
+                                </div>
+                                <p className="text-[10px] text-violet-500 font-bold uppercase tracking-wide">
+                                    Debe estar entre {minSplitDate} y {maxSplitDate} (vigencia actual del bloque)
+                                </p>
+                            </div>
+                        )}
                     </div>
 
                     {/* Horario y Ambiente */}
+                    {splitEnabled && (
+                        <p className="text-[10px] font-black text-violet-600 uppercase tracking-widest -mb-2">
+                            Estos campos son los valores NUEVOS, vigentes desde la fecha de corte
+                        </p>
+                    )}
                     <div className="grid grid-cols-2 gap-6">
                         <div className="grid grid-cols-2 gap-3">
                             <div className="space-y-2">
@@ -341,12 +456,12 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
                     <button
                         onClick={handleSubmit}
                         disabled={isSaving}
-                        className="px-10 py-3 bg-slate-900 text-white text-xs font-black rounded-2xl hover:bg-slate-800 shadow-xl shadow-slate-200 transition-all flex items-center gap-2 disabled:opacity-50 active:scale-95 uppercase tracking-widest"
+                        className={`px-10 py-3 text-white text-xs font-black rounded-2xl shadow-xl transition-all flex items-center gap-2 disabled:opacity-50 active:scale-95 uppercase tracking-widest ${splitEnabled ? 'bg-violet-600 hover:bg-violet-700 shadow-violet-200' : 'bg-slate-900 hover:bg-slate-800 shadow-slate-200'}`}
                     >
                         {isSaving ? (
                             <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                        ) : <Save size={18} />}
-                        Guardar Cambios
+                        ) : splitEnabled ? <Scissors size={18} /> : <Save size={18} />}
+                        {splitEnabled ? 'Dividir y Guardar' : 'Guardar Cambios'}
                     </button>
                 </div>
             </div>

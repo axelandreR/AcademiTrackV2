@@ -36,7 +36,7 @@ const ArchiveManagerPage: React.FC = () => {
 
     const isSearchActive = searchTerm.length > 0 || filterType !== 'all';
 
-    const handleSave = async (updated: ProcessedSchedule) => {
+    const handleSave = async (updated: ProcessedSchedule | ProcessedSchedule[]) => {
         try {
             await saveScheduleCloud(updated);
             setEditingSchedule(null);
