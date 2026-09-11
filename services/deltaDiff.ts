@@ -119,9 +119,20 @@ export const computeDeltaDiff = (
     };
 };
 
+const formatDateShort = (d?: Date | null): string => {
+    if (!d || isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+
 export const formatRowSummary = (s: ProcessedSchedule): string => {
     const days = s.days && s.days.length > 0 ? s.days.map(d => d.slice(0, 2)).join('-') : 'S/D';
     const time = s.startTime && s.endTime ? `${s.startTime}-${s.endTime}` : '';
+    // Rango de vigencia del bloque -- crucial para decidir si aplicar un cambio en modo
+    // Delta: dos filas pueden tener el mismo horario pero vigencias distintas (ej. una
+    // rotación de taller que solo aplica un mes), y sin la fecha no se distingue.
+    const dateRange = s.startDate && s.endDate && !isNaN(s.startDate.getTime()) && !isNaN(s.endDate.getTime())
+        ? `${formatDateShort(s.startDate)}–${formatDateShort(s.endDate)}`
+        : '';
     const place = s.room ? (s.building ? `${s.room} (${s.building})` : s.room) : '';
-    return [days, time, place, s.instructor].filter(Boolean).join(' · ');
+    return [days, time, dateRange, place, s.instructor].filter(Boolean).join(' · ');
 };
