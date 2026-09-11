@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Calendar, Clock, Save, Info, Download, Plus, Copy, Trash2, CheckCircle2, AlertTriangle } from 'lucide-react';
-import { ExtraHoursConfig, ExtraHoursSegment, ExtraHoursShift, ProcessedSchedule, HolidayData } from '../types';
+import { X, Calendar, Clock, Save, Info, Download, Plus, Copy, Trash2, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { ExtraHoursConfig, ExtraHoursSegment, ExtraHoursShift, ProcessedSchedule, HolidayData, Instructor } from '../types';
 import { DAYS_OF_WEEK } from '../constants';
 import { generateHESummaryExcel } from '../services/excelExporter';
 import { createEmptySegment, calculateWeeklyExtraBreakdown } from '../services/extraHoursCalculations';
+
+export interface HEExemptionRange { start: string; end: string | null }
 
 interface ExtraHoursModalProps {
     isOpen: boolean;
@@ -13,6 +15,14 @@ interface ExtraHoursModalProps {
     holidays?: HolidayData[];
     instructorName?: string;
     instructorSchedules?: ProcessedSchedule[];
+    // Cuando se pasa `instructor` + `onSaveExemption`, el modal agrega arriba de los tramos
+    // una sección para activar/editar/quitar la exención de auditoría por rango de fechas
+    // (ver Instructor.hasExtraHoursAssigned/Start/End) — un solo control para configurar
+    // tanto los tramos detallados de HE como la exención general, sin depender de una
+    // Simulación activa (ver components/HEAssignedControl.tsx). Si no se pasan, el modal
+    // se comporta exactamente igual que antes (uso actual desde SimulationBar.tsx).
+    instructor?: Instructor;
+    onSaveExemption?: (range: HEExemptionRange | null) => Promise<void>;
 }
 
 const calculateHours = (start?: string, end?: string) => {
@@ -29,18 +39,33 @@ const fmtDateShort = (d: string) => {
     return `${day}/${m}/${y}`;
 };
 
-const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, config, onSave, holidays = [], instructorName, instructorSchedules = [] }) => {
+const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, config, onSave, holidays = [], instructorName, instructorSchedules = [], instructor, onSaveExemption }) => {
     const [isExporting, setIsExporting] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
     const [segments, setSegments] = useState<ExtraHoursSegment[]>([]);
     const [activeSegmentId, setActiveSegmentId] = useState<string>('');
+
+    const showExemptionSection = !!instructor && !!onSaveExemption;
+    const [exemptionEnabled, setExemptionEnabled] = useState(false);
+    const [exemptionStart, setExemptionStart] = useState('');
+    const [exemptionEnd, setExemptionEnd] = useState('');
+    const [exemptionNoEnd, setExemptionNoEnd] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
             const initial = config && config.segments.length > 0 ? config.segments : [createEmptySegment()];
             setSegments(initial);
             setActiveSegmentId(initial[0].id);
+
+            const isExemptionActive = instructor?.hasExtraHoursAssigned === true;
+            setExemptionEnabled(isExemptionActive);
+            setExemptionStart(instructor?.hasExtraHoursAssignedStart || '');
+            setExemptionEnd(instructor?.hasExtraHoursAssignedEnd || '');
+            setExemptionNoEnd(isExemptionActive && !instructor?.hasExtraHoursAssignedEnd);
         }
-    }, [config, isOpen]);
+    }, [config, isOpen, instructor]);
+
+    const canSaveExemption = !exemptionEnabled || (exemptionStart.length > 0 && (exemptionNoEnd || !exemptionEnd || exemptionEnd >= exemptionStart));
 
     // Cálculo en vivo con los tramos tal como están editados (sin guardar todavía), para
     // que el usuario vea de inmediato si lo que queda como carga regular sigue sumando 46h.
@@ -116,9 +141,18 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
         }
     };
 
-    const handleFormSave = () => {
-        onSave({ segments });
-        onClose();
+    const handleFormSave = async () => {
+        if (!canSaveExemption || isSaving) return;
+        setIsSaving(true);
+        try {
+            onSave({ segments });
+            if (showExemptionSection) {
+                await onSaveExemption!(exemptionEnabled ? { start: exemptionStart, end: exemptionNoEnd ? null : (exemptionEnd || null) } : null);
+            }
+            onClose();
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     const grandTotal = segments.reduce((sum, s) => sum + segmentTotal(s), 0);
@@ -133,8 +167,8 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                             <Clock size={28} />
                         </div>
                         <div>
-                            <h2 className="text-xl font-black text-white uppercase tracking-tight">Programación de Horas Extras</h2>
-                            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-0.5">Configuración para el Modo de Prueba</p>
+                            <h2 className="text-xl font-black text-white uppercase tracking-tight">Horas Extra{instructorName ? ` — ${instructorName}` : ''}</h2>
+                            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-0.5">{showExemptionSection ? 'Exención de auditoría y tramos detallados' : 'Configuración para el Modo de Prueba'}</p>
                         </div>
                     </div>
                     <button
@@ -147,6 +181,73 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar bg-white">
+                    {/* Exención de auditoría por rango de fechas (ver Instructor.
+                        hasExtraHoursAssigned/Start/End) — solo cuando el modal se abre desde
+                        Visualización/Edición con un instructor real (no en Simulación). Dentro
+                        del rango, el motor de auditoría no marca discrepancia ni exceso de
+                        jornada diaria para este instructor; fuera del rango sigue aplicando
+                        normal. Es independiente de los tramos de abajo: puede haber exención
+                        sin tramos, tramos sin exención, o ambos. */}
+                    {showExemptionSection && (
+                        <div className="mb-8 border-2 border-amber-100 bg-amber-50/40 rounded-[1.75rem] p-5 lg:p-6">
+                            <label className="flex items-center space-x-3 cursor-pointer group w-full mb-4">
+                                <input
+                                    type="checkbox"
+                                    checked={exemptionEnabled}
+                                    onChange={(e) => setExemptionEnabled(e.target.checked)}
+                                    className="w-5 h-5 rounded-lg border-2 border-slate-300 text-amber-500 focus:ring-amber-500 transition-all cursor-pointer"
+                                />
+                                <ShieldCheck size={18} className="text-amber-600 shrink-0" />
+                                <span className="text-sm font-black text-slate-800 uppercase tracking-tight">Exención de Auditoría (Horas Extra Asignadas)</span>
+                            </label>
+                            <p className="text-xs text-slate-500 font-medium leading-relaxed mb-4 ml-8">
+                                Dentro del rango, no se marca déficit/exceso semanal ni exceso de jornada diaria para este instructor. Fuera del rango se sigue auditando normal. Los choques de horario/aula no se ven afectados.
+                            </p>
+                            {exemptionEnabled && (
+                                <div className="ml-8 space-y-3">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-1.5">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Fecha Inicio</label>
+                                            <input
+                                                type="date"
+                                                value={exemptionStart}
+                                                onChange={(e) => setExemptionStart(e.target.value)}
+                                                className="w-full px-4 py-2 bg-white border-2 border-slate-100 rounded-xl focus:border-amber-500 focus:ring-0 transition-all font-bold text-slate-800 text-sm"
+                                            />
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Fecha Fin</label>
+                                            <input
+                                                type="date"
+                                                value={exemptionEnd}
+                                                disabled={exemptionNoEnd}
+                                                min={exemptionStart || undefined}
+                                                onChange={(e) => setExemptionEnd(e.target.value)}
+                                                className="w-full px-4 py-2 bg-white border-2 border-slate-100 rounded-xl focus:border-amber-500 focus:ring-0 transition-all font-bold text-slate-800 text-sm disabled:opacity-40"
+                                            />
+                                        </div>
+                                    </div>
+                                    <label className="flex items-center space-x-3 cursor-pointer group bg-white p-2.5 px-4 rounded-xl border-2 border-slate-100 hover:border-amber-200 transition-all w-full">
+                                        <input
+                                            type="checkbox"
+                                            checked={exemptionNoEnd}
+                                            onChange={(e) => { setExemptionNoEnd(e.target.checked); if (e.target.checked) setExemptionEnd(''); }}
+                                            className="w-4 h-4 rounded-md border-2 border-slate-300 text-amber-500 focus:ring-amber-500 transition-all cursor-pointer"
+                                        />
+                                        <span className="text-xs font-bold text-slate-700 group-hover:text-slate-900 transition-colors uppercase tracking-tight">Sin fecha de fin (indefinido)</span>
+                                    </label>
+                                    {!canSaveExemption && (
+                                        <p className="text-[11px] font-bold text-rose-500 ml-1">Falta la Fecha Inicio, o la Fecha Fin es anterior a la Fecha Inicio.</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {showExemptionSection && (
+                        <h3 className="text-[11px] font-black text-slate-500 uppercase tracking-widest mb-3 ml-1">Tramos Detallados (opcional — resta horas puntuales de la Meta/46h)</h3>
+                    )}
+
                     {/* Tabs de tramos */}
                     <div className="flex items-center gap-2 mb-6 flex-wrap">
                         {segments.map((seg, idx) => {
@@ -342,7 +443,7 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                         <div>
                             <h3 className="text-[11px] font-black text-slate-500 uppercase tracking-widest mb-3 ml-1">Validación de Carga Regular (No-HE) vs 46h</h3>
                             {weeklyBreakdown.length === 0 ? (
-                                <p className="text-xs font-bold text-slate-400 uppercase tracking-tight bg-slate-50 border-2 border-slate-100 rounded-xl p-4">Sin horario cargado para este instructor en la simulación.</p>
+                                <p className="text-xs font-bold text-slate-400 uppercase tracking-tight bg-slate-50 border-2 border-slate-100 rounded-xl p-4">Sin horario cargado para este instructor{showExemptionSection ? '' : ' en la simulación'}.</p>
                             ) : (
                                 <div className="border-2 border-slate-100 rounded-2xl overflow-hidden">
                                     <table className="w-full text-xs">
@@ -402,9 +503,10 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                         </button>
                         <button
                             onClick={handleFormSave}
-                            className="px-8 py-3 bg-amber-500 hover:bg-amber-600 text-white font-black uppercase text-[11px] rounded-xl shadow-lg shadow-amber-500/25 transition-all transform hover:scale-105 active:scale-95 flex items-center space-x-2"
+                            disabled={!canSaveExemption || isSaving}
+                            className="px-8 py-3 bg-amber-500 hover:bg-amber-600 text-white font-black uppercase text-[11px] rounded-xl shadow-lg shadow-amber-500/25 transition-all transform hover:scale-105 active:scale-95 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                         >
-                            <Save size={16} />
+                            {isSaving ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" /> : <Save size={16} />}
                             <span>Guardar Configuración HE</span>
                         </button>
                     </div>

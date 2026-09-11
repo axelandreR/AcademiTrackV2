@@ -6,6 +6,32 @@ import { SEMESTER_START_DATE, SEMESTER_END_DATE, LOAD_LIMITS, CONTRACT_HOURS_TC 
 
 const DAY_NAMES = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
 
+const parseLocalDateOnly = (dateString?: string | null): Date | null => {
+    if (!dateString) return null;
+    const parts = dateString.split('-').map(Number);
+    if (parts.length !== 3) return null;
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+};
+
+/**
+ * Instructor.hasExtraHoursAssigned con rango de fechas (hasExtraHoursAssignedStart/End,
+ * ver types.ts): una semana está exenta de auditoría si CUALQUIERA de sus 7 días cae
+ * dentro de [start, end] — misma granularidad semanal con la que ya trabaja el resto del
+ * motor. Un extremo vacío es "sin límite" de ese lado; si ninguno de los dos está definido
+ * (marcas hechas antes de tener rango), la exención sigue siendo para todo el semestre.
+ */
+export const isInstructorAuditExemptForWeek = (instructor: Instructor | null | undefined, weekStart: Date): boolean => {
+    if (!instructor || instructor.hasExtraHoursAssigned !== true) return false;
+    const start = parseLocalDateOnly(instructor.hasExtraHoursAssignedStart);
+    const end = parseLocalDateOnly(instructor.hasExtraHoursAssignedEnd);
+    if (!start && !end) return true;
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    if (start && weekEnd.getTime() < start.getTime()) return false;
+    if (end && weekStart.getTime() > end.getTime()) return false;
+    return true;
+};
+
 export interface WeeklyAuditBreakdown {
     syncHours: number;
     asyncHours: number;
@@ -61,14 +87,18 @@ export const calculateWeeklyAudit = (
     // extraHoursConfigsByInstructor) — cuando viene, cualquier fragmento de tarea que caiga
     // en una ventana marcada como HE se excluye de la Meta/46h igual que tempHEActive.
     extraHoursConfig: ExtraHoursConfig | null = null,
-    // Instructor.hasExtraHoursAssigned: exención general — no se marca discrepancia
-    // académica/contractual ni exceso de jornada diaria para este instructor, sin
-    // necesidad de marcar curso por curso ni tarea administrativa. Los números reales
-    // (academicReal/contractReal/etc) se siguen calculando normal, solo se suprimen las
-    // banderas de alerta — los choques de horario/aula NO pasan por este motor, siguen
-    // detectándose igual (ver conflictDetection.ts).
-    auditExempt: boolean = false
+    // Instructor.hasExtraHoursAssigned (+ rango hasExtraHoursAssignedStart/End): exención
+    // de auditoría — no se marca discrepancia académica/contractual ni exceso de jornada
+    // diaria para este instructor EN LAS SEMANAS que caen dentro del rango marcado (ver
+    // isInstructorAuditExemptForWeek), sin necesidad de marcar curso por curso ni tarea
+    // administrativa. Los números reales (academicReal/contractReal/etc) se siguen
+    // calculando normal, solo se suprimen las banderas de alerta — los choques de
+    // horario/aula NO pasan por este motor, siguen detectándose igual (ver
+    // conflictDetection.ts). Se pasa el instructor completo (no un booleano) porque la
+    // exención se recalcula por semana según `weekStart`.
+    instructor: Instructor | null = null
 ): WeeklyAuditBreakdown => {
+    const auditExempt = isInstructorAuditExemptForWeek(instructor, weekStart);
     const isTC = instructorType === 'TC';
     const dailyLimitMins = isTC ? LOAD_LIMITS.DAILY_TC * 60 + 0.01 : LOAD_LIMITS.DAILY_TP * 60 + 0.01;
 
@@ -206,7 +236,7 @@ export const calculateWeeklyAudit = (
     // límite diario, asumimos que esta semana sigue el patrón normal y no marcamos alerta: si
     // alguna vecina también tiene un problema real, la alerta de esta semana sí se muestra.
     const suppressWeeklyDiscrepancy = isHolidayWeek && !skipHolidayNeighborCheck &&
-        isHolidayWeekLoadNormal(instructorType, weekStart, instructorSchedules, holidays, semesterEndDate, extraHoursConfig, auditExempt);
+        isHolidayWeekLoadNormal(instructorType, weekStart, instructorSchedules, holidays, semesterEndDate, extraHoursConfig, instructor);
 
     // TP: la meta ahora es Horas Académicas (convertida), no el ARCHIVO crudo. TC no cambia
     // (sigue sin usar esta comparación como gate principal — ver hasContractDiscrepancy).
@@ -242,7 +272,7 @@ export const isHolidayWeekLoadNormal = (
     holidays: HolidayData[],
     semesterEndDate: Date,
     extraHoursConfig: ExtraHoursConfig | null = null,
-    auditExempt: boolean = false
+    instructor: Instructor | null = null
 ): boolean => {
     const prevWeekStart = new Date(weekStart);
     prevWeekStart.setDate(weekStart.getDate() - 7);
@@ -254,8 +284,11 @@ export const isHolidayWeekLoadNormal = (
 
     if (!prevAvailable && !nextAvailable) return true;
 
-    const prevOk = !prevAvailable || !calculateWeeklyAudit(instructorType, prevWeekStart, instructorSchedules, holidays, semesterEndDate, true, extraHoursConfig, auditExempt).hasDailyBreach;
-    const nextOk = !nextAvailable || !calculateWeeklyAudit(instructorType, nextWeekStart, instructorSchedules, holidays, semesterEndDate, true, extraHoursConfig, auditExempt).hasDailyBreach;
+    // instructor (no un booleano fijo) para que la exención de cada semana vecina se
+    // recalcule con SU propio weekStart — puede diferir de la semana actual si el rango
+    // de fechas de la exención empieza o termina justo entre semanas.
+    const prevOk = !prevAvailable || !calculateWeeklyAudit(instructorType, prevWeekStart, instructorSchedules, holidays, semesterEndDate, true, extraHoursConfig, instructor).hasDailyBreach;
+    const nextOk = !nextAvailable || !calculateWeeklyAudit(instructorType, nextWeekStart, instructorSchedules, holidays, semesterEndDate, true, extraHoursConfig, instructor).hasDailyBreach;
 
     return prevOk && nextOk;
 };
@@ -323,13 +356,11 @@ export const calculateInstructorAudit = (
     const weekStartAt = firstWeekStart.getTime();
     const weekEndAtTime = weekStartAt + 6 * 24 * 60 * 60 * 1000;
 
-    // instructor.hasExtraHoursAssigned: exención general (ver comentario en
-    // calculateWeeklyAudit) — se lee directo del objeto, no hace falta un parámetro aparte.
-    const auditExempt = instructor.hasExtraHoursAssigned === true;
-
     // S1: semana de referencia para el estado resumen (DEFICIT/EXCESO/OK) que se muestra
-    // en la tabla del Reporte Global — usa el motor único (ver calculateWeeklyAudit).
-    const s1 = calculateWeeklyAudit(instructor.type, firstWeekStart, instSchedules, holidays, semesterEndDate, false, extraHoursConfig, auditExempt);
+    // en la tabla del Reporte Global — usa el motor único (ver calculateWeeklyAudit). Se
+    // pasa el instructor completo: la exención (hasExtraHoursAssigned + rango de fechas)
+    // se recalcula por semana dentro del motor (ver isInstructorAuditExemptForWeek).
+    const s1 = calculateWeeklyAudit(instructor.type, firstWeekStart, instSchedules, holidays, semesterEndDate, false, extraHoursConfig, instructor);
     const metaCargaS1 = isTC ? LOAD_LIMITS.WEEKLY_TC : s1.academicHoursMeta;
     const cargaRealS1 = isTC ? s1.contractReal : s1.academicReal;
     const hasHolidayS1 = s1.isHolidayWeek;
@@ -341,7 +372,7 @@ export const calculateInstructorAudit = (
     const dailyLimit = isTC ? LOAD_LIMITS.DAILY_TC : LOAD_LIMITS.DAILY_TP;
 
     while (scannerDate <= globalEnd && scannerDate <= semesterEndDate) {
-        const week = calculateWeeklyAudit(instructor.type, scannerDate, instSchedules, holidays, semesterEndDate, false, extraHoursConfig, auditExempt);
+        const week = calculateWeeklyAudit(instructor.type, scannerDate, instSchedules, holidays, semesterEndDate, false, extraHoursConfig, instructor);
 
         if (week.hasDailyBreach) {
             // El motor único no distingue el día exacto del exceso; lo re-derivamos aquí

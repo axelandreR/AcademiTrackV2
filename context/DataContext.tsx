@@ -94,8 +94,10 @@ interface DataContextType {
   // en ventana de HE de la Meta/46h también en vista normal. Ver saveInstructorExtraHoursConfig.
   extraHoursConfigsByInstructor: Record<string, ExtraHoursConfig>;
   saveInstructorExtraHoursConfig: (instructorId: string, config: ExtraHoursConfig | null) => Promise<void>;
-  // Exención general de auditoría por instructor (ver Instructor.hasExtraHoursAssigned).
-  toggleInstructorAuditExemption: (instructorId: string, value: boolean) => Promise<void>;
+  // Exención de auditoría por instructor con rango de fechas (ver Instructor.
+  // hasExtraHoursAssigned/hasExtraHoursAssignedStart/End). `range: null` la retira; con
+  // `range.end: null` queda sin fecha de fin (indefinido).
+  setInstructorHEAssignment: (instructorId: string, range: { start: string; end: string | null } | null) => Promise<void>;
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
   importScheduleToSimulation: (scheduleId: string | string[], targetInstructor: string, tempHECoverage?: boolean) => number;
@@ -184,7 +186,9 @@ const mapInstructorToDB = (inst: Instructor) => ({
   max_hours: inst.maxHours,
   audit_status: inst.auditStatus,
   audit_json: inst.auditJson,
-  has_extra_hours_assigned: inst.hasExtraHoursAssigned === true
+  has_extra_hours_assigned: inst.hasExtraHoursAssigned === true,
+  has_extra_hours_assigned_start: inst.hasExtraHoursAssignedStart || null,
+  has_extra_hours_assigned_end: inst.hasExtraHoursAssignedEnd || null
 });
 
 const mapRoomToDB = (room: RoomData) => ({
@@ -551,7 +555,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           status: 'Activo',
           auditStatus: i.audit_status,
           auditJson: i.audit_json,
-          hasExtraHoursAssigned: Boolean(i.has_extra_hours_assigned)
+          hasExtraHoursAssigned: Boolean(i.has_extra_hours_assigned),
+          hasExtraHoursAssignedStart: i.has_extra_hours_assigned_start || null,
+          hasExtraHoursAssignedEnd: i.has_extra_hours_assigned_end || null
         })));
       }
 
@@ -1056,17 +1062,27 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [notify]);
 
-  // Exención general de auditoría para un instructor (ver Instructor.hasExtraHoursAssigned
-  // y calculateWeeklyAudit): no marca discrepancia académica/contractual ni exceso de
-  // jornada diaria para él, sin tener que marcar curso por curso ni tarea administrativa.
-  // Update liviano (no el upsert completo de saveInstructorCloud) para no disparar
-  // syncInstructorIdInSchedules en cada toggle.
-  const toggleInstructorAuditExemption = useCallback(async (instructorId: string, value: boolean) => {
+  // Exención de auditoría para un instructor con rango de fechas (ver Instructor.
+  // hasExtraHoursAssigned/hasExtraHoursAssignedStart/End y calculateWeeklyAudit): dentro
+  // del rango no marca discrepancia académica/contractual ni exceso de jornada diaria,
+  // sin tener que marcar curso por curso ni tarea administrativa; fuera del rango sigue
+  // aplicando la auditoría normal. `range: null` retira la exención por completo. Update
+  // liviano (no el upsert completo de saveInstructorCloud) para no disparar
+  // syncInstructorIdInSchedules en cada cambio.
+  const setInstructorHEAssignment = useCallback(async (instructorId: string, range: { start: string; end: string | null } | null) => {
     try {
-      const { error } = await supabase.from('instructors').update({ has_extra_hours_assigned: value }).eq('id', instructorId);
+      const payload = range
+        ? { has_extra_hours_assigned: true, has_extra_hours_assigned_start: range.start || null, has_extra_hours_assigned_end: range.end || null }
+        : { has_extra_hours_assigned: false, has_extra_hours_assigned_start: null, has_extra_hours_assigned_end: null };
+      const { error } = await supabase.from('instructors').update(payload).eq('id', instructorId);
       if (error) throw error;
-      setInstructors(prev => prev.map(i => i.id === instructorId ? { ...i, hasExtraHoursAssigned: value } : i));
-      notify(value ? 'Instructor marcado con horas extra asignadas — la auditoría normal queda desactivada para él.' : 'Exención de auditoría retirada — vuelve a aplicar las reglas normales.', 'success');
+      setInstructors(prev => prev.map(i => i.id === instructorId ? {
+        ...i,
+        hasExtraHoursAssigned: !!range,
+        hasExtraHoursAssignedStart: range?.start || null,
+        hasExtraHoursAssignedEnd: range?.end || null
+      } : i));
+      notify(range ? 'Instructor marcado con horas extra asignadas — la auditoría normal queda desactivada en el rango de fechas indicado.' : 'Exención de auditoría retirada — vuelve a aplicar las reglas normales.', 'success');
     } catch (e: any) {
       console.error('Error actualizando exención de auditoría:', e);
       notify('Error al actualizar la exención de auditoría: ' + e.message, 'error');
@@ -1623,7 +1639,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setExtraHoursConfig,
     extraHoursConfigsByInstructor,
     saveInstructorExtraHoursConfig,
-    toggleInstructorAuditExemption,
+    setInstructorHEAssignment,
     startSimulation,
     endSimulation,
     importScheduleToSimulation,
@@ -1651,7 +1667,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     allSchedules, exportedInstructors, toggleInstructorExported,
     instructorsMap, instructorsByNameMap, roomsMap, holidaysMap, careersMap,
     settings, loadSchedulesForFilter, globalSchedulesSummary,
-    simulationConfig, extraHoursConfig, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig, toggleInstructorAuditExemption, startSimulation, endSimulation,
+    simulationConfig, extraHoursConfig, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig, setInstructorHEAssignment, startSimulation, endSimulation,
     importScheduleToSimulation, applySimulation, saveScenario, updateScenario, loadScenario,
     currentScenarioId, currentScenarioName,
     recalculateInstructorAudit, syncInstructorIdInSchedules, updateAppSetting,

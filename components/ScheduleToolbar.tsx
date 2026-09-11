@@ -4,11 +4,12 @@ import {
     Calendar as CalendarIcon, ChevronRight as ChevronRightIcon,
     Table as TableIcon, LayoutDashboard, Edit3, FileDown,
     Check, X, AlertTriangle, ChevronDown, ChevronUp,
-    Building2, UserRound, TrendingUp, Mail, Clock
+    Building2, UserRound, TrendingUp, Mail
 } from 'lucide-react';
 import WeekPicker from './WeekPicker';
 import { ViewType, AppMode, Instructor } from '../types';
 import ImportModal from './ImportModal';
+import HEAssignedControl from './HEAssignedControl';
 
 interface ScheduleToolbarProps {
     viewType: ViewType;
@@ -37,7 +38,6 @@ interface ScheduleToolbarProps {
     isSimulationMode?: boolean;
     startSimulation?: (filter?: string) => void;
     currentInstructor?: Instructor;
-    toggleInstructorAuditExemption?: (instructorId: string, value: boolean) => Promise<void>;
 }
 
 const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
@@ -66,8 +66,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
     setIsInfoAccordionExpanded,
     isSimulationMode,
     startSimulation,
-    currentInstructor,
-    toggleInstructorAuditExemption
+    currentInstructor
 }) => {
     const [isImportModalOpen, setIsImportModalOpen] = React.useState(false);
 
@@ -100,19 +99,11 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                                 </button>
                             )}
 
-                            {/* Exención general de auditoría: instructor con horas extra asignadas
-                                en general — no marca discrepancia ni exceso diario, sin marcar
-                                curso/tarea por separado. Los choques de horario/aula NO se ven
-                                afectados (ver Instructor.hasExtraHoursAssigned). */}
-                            {viewType === 'Instructor' && selectedFilter && !isSimulationMode && currentInstructor && toggleInstructorAuditExemption && (
-                                <button
-                                    onClick={() => toggleInstructorAuditExemption(currentInstructor.id, !currentInstructor.hasExtraHoursAssigned)}
-                                    className={`shrink-0 px-2 sm:px-2.5 py-1 text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-lg border transition-colors flex items-center gap-1 shadow-sm ${currentInstructor.hasExtraHoursAssigned ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-500' : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200'}`}
-                                    title={currentInstructor.hasExtraHoursAssigned ? 'Instructor con Horas Extra Asignadas — auditoría normal desactivada. Clic para reactivarla.' : 'Marcar instructor con Horas Extra Asignadas (desactiva la auditoría normal para él; los choques de horario siguen detectándose)'}
-                                >
-                                    <Clock size={11} />
-                                    <span>{currentInstructor.hasExtraHoursAssigned ? 'HE Asignadas' : 'Marcar HE'}</span>
-                                </button>
+                            {/* Exención de auditoría con rango de fechas + resumen semanal + accesos
+                                a reportes HE, para instructores marcados con horas extra asignadas
+                                (ver Instructor.hasExtraHoursAssigned/Start/End y HEAssignedControl). */}
+                            {viewType === 'Instructor' && selectedFilter && !isSimulationMode && currentInstructor && (
+                                <HEAssignedControl instructor={currentInstructor} currentWeekStart={currentWeekStart} />
                             )}
 
                             {/* Botón Importar Carga (Solo en Simulación) */}

@@ -83,9 +83,15 @@ export interface Instructor {
   auditStatus?: 'OK' | 'DEFICIT' | 'EXCESS' | 'PENDING' | 'ERROR' | null;
   auditJson?: string | null;
   // Cuando es true, el motor de auditoría no marca discrepancia académica/contractual ni
-  // exceso de jornada diaria para este instructor (tiene horas extra asignadas en general).
-  // Los choques de horario/aula siguen detectándose normalmente.
+  // exceso de jornada diaria para este instructor (tiene horas extra asignadas). Los
+  // choques de horario/aula siguen detectándose normalmente.
   hasExtraHoursAssigned?: boolean;
+  // Rango de vigencia de la exención (yyyy-mm-dd, ver isInstructorAuditExemptForWeek en
+  // auditCalculations.ts): fuera de [start, end] la auditoría normal vuelve a aplicar. Un
+  // extremo vacío es "sin límite" de ese lado; ambos vacíos con hasExtraHoursAssigned=true
+  // es exención sin fecha (compatibilidad con marcas hechas antes de tener rango).
+  hasExtraHoursAssignedStart?: string | null;
+  hasExtraHoursAssignedEnd?: string | null;
 }
 
 export interface RoomData {

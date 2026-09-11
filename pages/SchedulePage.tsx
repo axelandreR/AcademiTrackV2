@@ -46,7 +46,7 @@ const SchedulePage: React.FC = () => {
         allSchedules, data, administrativeTasks, rooms, instructors, holidays,
         saveScheduleCloud, deleteScheduleCloud, saveRoomCloud,
         instructorsByNameMap, instructorsMap, roomsMap, settings, loadSchedulesForFilter, globalSchedulesSummary,
-        startSimulation, isSimulationMode, toggleInstructorAuditExemption
+        startSimulation, isSimulationMode
     } = useData();
 
     // Estados locales de la vista
@@ -509,7 +509,6 @@ const SchedulePage: React.FC = () => {
                             isSimulationMode={isSimulationMode}
                             startSimulation={startSimulation}
                             currentInstructor={resolvedEmailInstructor}
-                            toggleInstructorAuditExemption={toggleInstructorAuditExemption}
                         />
 
                         <SimulationBar />

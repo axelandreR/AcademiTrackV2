@@ -39,13 +39,14 @@ export const useScheduleCalculations = (currentWeekStart: Date) => {
         const instExtraHoursConfig = extraHoursConfigsByInstructor[inst.id] || null;
 
         // Único motor de auditoría (ver services/auditCalculations.ts::calculateWeeklyAudit) —
-        // misma regla que la grilla, el Reporte Global y Avance de Horarios.
-        const instAuditExempt = inst.hasExtraHoursAssigned === true;
-        const week = calculateWeeklyAudit(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate, false, instExtraHoursConfig, instAuditExempt);
+        // misma regla que la grilla, el Reporte Global y Avance de Horarios. Se pasa `inst`
+        // completo: la exención por horas extra asignadas se evalúa por semana según su
+        // rango de fechas (ver isInstructorAuditExemptForWeek).
+        const week = calculateWeeklyAudit(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate, false, instExtraHoursConfig, inst);
         // Antes, cualquier feriado en la semana anulaba el punto rojo de discrepancia en la
         // lista lateral. Ahora solo se anula si las semanas vecinas (anterior/posterior)
         // también respetan el límite diario — mismo criterio que el motor de auditoría.
-        if (week.isHolidayWeek && isHolidayWeekLoadNormal(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate, instExtraHoursConfig, instAuditExempt)) return false;
+        if (week.isHolidayWeek && isHolidayWeekLoadNormal(inst.type, currentWeekStart, instSchedules, holidays, semesterEndDate, instExtraHoursConfig, inst)) return false;
 
         const isTC = inst.type === 'TC';
         let real = isTC ? week.contractReal : week.academicReal;
