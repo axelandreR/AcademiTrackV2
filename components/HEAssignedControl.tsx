@@ -1,11 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Clock, FileDown, FileSpreadsheet } from 'lucide-react';
+import { Clock } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { Instructor } from '../types';
 import { belongsToInstructor } from '../services/businessRules';
 import { isInstructorAuditExemptForWeek } from '../services/auditCalculations';
 import { calculateWeeklyExtraBreakdown } from '../services/extraHoursCalculations';
-import { generateWeeklyHEExcel, generateFullPeriodHEExcel } from '../services/excelExporter';
 import ExtraHoursModal, { HEExemptionRange } from './ExtraHoursModal';
 
 interface HEAssignedControlProps {
@@ -27,14 +26,14 @@ const fmtShort = (d?: string | null) => {
  * - Tramos detallados día/turno ("Configurar HE", extraHoursConfigsByInstructor), antes
  *   solo alcanzables desde Simulación (ver SimulationBar.tsx) — ahora también editables
  *   aquí sin necesidad de crear una simulación.
- * Además: indicador de si la semana vista cae en el rango, desglose Regular vs HE de la
- * semana actual, y accesos directos a los reportes Excel de HE.
+ * Solo el botón + los badges de estado (rango vigente, semana exenta, desglose Regular vs
+ * HE) — los accesos a reportes y a "Migrar Tareas Administrativas" viven aparte en
+ * HEQuickActions.tsx, dentro del desplegable de la Toolbar, para no saturar este
+ * encabezado siempre visible (ver ScheduleToolbar.tsx).
  */
 const HEAssignedControl: React.FC<HEAssignedControlProps> = ({ instructor, currentWeekStart }) => {
-    const { allSchedules, extraHoursConfigsByInstructor, holidays, notify, setInstructorHEAssignment, saveInstructorExtraHoursConfig } = useData();
+    const { allSchedules, extraHoursConfigsByInstructor, holidays, setInstructorHEAssignment, saveInstructorExtraHoursConfig } = useData();
     const [isModalOpen, setIsModalOpen] = useState(false);
-    const [isExportingWeek, setIsExportingWeek] = useState(false);
-    const [isExportingPeriod, setIsExportingPeriod] = useState(false);
 
     const hasExemption = instructor.hasExtraHoursAssigned === true;
     const instructorExtraHoursConfig = extraHoursConfigsByInstructor[instructor.id] || null;
@@ -71,49 +70,6 @@ const HEAssignedControl: React.FC<HEAssignedControlProps> = ({ instructor, curre
         await setInstructorHEAssignment(instructor.id, range);
     };
 
-    const downloadBlob = (blob: Blob, filename: string) => {
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-        window.URL.revokeObjectURL(url);
-    };
-
-    const handleWeeklyExport = async () => {
-        if (isExportingWeek) return;
-        setIsExportingWeek(true);
-        try {
-            const blob = await generateWeeklyHEExcel({
-                instructorName: instructor.name, instructorType: instructor.type, weekStart: currentWeekStart,
-                allSchedules: instructorSchedules, extraHoursConfig: instructorExtraHoursConfig, holidays
-            });
-            downloadBlob(blob, `Programacion_Semanal_HE_${instructor.name.replace(/\s+/g, '_')}_${currentWeekStart.toISOString().slice(0, 10)}.xlsx`);
-            notify('Reporte semanal exportado correctamente.', 'success');
-        } catch (e: any) {
-            notify('Error al generar el reporte semanal: ' + e.message, 'error');
-        } finally {
-            setIsExportingWeek(false);
-        }
-    };
-
-    const handleFullPeriodExport = async () => {
-        if (isExportingPeriod) return;
-        setIsExportingPeriod(true);
-        try {
-            const blob = await generateFullPeriodHEExcel({
-                instructorName: instructor.name, instructorType: instructor.type,
-                allSchedules: instructorSchedules, extraHoursConfig: instructorExtraHoursConfig, holidays
-            });
-            downloadBlob(blob, `Programacion_Completa_HE_${instructor.name.replace(/\s+/g, '_')}.xlsx`);
-            notify('Reporte del periodo exportado correctamente.', 'success');
-        } catch (e: any) {
-            notify('Error al generar el reporte del periodo: ' + e.message, 'error');
-        } finally {
-            setIsExportingPeriod(false);
-        }
-    };
-
     return (
         <>
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -139,27 +95,6 @@ const HEAssignedControl: React.FC<HEAssignedControlProps> = ({ instructor, curre
                     <span className="hidden md:inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border bg-blue-50 text-blue-600 border-blue-100" title="Desglose de esta semana según los tramos detallados">
                         Regular {currentWeekBreakdown.regularHours.toFixed(1)}h · HE {currentWeekBreakdown.extraHours.toFixed(1)}h
                     </span>
-                )}
-
-                {isConfigured && (
-                    <>
-                        <button
-                            onClick={handleWeeklyExport}
-                            disabled={isExportingWeek}
-                            title="Exportar reporte HE de esta semana"
-                            className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-amber-700 hover:border-amber-200 transition-colors disabled:opacity-40"
-                        >
-                            {isExportingWeek ? <div className="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full" /> : <FileDown size={12} />}
-                        </button>
-                        <button
-                            onClick={handleFullPeriodExport}
-                            disabled={isExportingPeriod}
-                            title="Exportar reporte HE del periodo completo"
-                            className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-amber-700 hover:border-amber-200 transition-colors disabled:opacity-40"
-                        >
-                            {isExportingPeriod ? <div className="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full" /> : <FileSpreadsheet size={12} />}
-                        </button>
-                    </>
                 )}
             </div>
 

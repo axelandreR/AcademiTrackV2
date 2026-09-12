@@ -10,6 +10,7 @@ import WeekPicker from './WeekPicker';
 import { ViewType, AppMode, Instructor } from '../types';
 import ImportModal from './ImportModal';
 import HEAssignedControl from './HEAssignedControl';
+import HEQuickActions from './HEQuickActions';
 
 interface ScheduleToolbarProps {
     viewType: ViewType;
@@ -83,11 +84,15 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                         {viewType === 'Bloque' ? <LayoutDashboard size={20} className="text-blue-600 lg:w-6 lg:h-6" /> : viewType === 'Aula' ? <Building2 size={20} className="text-orange-600 lg:w-6 lg:h-6" /> : <UserRound size={20} className="text-indigo-600 lg:w-6 lg:h-6" />}
                     </div>
                     <div className="flex flex-col min-w-0 flex-1">
-                        <div className="flex items-center flex-wrap gap-2">
-                            <h2 className="min-w-0 flex-1 text-xs sm:text-sm md:text-base lg:text-lg min-[1400px]:text-2xl font-black text-slate-900 tracking-tighter uppercase leading-tight whitespace-normal break-words line-clamp-2">
-                                {selectedFilter || 'Sin Selección'}
-                            </h2>
+                        {/* El nombre va en su propia fila, a todo el ancho disponible — antes
+                            competía por espacio con los badges/botones de la fila de abajo (ej.
+                            HEAssignedControl), y con varios de esos activos a la vez el nombre del
+                            instructor quedaba aplastado casi ilegible en pantallas medianas. */}
+                        <h2 className="min-w-0 text-xs sm:text-sm md:text-base lg:text-lg min-[1400px]:text-2xl font-black text-slate-900 tracking-tighter uppercase leading-tight whitespace-normal break-words line-clamp-2">
+                            {selectedFilter || 'Sin Selección'}
+                        </h2>
 
+                        <div className="flex items-center flex-wrap gap-2 mt-1.5">
                             {/* Botón Simular Individual */}
                             {viewType === 'Instructor' && selectedFilter && !isSimulationMode && startSimulation && (
                                 <button
@@ -99,9 +104,11 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                                 </button>
                             )}
 
-                            {/* Exención de auditoría con rango de fechas + resumen semanal + accesos
-                                a reportes HE, para instructores marcados con horas extra asignadas
-                                (ver Instructor.hasExtraHoursAssigned/Start/End y HEAssignedControl). */}
+                            {/* Exención de auditoría con rango de fechas + resumen semanal, para
+                                instructores marcados con horas extra asignadas (ver Instructor.
+                                hasExtraHoursAssigned/Start/End y HEAssignedControl). Los reportes
+                                y "Migrar Tareas Administrativas" viven en el desplegable de abajo
+                                (ver HEQuickActions), no aquí, para no saturar este encabezado. */}
                             {viewType === 'Instructor' && selectedFilter && !isSimulationMode && currentInstructor && (
                                 <HEAssignedControl instructor={currentInstructor} currentWeekStart={currentWeekStart} />
                             )}
@@ -117,7 +124,7 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                                 </button>
                             )}
                         </div>
-                        <p className="text-[8px] sm:text-[9px] font-black text-slate-400 uppercase tracking-[0.15em] sm:tracking-[0.2em] mt-0.5">
+                        <p className="text-[8px] sm:text-[9px] font-black text-slate-400 uppercase tracking-[0.15em] sm:tracking-[0.2em] mt-1">
                             {viewType} • {appMode === 'editor' ? 'Edición Activa' : 'Visualización'}
                             {isSimulationMode && <span className="text-indigo-600 ml-1"> • SIMULACIÓN ACTIVA</span>}
                         </p>
@@ -191,6 +198,12 @@ const ScheduleToolbar: React.FC<ScheduleToolbarProps> = ({
                             <button onClick={onOpenEmailSummary} className="p-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm" title="Resumen para Correo">
                                 <Mail size={16} />
                             </button>
+                        )}
+
+                        {/* Reportes HE + Migrar Tareas Administrativas (ver HEAssignedControl,
+                            más arriba en el encabezado, para la exención/tramos en sí). */}
+                        {viewType === 'Instructor' && selectedFilter && !isSimulationMode && currentInstructor && (
+                            <HEQuickActions instructor={currentInstructor} currentWeekStart={currentWeekStart} />
                         )}
 
                         {/* Botón Auditoría - Oculto en Simulación */}

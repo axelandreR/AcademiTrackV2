@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Calendar, Clock, Save, Info, Download, Plus, Copy, Trash2, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
-import { ExtraHoursConfig, ExtraHoursSegment, ExtraHoursShift, ProcessedSchedule, HolidayData, Instructor } from '../types';
+import { X, Calendar, Clock, Save, Info, Download, Plus, Copy, Trash2, CheckCircle2, AlertTriangle, ShieldCheck, History } from 'lucide-react';
+import { ExtraHoursConfig, ExtraHoursSegment, ExtraHoursShift, ProcessedSchedule, HolidayData, Instructor, Scenario } from '../types';
 import { DAYS_OF_WEEK } from '../constants';
 import { generateHESummaryExcel } from '../services/excelExporter';
-import { createEmptySegment, calculateWeeklyExtraBreakdown } from '../services/extraHoursCalculations';
+import { createEmptySegment, calculateWeeklyExtraBreakdown, normalizeExtraHoursConfig } from '../services/extraHoursCalculations';
+import { findInstructorScenarios } from '../services/scenarioLookup';
 
 export interface HEExemptionRange { start: string; end: string | null }
 
@@ -51,6 +52,17 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
     const [exemptionEnd, setExemptionEnd] = useState('');
     const [exemptionNoEnd, setExemptionNoEnd] = useState(false);
 
+    // Simulaciones guardadas (tabla `scenarios`) que pertenecen a este instructor — ver
+    // simulationConfig.instructorKey / metadata.instructorName en DataContext.tsx
+    // (saveScenario/applySimulation). Se buscan recién cuando el usuario activa la
+    // Exención de Auditoría por primera vez en esta apertura del modal (no antes, para no
+    // hacer una consulta de más si solo va a configurar tramos a mano) — permite importar
+    // los tramos día/turno de una simulación existente en vez de rehacerlos.
+    const [scenarioOptions, setScenarioOptions] = useState<Scenario[] | null>(null);
+    const [isLoadingScenarios, setIsLoadingScenarios] = useState(false);
+    const [showScenarioPicker, setShowScenarioPicker] = useState(false);
+    const [importedFromScenario, setImportedFromScenario] = useState<Scenario | null>(null);
+
     useEffect(() => {
         if (isOpen) {
             const initial = config && config.segments.length > 0 ? config.segments : [createEmptySegment()];
@@ -62,8 +74,46 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
             setExemptionStart(instructor?.hasExtraHoursAssignedStart || '');
             setExemptionEnd(instructor?.hasExtraHoursAssignedEnd || '');
             setExemptionNoEnd(isExemptionActive && !instructor?.hasExtraHoursAssignedEnd);
+
+            setScenarioOptions(null);
+            setIsLoadingScenarios(false);
+            setShowScenarioPicker(false);
+            setImportedFromScenario(null);
         }
     }, [config, isOpen, instructor]);
+
+    const handleExemptionToggle = async (checked: boolean) => {
+        setExemptionEnabled(checked);
+        if (!checked || !showExemptionSection || !instructor || scenarioOptions !== null) return;
+        setIsLoadingScenarios(true);
+        try {
+            // Los "Respaldo Auto" (ver applySimulation en DataContext.tsx) nunca traen
+            // extraHoursConfig (se guardan con null a propósito) — no sirven como fuente
+            // para importar tramos, así que se excluyen de este picker.
+            const matches = await findInstructorScenarios(instructor, { excludeAutoBackup: true });
+            setScenarioOptions(matches);
+            if (matches.length > 0) setShowScenarioPicker(true);
+        } catch (e) {
+            console.error('Error buscando simulaciones del instructor:', e);
+            setScenarioOptions([]);
+        } finally {
+            setIsLoadingScenarios(false);
+        }
+    };
+
+    const handleImportScenario = (scenario: Scenario) => {
+        const normalized = normalizeExtraHoursConfig(scenario.data?.extraHoursConfig);
+        if (!normalized || normalized.segments.length === 0) {
+            // Simulación guardada sin tramos de HE configurados (ej. se creó solo para
+            // probar carga académica) — no hay nada que importar de ahí.
+            setScenarioOptions(prev => prev ? prev.filter(s => s.id !== scenario.id) : prev);
+            return;
+        }
+        setSegments(normalized.segments);
+        setActiveSegmentId(normalized.segments[0].id);
+        setImportedFromScenario(scenario);
+        setShowScenarioPicker(false);
+    };
 
     const canSaveExemption = !exemptionEnabled || (exemptionStart.length > 0 && (exemptionNoEnd || !exemptionEnd || exemptionEnd >= exemptionStart));
 
@@ -194,7 +244,7 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                                 <input
                                     type="checkbox"
                                     checked={exemptionEnabled}
-                                    onChange={(e) => setExemptionEnabled(e.target.checked)}
+                                    onChange={(e) => handleExemptionToggle(e.target.checked)}
                                     className="w-5 h-5 rounded-lg border-2 border-slate-300 text-amber-500 focus:ring-amber-500 transition-all cursor-pointer"
                                 />
                                 <ShieldCheck size={18} className="text-amber-600 shrink-0" />
@@ -238,6 +288,62 @@ const ExtraHoursModal: React.FC<ExtraHoursModalProps> = ({ isOpen, onClose, conf
                                     </label>
                                     {!canSaveExemption && (
                                         <p className="text-[11px] font-bold text-rose-500 ml-1">Falta la Fecha Inicio, o la Fecha Fin es anterior a la Fecha Inicio.</p>
+                                    )}
+
+                                    {/* Importar tramos desde una simulación guardada de este mismo
+                                        instructor (ver scenarios.data.simulationConfig.instructorKey /
+                                        metadata.instructorName) — evita rehacer a mano los tramos que
+                                        ya se armaron en "Modo de Prueba". Solo se busca al activar la
+                                        exención (ver handleExemptionToggle), no al abrir el modal. */}
+                                    {isLoadingScenarios && (
+                                        <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 ml-1">
+                                            <div className="animate-spin h-3 w-3 border-2 border-slate-300 border-t-transparent rounded-full" />
+                                            <span>Buscando simulaciones guardadas de este instructor…</span>
+                                        </div>
+                                    )}
+
+                                    {importedFromScenario && !showScenarioPicker && (
+                                        <div className="flex items-center justify-between gap-2 bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-2.5">
+                                            <span className="text-[11px] font-bold text-emerald-700">
+                                                Tramos importados desde "{importedFromScenario.name}" ({new Date(importedFromScenario.created_at).toLocaleDateString('es-PE')})
+                                            </span>
+                                            {scenarioOptions && scenarioOptions.length > 1 && (
+                                                <button type="button" onClick={() => setShowScenarioPicker(true)} className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 shrink-0">Cambiar</button>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {!isLoadingScenarios && showScenarioPicker && scenarioOptions && scenarioOptions.length > 0 && (
+                                        <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-2xl p-4">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <div className="flex items-center gap-2 text-[11px] font-black text-indigo-700 uppercase tracking-widest">
+                                                    <History size={14} />
+                                                    <span>Simulaciones guardadas de este instructor ({scenarioOptions.length})</span>
+                                                </div>
+                                                <button type="button" onClick={() => setShowScenarioPicker(false)} className="p-1 text-slate-400 hover:text-slate-600">
+                                                    <X size={14} />
+                                                </button>
+                                            </div>
+                                            <div className="space-y-2 max-h-40 overflow-y-auto">
+                                                {scenarioOptions.map(scenario => (
+                                                    <button
+                                                        type="button"
+                                                        key={scenario.id}
+                                                        onClick={() => handleImportScenario(scenario)}
+                                                        className="w-full flex items-center justify-between gap-3 bg-white border-2 border-slate-100 hover:border-indigo-300 rounded-xl px-3 py-2 text-left transition-all"
+                                                    >
+                                                        <span className="min-w-0 flex-1">
+                                                            <span className="flex items-center gap-1.5">
+                                                                {scenario.data?.metadata?.isAutoBackup && <ShieldCheck size={12} className="text-amber-500 shrink-0" />}
+                                                                <span className="text-xs font-bold text-slate-700 truncate">{scenario.name}</span>
+                                                            </span>
+                                                            <span className="text-[10px] font-semibold text-slate-400">{new Date(scenario.created_at).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                                                        </span>
+                                                        <span className="text-[10px] font-black uppercase tracking-widest text-indigo-600 shrink-0">Importar</span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
                             )}

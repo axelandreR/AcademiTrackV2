@@ -4,7 +4,7 @@ import { AppSettings, DEFAULT_SETTINGS } from '../types/settings';
 import { supabase } from '../supabaseClient';
 import { validateInstructorWeek } from '../services/auditService';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE, ACTIVE_PERIODO } from '../constants';
-import { belongsToInstructor, findFuzzyNameMatches, isFuzzyNameMatch, normalizeNameKey, buildInstructorScheduleIndex, getInstructorSchedules } from '../services/businessRules';
+import { belongsToInstructor, findFuzzyNameMatches, isFuzzyNameMatch, normalizeNameKey, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName } from '../services/businessRules';
 import { normalizeExtraHoursConfig } from '../services/extraHoursCalculations';
 import Toast, { ToastState } from '../components/Toast';
 
@@ -624,7 +624,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         status: 'Activo',
         auditStatus: i.audit_status,
         auditJson: i.audit_json,
-        hasExtraHoursAssigned: Boolean(i.has_extra_hours_assigned)
+        hasExtraHoursAssigned: Boolean(i.has_extra_hours_assigned),
+        hasExtraHoursAssignedStart: i.has_extra_hours_assigned_start || null,
+        hasExtraHoursAssignedEnd: i.has_extra_hours_assigned_end || null
       }));
 
       setInstructors(instructorsMapped);
@@ -860,30 +862,37 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const saveInstructorCloud = useCallback(async (inst: Instructor) => {
     try {
-      const dbInst = mapInstructorToDB(inst);
+      // Fusiona sobre el instructor YA existente (si lo hay) en vez de confiar en que
+      // `inst` traiga todos los campos: varios llamadores (ej. InstructorEditModal, que
+      // arma su objeto solo con los campos de su propio formulario) no conocen campos más
+      // nuevos (auditStatus/auditJson, hasExtraHoursAssigned/Start/End) — sin esta fusión,
+      // el upsert completo de abajo los borraba en silencio.
+      const existing = instructors.find(i => i.id === inst.id);
+      const merged: Instructor = existing ? { ...existing, ...inst } : inst;
+      const dbInst = mapInstructorToDB(merged);
       const { error } = await supabase.from('instructors').upsert(dbInst);
       if (error) throw error;
 
       // Actualizar localmente
       setInstructors(prev => {
-        const index = prev.findIndex(i => i.id === inst.id);
+        const index = prev.findIndex(i => i.id === merged.id);
         if (index >= 0) {
           const next = [...prev];
-          next[index] = inst;
+          next[index] = merged;
           return next;
         }
-        return [...prev, inst];
+        return [...prev, merged];
       });
 
       // SINCRONIZACIÓN AUTOMÁTICA: Si el instructor es guardado/actualizado, buscamos su carga
       // Esto soluciona la "mala mezcla" de datos de instructores nuevos
-      await syncInstructorIdInSchedules(inst);
+      await syncInstructorIdInSchedules(merged);
 
     } catch (err: any) {
       console.error("Error saving instructor to Supabase:", err);
       alert('Error al guardar instructor: ' + err.message);
     }
-  }, [syncInstructorIdInSchedules]);
+  }, [instructors, syncInstructorIdInSchedules]);
 
   const deleteInstructorCloud = useCallback(async (id: string) => {
     try {
@@ -902,13 +911,24 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const bulkUpsertInstructors = useCallback(async (list: Instructor[]) => {
     if (list.length === 0) return;
     try {
-      const payload = list.map(mapInstructorToDB);
+      // Fusiona cada fila entrante sobre el instructor existente (si ya está en el
+      // catálogo) en vez de reemplazarlo entero: parseInstructorsFile (Excel de
+      // Instructores) solo trae id/name/type/maxHours/specialty/campus/status — sin esta
+      // fusión, cualquier recarga de ese Excel borraba en silencio auditStatus/auditJson y
+      // la exención de HE (hasExtraHoursAssigned/Start/End) de TODOS los instructores del
+      // archivo, aunque no tuvieran nada que ver con esos campos.
+      const existingMap = new Map<string, Instructor>(instructors.map(i => [i.id, i]));
+      const merged = list.map(i => {
+        const existing = existingMap.get(i.id);
+        return existing ? { ...existing, ...i } : i;
+      });
+      const payload = merged.map(mapInstructorToDB);
       const { error } = await supabase.from('instructors').upsert(payload, { onConflict: 'id' });
       if (error) throw error;
 
       setInstructors(prev => {
         const map = new Map(prev.map(i => [i.id, i]));
-        list.forEach(i => map.set(i.id, i));
+        merged.forEach(i => map.set(i.id, i));
         return Array.from(map.values());
       });
     } catch (err: any) {
@@ -916,7 +936,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       alert('Error al cargar instructores: ' + err.message);
       throw err;
     }
-  }, []);
+  }, [instructors]);
 
   const saveRoomCloud = useCallback(async (room: RoomData) => {
     try {
@@ -1108,8 +1128,14 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (instructorFilter) {
         // Filter data for specific instructor. Buscamos el objeto Instructor real para
         // poder usar belongsToInstructor (prioriza ID); si no lo encontramos en el
-        // catálogo, caemos a comparación de nombre como último recurso.
-        const instObj = instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter));
+        // catálogo, caemos a comparación de nombre como último recurso. Usa
+        // resolveInstructorByName (match exacto y, si falla, fuzzy único — ver
+        // businessRules.ts) en vez de solo comparación exacta: un match exacto fallido
+        // por nombre truncado/abreviado (ej. "JIMENEZ RAMOS LUIS" vs "JIMENEZ RAMOS LUIS
+        // GUSTAVO" del catálogo, confirmado en producción) dejaba instructorKey con el
+        // nombre crudo en vez del ID, rompiendo cualquier búsqueda posterior por ID (ver
+        // findInstructorScenarios en services/scenarioLookup.ts).
+        const instObj = resolveInstructorByName(instructorFilter, instructorsByNameMap, instructors);
         const matchesFilter = (s: ProcessedSchedule) => instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
         schedulesToClone = schedules.filter(matchesFilter);
         adminToClone = administrativeTasks.filter(matchesFilter);
@@ -1162,7 +1188,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Error starting simulation:", e);
       notify("Error al iniciar simulación: " + e.message, 'error');
     }
-  }, [schedules, administrativeTasks, notify, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig]);
+  // instructorsByNameMap no entra en las deps a propósito: se declara (useMemo, más abajo
+  // en este componente) DESPUÉS de este useCallback, así que referenciarla aquí en el
+  // array de deps (evaluado de inmediato) rompería con un ReferenceError de TDZ. No hace
+  // falta de todas formas: instructorsByNameMap se deriva 1:1 de `instructors` (mismo
+  // useMemo, sin otras deps), así que ya queda cubierta al incluir `instructors`.
+  }, [schedules, administrativeTasks, notify, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig, instructors]);
 
   const endSimulation = useCallback(() => {
     setIsSimulationMode(false);

@@ -26,7 +26,13 @@ const InstructorEditModal: React.FC<InstructorEditModalProps> = ({ isOpen, onClo
     const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
+        // Al editar, se parte del instructor existente completo (no solo los campos de
+        // este formulario) — de lo contrario cualquier edición acá borraba en silencio
+        // campos que este form no conoce (auditStatus/auditJson, y la exención de HE con
+        // su rango de fechas: hasExtraHoursAssigned/Start/End), porque saveInstructorCloud
+        // hace un upsert completo del objeto que se le pase.
         const newInst: Instructor = {
+            ...(isEditing ? instructor! : {} as Instructor),
             id: isEditing ? instructor!.id : (formData.get('id') as string),
             name: formData.get('name') as string,
             type: formData.get('type') as 'TC' | 'TP',
