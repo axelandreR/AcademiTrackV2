@@ -1,5 +1,5 @@
 import React, { useEffect, useState, Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import FileUploader from './components/FileUploader';
 import { ParseResult } from './services/excelParser';
 import { DataProvider, useData } from './context/DataContext';
@@ -109,14 +109,19 @@ const AppContent: React.FC = () => {
 // Pequeño wrapper para adaptar ReportsDashboard al nuevo sistema de props
 const ContextReportsWrapper: React.FC = () => {
   const { allSchedules, instructors, holidays } = useData();
-  const [dummyState, setDummyState] = useState(0); // Hack para forzar re-render si es necesario
+  const navigate = useNavigate();
 
+  // Navegación SPA (antes: window.location.href = '/', una recarga completa de la app).
+  // Eso rompía "Corregir en Horario" desde el Radar de Conflictos: ReportsDashboard
+  // llamaba a este mismo onBack() ANTES de navegar a /schedule con los parámetros del
+  // cruce, así que la recarga completa descartaba esa navegación en curso y el usuario
+  // terminaba de vuelta en "/" sin ver la grilla (ver ReportsDashboard.tsx::handleCorrectConflict).
   return (
     <ReportsDashboard
       schedules={allSchedules}
       instructors={instructors}
       holidays={holidays}
-      onBack={() => window.location.href = '/'} // Simple redirect por ahora
+      onBack={() => navigate('/')}
     />
   );
 };

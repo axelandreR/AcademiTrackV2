@@ -1,14 +1,26 @@
 
-import React from 'react';
-import { AlertCircle, ShieldCheck, UserCircle2, Calendar as CalendarIcon, Clock, ChevronRight } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { AlertCircle, ShieldCheck, UserCircle2, Calendar as CalendarIcon, Clock, ChevronRight, Filter, X } from 'lucide-react';
 import { Conflict } from '../../services/conflictDetection';
 
 interface ConflictsRadarProps {
     conflictData: Conflict[];
     onCorrectConflict: (view: 'Instructor' | 'Aula', filterValue: string, date: string) => void;
+    // Acota la lista a un recurso puntual (Conflict.target — nombre de docente o "Edificio
+    // - Aula") cuando se llega desde un deep link, ej. "Ir a Conflictos →" en Ocupabilidad
+    // (ver ReportsDashboard.tsx). Sin esto, un cruce de aula específico quedaba mezclado
+    // entre TODOS los del semestre y había que buscarlo a mano.
+    highlightTarget?: string | null;
+    onClearHighlight?: () => void;
 }
 
-const ConflictsRadar: React.FC<ConflictsRadarProps> = ({ conflictData, onCorrectConflict }) => {
+const ConflictsRadar: React.FC<ConflictsRadarProps> = ({ conflictData, onCorrectConflict, highlightTarget, onClearHighlight }) => {
+    const normalizedTarget = highlightTarget?.trim().toUpperCase() || null;
+    const visibleConflicts = useMemo(() => {
+        if (!normalizedTarget) return conflictData;
+        return conflictData.filter(c => c.target.trim().toUpperCase() === normalizedTarget);
+    }, [conflictData, normalizedTarget]);
+
     return (
         <div className="space-y-6">
             <div className="flex items-center justify-between mb-8">
@@ -18,21 +30,40 @@ const ConflictsRadar: React.FC<ConflictsRadarProps> = ({ conflictData, onCorrect
                 </div>
                 <div className="px-4 py-2 bg-rose-50 rounded-2xl border border-rose-100 text-rose-600 text-xs font-black uppercase tracking-widest flex items-center space-x-2">
                     <AlertCircle size={16} />
-                    <span>{conflictData.length} Conflictos Detectados</span>
+                    <span>{visibleConflicts.length} Conflictos Detectados</span>
                 </div>
             </div>
 
-            {conflictData.length === 0 ? (
+            {normalizedTarget && (
+                <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 rounded-2xl px-5 py-3">
+                    <div className="flex items-center gap-2 text-indigo-700 text-xs font-black uppercase tracking-widest">
+                        <Filter size={14} />
+                        <span>Mostrando solo: {highlightTarget}</span>
+                    </div>
+                    {onClearHighlight && (
+                        <button onClick={onClearHighlight} className="flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-900">
+                            <X size={12} />
+                            <span>Ver todos</span>
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {visibleConflicts.length === 0 ? (
                 <div className="bg-white rounded-[40px] p-20 flex flex-col items-center justify-center text-center shadow-xl border border-slate-100">
                     <div className="p-8 bg-emerald-50 text-emerald-500 rounded-full mb-6">
                         <ShieldCheck size={64} />
                     </div>
                     <h4 className="text-2xl font-black text-slate-900">Programación Limpia</h4>
-                    <p className="text-slate-400 mt-2 max-w-sm">No se han detectado colisiones de horario en todo el semestre. ¡Excelente trabajo!</p>
+                    <p className="text-slate-400 mt-2 max-w-sm">
+                        {normalizedTarget
+                            ? `No se detectaron cruces para "${highlightTarget}" en todo el semestre.`
+                            : 'No se han detectado colisiones de horario en todo el semestre. ¡Excelente trabajo!'}
+                    </p>
                 </div>
             ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {conflictData.map((c, idx) => (
+                    {visibleConflicts.map((c, idx) => (
                         <div key={idx} className="bg-white p-6 rounded-[32px] shadow-xl border border-slate-100 hover:border-rose-200 transition-all flex flex-col">
                             <div className="flex items-start justify-between mb-6">
                                 <div className="flex items-center space-x-4">

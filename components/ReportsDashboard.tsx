@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import {
   FileDown, Search, ArrowLeft, BarChart4, Download, Scale
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule, Instructor, HolidayData, ReconciliationResult } from '../types';
 import { generateGlobalAuditExcel, generateIdealStructureExport } from '../services/excelExporter';
@@ -33,7 +33,16 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
   const [selectedReconResult, setSelectedReconResult] = useState<ReconciliationResult | null>(null);
   const [showValidationPanel, setShowValidationPanel] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [activeTab, setActiveTab] = useState<'audit' | 'conflicts'>('audit');
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Deep link desde Ocupabilidad ("Ir a Conflictos →", ver OccupancyPage.tsx): si llega
+  // ?tab=conflicts, abre directo en esa pestaña en vez de "Carga Horaria" por defecto.
+  const [activeTab, setActiveTab] = useState<'audit' | 'conflicts'>(
+    searchParams.get('tab') === 'conflicts' ? 'conflicts' : 'audit'
+  );
+  // ?target=<aula o docente> (ver Conflict.target en services/conflictDetection.ts) para
+  // acotar el Radar de Conflictos al recurso puntual que el usuario ya tenía seleccionado,
+  // en vez de mostrarle los cruces de todo el semestre y obligarlo a buscar el suyo.
+  const highlightTarget = searchParams.get('target');
 
   const { holidaysMap, institutionalReferences, uploadInstitutionalReference } = useData();
   const navigate = useNavigate();
@@ -78,7 +87,9 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
   );
 
   const handleCorrectConflict = (view: 'Instructor' | 'Aula', filterValue: string, date: string) => {
-    onBack();
+    // No se llama a onBack() aquí: onBack navega a "/" y con eso se pisaba/descartaba
+    // esta misma navegación a /schedule antes de completarse (con window.location.href
+    // como hard reload, directamente la anulaba — ver App.tsx::ContextReportsWrapper).
     navigate(`/schedule?view=${view}&filter=${encodeURIComponent(filterValue)}&date=${date}`);
   };
 
@@ -107,7 +118,7 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
               Carga Horaria
             </button>
             <button
-              onClick={() => setActiveTab('conflicts')}
+              onClick={() => { setActiveTab('conflicts'); setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('tab'); next.delete('target'); return next; }); }}
               className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center space-x-2 ${activeTab === 'conflicts' ? 'bg-white text-rose-600 shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>
               {conflictData.length > 0 && <div className="w-2 h-2 bg-rose-500 rounded-full animate-ping" />}
               <span>Conflictos ({conflictData.length})</span>
@@ -168,7 +179,12 @@ const ReportsDashboard: React.FC<ReportsDashboardProps> = ({ schedules, instruct
             <AuditTable filteredAudit={filteredAudit} onSelectAudit={setSelectedAudit} />
           </>
         ) : activeTab === 'conflicts' ? (
-          <ConflictsRadar conflictData={conflictData} onCorrectConflict={handleCorrectConflict} />
+          <ConflictsRadar
+            conflictData={conflictData}
+            onCorrectConflict={handleCorrectConflict}
+            highlightTarget={highlightTarget}
+            onClearHighlight={() => setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('target'); return next; })}
+          />
         ) : (
           <ReconciliationView
             institutionalReferences={institutionalReferences}

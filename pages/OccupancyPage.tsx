@@ -323,7 +323,15 @@ const OccupancyPage: React.FC = () => {
             <OccupancyDetailPanel
                 summary={selectedSummary}
                 onClose={() => setSelectedRoomKey(null)}
-                onGoToConflicts={() => navigate('/reports')}
+                onGoToConflicts={() => {
+                    if (!selectedSummary) return;
+                    // target debe calzar exacto con Conflict.target para conflictos de aula
+                    // (ver `${building} - ${room}` en services/conflictDetection.ts), así el
+                    // Radar de Conflictos puede acotar la lista a esta aula puntual en vez de
+                    // mostrar todos los cruces del semestre (ver ReportsDashboard.tsx).
+                    const target = `${selectedSummary.building} - ${selectedSummary.room}`;
+                    navigate(`/reports?tab=conflicts&target=${encodeURIComponent(target)}`);
+                }}
             />
 
             <OccupancyRangeModal
