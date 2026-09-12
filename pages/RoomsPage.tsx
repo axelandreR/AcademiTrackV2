@@ -5,6 +5,7 @@ import { useData } from '../context/DataContext';
 import { RoomData } from '../types';
 import { parseRoomsFile } from '../services/excelParser';
 import { generateAulaTemplate } from '../services/templateGenerator';
+import { isNonPhysicalRoom } from '../services/businessRules';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 const RoomsPage: React.FC = () => {
@@ -63,8 +64,9 @@ const RoomsPage: React.FC = () => {
 
     const filteredRooms = useMemo(() =>
         rooms.filter(r =>
-            r.roomKey.toLowerCase().includes(managementSearch.toLowerCase()) ||
-            r.career.toLowerCase().includes(managementSearch.toLowerCase())
+            !isNonPhysicalRoom(r.building) &&
+            (r.roomKey.toLowerCase().includes(managementSearch.toLowerCase()) ||
+                r.career.toLowerCase().includes(managementSearch.toLowerCase()))
         ),
         [rooms, managementSearch]);
 

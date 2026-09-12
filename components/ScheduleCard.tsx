@@ -3,6 +3,7 @@ import React from 'react';
 import { Link2Off, Trash2, Hash, MapPin, Video, Clock } from 'lucide-react';
 import { ProcessedSchedule, ViewType } from '../types';
 import { getShortLabel } from '../constants';
+import { isNonPhysicalRoom } from '../services/businessRules';
 
 interface ScheduleCardProps {
     sched: ProcessedSchedule;
@@ -57,6 +58,10 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
         }
     };
 
+    // SV-EV/00-EX no son ambientes físicos navegables (ver isNonPhysicalRoom en
+    // businessRules.ts) — "Ver ambiente" no debe llevar ahí, satura la grilla con
+    // cientos de bloques sin relación real entre sí.
+    const isFakeRoom = isNonPhysicalRoom(sched.building);
     const catColor = getCategoryStyles(sched, isHolidayDay);
     const isAutoestudio = sched.meetingType === 'VAEE' || (sched.activity && sched.activity.toUpperCase().includes('AUTOESTUDIO'));
     const durationHours = (timeToMinutes(sched.endTime) - timeToMinutes(sched.startTime)) / 60;
@@ -116,7 +121,11 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
                             </div>
                         )}
                         <div className={`flex flex-col gap-0.5 mt-auto pt-1 shrink-0 min-w-0`}>
-                            <div role="link" tabIndex={0} aria-label={`Ver ambiente ${sched.building} - ${sched.room}`} onClick={(e) => { e.stopPropagation(); onNavigate?.('Aula', `${sched.building} - ${sched.room}`); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onNavigate?.('Aula', `${sched.building} - ${sched.room}`); } }} className={`font-black text-slate-700 uppercase flex items-center min-w-0 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-600 rounded ${isLargeBlock ? 'text-[11px]' : 'text-[9px]'}`}><MapPin size={isLargeBlock ? 12 : 9} className="mr-1 shrink-0" /><span className="truncate">{sched.building} - {sched.room}</span></div>
+                            {isFakeRoom ? (
+                                <div title="No es un ambiente físico navegable" className={`font-black text-slate-700 uppercase flex items-center min-w-0 cursor-default ${isLargeBlock ? 'text-[11px]' : 'text-[9px]'}`}><MapPin size={isLargeBlock ? 12 : 9} className="mr-1 shrink-0" /><span className="truncate">{sched.building} - {sched.room}</span></div>
+                            ) : (
+                                <div role="link" tabIndex={0} aria-label={`Ver ambiente ${sched.building} - ${sched.room}`} onClick={(e) => { e.stopPropagation(); onNavigate?.('Aula', `${sched.building} - ${sched.room}`); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onNavigate?.('Aula', `${sched.building} - ${sched.room}`); } }} className={`font-black text-slate-700 uppercase flex items-center min-w-0 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-600 rounded ${isLargeBlock ? 'text-[11px]' : 'text-[9px]'}`}><MapPin size={isLargeBlock ? 12 : 9} className="mr-1 shrink-0" /><span className="truncate">{sched.building} - {sched.room}</span></div>
+                            )}
                             <div className={`font-black text-slate-500 flex items-center min-w-0 ${isLargeBlock ? 'text-[11px]' : 'text-[9px]'}`}><Clock size={isLargeBlock ? 12 : 9} className="mr-1 shrink-0" /><span className="truncate">{sched.startTime}-{sched.endTime}</span></div>
                         </div>
                     </div>

@@ -14,6 +14,16 @@ const DIACRITICS_REGEX = new RegExp(`[${String.fromCharCode(0x0300)}-${String.fr
 export const normalizeNameKey = (str: string) => (str || '').toString().trim()
     .normalize("NFD").replace(DIACRITICS_REGEX, "").toUpperCase();
 
+// "SV-EV" (virtual/autoestudio) y "00-EX" (edificio externo) son códigos de edificio
+// usados como cajón de sastre para tareas sin un espacio físico real — no son ambientes
+// navegables. Muchas clases y tareas distintas comparten el mismo código sin ser el mismo
+// lugar, así que cualquier vista que los trate como "un ambiente" (Ambientes,
+// Ocupabilidad, conflictos de aula) produce ruido sin sentido: cientos de "cruces" que
+// nunca fueron un choque real, y porcentajes de ocupación de miles de por ciento.
+export const NON_PHYSICAL_ROOM_BUILDINGS = new Set(['SV-EV', '00-EX']);
+export const isNonPhysicalRoom = (building?: string | null): boolean =>
+    !!building && NON_PHYSICAL_ROOM_BUILDINGS.has(building.trim().toUpperCase());
+
 /**
  * Resuelve un instructor a partir de un nombre de texto (ej. el `instructor` crudo de un
  * horario), primero por match EXACTO contra instructorsByNameMap (rápido), y si no

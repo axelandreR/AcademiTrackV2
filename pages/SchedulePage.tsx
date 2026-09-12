@@ -9,7 +9,7 @@ import RecordModal from '../components/RecordModal';
 import ExportModal from '../components/ExportModal';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule, ViewType, AppMode, ScheduleCategory, ModalityType, ExportConfig } from '../types';
-import { isAcademicMetaLoad, isContractualLoad, normalizeNameKey, belongsToInstructor, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName } from '../services/businessRules';
+import { isAcademicMetaLoad, isContractualLoad, normalizeNameKey, belongsToInstructor, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName, isNonPhysicalRoom } from '../services/businessRules';
 import { DAYS_OF_WEEK, SEMESTER_START_DATE, SEMESTER_END_DATE, CUT_OFF_DATE, ACTIVE_PERIODO } from '../constants';
 import { buildInstructorEmailSummary } from '../services/instructorEmailSummary';
 import InstructorEmailModal from '../components/InstructorEmailModal';
@@ -297,6 +297,9 @@ const SchedulePage: React.FC = () => {
                 // Filter: Must be active (present in schedules) OR user explicitly wants all?
                 // User said: "before... those who did not have any load assigned did not appear".
                 if (!activeRoomKeys.has(r.roomKey)) return;
+                // SV-EV/00-EX no son ambientes físicos navegables (ver isNonPhysicalRoom) —
+                // entrar ahí satura la grilla con cientos de bloques sin relación real.
+                if (isNonPhysicalRoom(r.building)) return;
 
                 const type = r.type || 'SIN TIPO';
                 if (!typeMap.has(type)) typeMap.set(type, new Set());

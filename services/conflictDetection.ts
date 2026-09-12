@@ -2,7 +2,7 @@
 import { ProcessedSchedule, HolidayData, ReconciliationResult, InstitutionalReference, Instructor } from '../types';
 import { timeToMinutes } from '../utils/timeUtils';
 import { SEMESTER_END_DATE } from '../constants';
-import { buildInstructorScheduleIndex, getInstructorSchedules } from './businessRules';
+import { buildInstructorScheduleIndex, getInstructorSchedules, isNonPhysicalRoom } from './businessRules';
 
 export interface Conflict {
     type: 'instructor' | 'room';
@@ -61,6 +61,12 @@ export const detectConflicts = (
         if (s.room && s.room !== 'POR ASIGNAR') {
             // Administrative tasks do NOT generate room conflicts (no physical room)
             if (s.isAdministrative) return;
+
+            // SV-EV/00-EX no son ambientes físicos reales (ver isNonPhysicalRoom) — se
+            // chequea el edificio directo, no por texto, porque el campo aula a veces
+            // viene null/"N/A" y no siempre contiene "VIRTUAL" para que lo agarrara el
+            // filtro de texto de abajo.
+            if (isNonPhysicalRoom(s.building)) return;
 
             const roomKey = `${s.building} - ${s.room}`;
             const upperKey = roomKey.toUpperCase();

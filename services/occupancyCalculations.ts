@@ -1,5 +1,6 @@
 import { ProcessedSchedule, RoomData, HolidayData } from '../types';
 import { TIME_START, TIME_END, OCCUPANCY_TURNOS, DAYS_OF_WEEK } from '../constants';
+import { isNonPhysicalRoom } from './businessRules';
 
 export type FrequencyKey = 'weekday' | 'weekend' | 'general';
 export type TurnoBucketKey = 'manana' | 'tarde' | 'noche' | 'allday';
@@ -284,7 +285,11 @@ export const calculateAllRoomsOccupancy = (
 
     const index = buildRoomScheduleIndex(schedules);
 
-    return rooms.map(room => {
+    // SV-EV/00-EX no son ambientes físicos reales (ver isNonPhysicalRoom) — son cajones
+    // de sastre donde caen decenas de clases/tareas sin relación entre sí, así que
+    // tratarlos como "una sola aula" producía porcentajes de ocupación sin sentido
+    // (>2000%) y los mostraba como si fueran un espacio real a revisar.
+    return rooms.filter(room => !isNonPhysicalRoom(room.building)).map(room => {
         const roomKey = `${room.building} - ${room.room}`;
         const roomSchedules = index.get(roomKey) || [];
         return calculateSingleRoomOccupancy(room, roomSchedules, semesterStart, semesterEnd, holidays, dayOccurrences, availableTemplate, availability);

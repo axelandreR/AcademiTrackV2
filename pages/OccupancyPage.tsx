@@ -108,8 +108,11 @@ const OccupancyPage: React.FC = () => {
         [rooms, allSchedules, holidays, rangeStart, rangeEnd, availability]
     );
 
-    const buildings = useMemo(() => Array.from(new Set(rooms.map(r => r.building))).filter(Boolean).sort(), [rooms]);
-    const types = useMemo(() => Array.from(new Set(rooms.map(r => r.type))).filter(Boolean).sort(), [rooms]);
+    // Derivados de `summaries` (ya sin SV-EV/00-EX, ver calculateAllRoomsOccupancy) y no
+    // del catálogo `rooms` crudo, para no ofrecer un filtro de edificio que después
+    // muestra la lista vacía porque ese "edificio" no es un ambiente físico real.
+    const buildings = useMemo(() => Array.from(new Set(summaries.map(s => s.building))).filter(Boolean).sort(), [summaries]);
+    const types = useMemo(() => Array.from(new Set(summaries.map(s => s.type))).filter(Boolean).sort(), [summaries]);
 
     const filtered = useMemo(() => {
         return summaries
