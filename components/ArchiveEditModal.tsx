@@ -283,8 +283,8 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
                                 <input
                                     type="date"
                                     disabled={splitEnabled}
-                                    value={formData.startDate ? (formData.startDate instanceof Date ? formData.startDate.toISOString().split('T')[0] : new Date(formData.startDate).toISOString().split('T')[0]) : ''}
-                                    onChange={e => setFormData({ ...formData, startDate: new Date(e.target.value + 'T00:00:00') })}
+                                    value={toDateInput(formData.startDate)}
+                                    onChange={e => setFormData({ ...formData, startDate: e.target.value ? new Date(e.target.value + 'T00:00:00') : undefined })}
                                     className="w-full pl-10 pr-4 py-3 bg-slate-100 border-transparent rounded-2xl text-sm font-bold focus:bg-white focus:border-blue-500 transition-all outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                                 />
                             </div>
@@ -296,8 +296,8 @@ const ArchiveEditModal: React.FC<ArchiveEditModalProps> = ({ isOpen, onClose, on
                                 <input
                                     type="date"
                                     disabled={splitEnabled}
-                                    value={formData.endDate ? (formData.endDate instanceof Date ? formData.endDate.toISOString().split('T')[0] : new Date(formData.endDate).toISOString().split('T')[0]) : ''}
-                                    onChange={e => setFormData({ ...formData, endDate: new Date(e.target.value + 'T00:00:00') })}
+                                    value={toDateInput(formData.endDate)}
+                                    onChange={e => setFormData({ ...formData, endDate: e.target.value ? new Date(e.target.value + 'T00:00:00') : undefined })}
                                     className="w-full pl-10 pr-4 py-3 bg-slate-100 border-transparent rounded-2xl text-sm font-bold focus:bg-white focus:border-blue-500 transition-all outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                                 />
                             </div>
