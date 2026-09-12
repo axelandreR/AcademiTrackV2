@@ -94,8 +94,19 @@ export const getHexColor = (tailwindClass: string): string => {
 };
 
 export const TIME_START = 7;
+// Ventana operativa usada por Ocupabilidad (splitBlockByTurno/occupancyCalculations.ts) para
+// calcular % de ocupación — NO tocar para extender la grilla/exportación: cambiar esto
+// corre la ventana de disponibilidad de aulas y altera esos porcentajes para todo el
+// semestre. Para la grilla y su exportación a Excel, ver SCHEDULE_GRID_TIME_END abajo.
 export const TIME_END = 22;
 export const MAX_ACADEMIC_HOUR = "22:30";
+// Límite de la grilla de horario (Visualización/Edición) y de su exportación a Excel —
+// deliberadamente separado de TIME_END. Antes getTimeSlots() usaba TIME_END (22, hasta
+// 22:30) para ambas cosas: una tarea o clase que terminara a las 22:45 o más tarde no
+// tenía ninguna fila donde caer, y tanto la grilla (fuera de modo Editor) como el Excel
+// exportado la omitían por completo — en el exportador, sin una fila de fin válida el
+// bloque entero (celda, color, Y sus horas en el resumen semanal) se saltaba en silencio.
+export const SCHEDULE_GRID_TIME_END = 23;
 
 export interface TurnoConfig {
   key: 'manana' | 'tarde' | 'noche';
@@ -123,7 +134,7 @@ export interface TimeSlotConfig {
 export const getTimeSlots = (): TimeSlotConfig[] => {
   const slots: TimeSlotConfig[] = [];
   const startTotalMinutes = TIME_START * 60;
-  const endTotalMinutes = TIME_END * 60 + 30;
+  const endTotalMinutes = SCHEDULE_GRID_TIME_END * 60 + 30;
 
   for (let total = startTotalMinutes; total <= endTotalMinutes; total += 15) {
     const h = Math.floor(total / 60);

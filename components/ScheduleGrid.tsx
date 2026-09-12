@@ -346,9 +346,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
 
   const visibleTimeSlots = useMemo(() => {
     if (isEditorMode) return allTimeSlots;
-    if (!isInstructorView || (schedules.length === 0)) return allTimeSlots;
+    if (!isInstructorView || (schedules.length === 0) || allTimeSlots.length === 0) return allTimeSlots;
+    // Tope dinámico atado al último slot real de getTimeSlots() (ver constants.tsx —
+    // SCHEDULE_GRID_TIME_END) en vez de un "22:30" fijo: ese hardcode ocultaba en la
+    // propia grilla (fuera de modo Editor) cualquier tarea que terminara más tarde, aunque
+    // sí existiera en los datos — el mismo techo que causaba que el Excel exportado
+    // descartara esos bloques.
+    const lastSlotMinutes = timeToMinutes(allTimeSlots[allTimeSlots.length - 1].label);
     const latestMinutes = schedules.reduce((max, s) => Math.max(max, timeToMinutes(s.endTime)), 0);
-    const clipLimitMinutes = latestMinutes > 0 ? Math.min(timeToMinutes("22:30"), latestMinutes + 60) : timeToMinutes("22:30");
+    const clipLimitMinutes = latestMinutes > 0 ? Math.min(lastSlotMinutes, latestMinutes + 60) : lastSlotMinutes;
     return allTimeSlots.filter(slot => timeToMinutes(slot.label) <= clipLimitMinutes);
   }, [allTimeSlots, schedules, isInstructorView, isEditorMode]);
 
