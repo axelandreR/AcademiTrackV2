@@ -1413,7 +1413,7 @@ export const generateOccupancyExcel = async (
 
   const headerRow1 = worksheet.getRow(1);
   const headerRow2 = worksheet.getRow(2);
-  const identityHeaders = ['AULA', 'EDIFICIO', 'TIPO', 'CARRERA', 'AFORO'];
+  const identityHeaders = ['EDIFICIO', 'AULA', 'TIPO', 'CARRERA', 'AFORO'];
   headerRow1.values = [...identityHeaders, ...freqOrder.flatMap(f => turnoOrder.map(() => freqLabels[f]))];
   headerRow2.values = [...identityHeaders.map(() => ''), ...freqOrder.flatMap(() => turnoOrder.map(t => turnoLabels[t]))];
 
@@ -1426,9 +1426,14 @@ export const generateOccupancyExcel = async (
   [headerRow1, headerRow2].forEach(r => r.eachCell(c => sectionHeaderStyle(c)));
 
   summaries.forEach(s => {
-    const rowValues: (string | number)[] = [s.room, s.building, s.type, s.career, s.capacity];
-    freqOrder.forEach(f => turnoOrder.forEach(t => rowValues.push(Number(s.matrix[f][t].occupancyPct.toFixed(1)))));
+    const rowValues: (string | number)[] = [s.building, s.room, s.type, s.career, s.capacity];
+    // Se guarda como fracción (0.689) + numFmt '0.0%' -> Excel lo trata como porcentaje real
+    // (se ve "68.9%", ordena/filtra bien), no como un número pelado ambiguo.
+    freqOrder.forEach(f => turnoOrder.forEach(t => rowValues.push(s.matrix[f][t].occupancyPct / 100)));
     const r = worksheet.addRow(rowValues);
+    r.eachCell((c, colNumber) => {
+      if (colNumber > identityHeaders.length) c.numFmt = '0.0%';
+    });
     if (s.hasOverbooking) {
       r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; });
     }
@@ -1436,23 +1441,77 @@ export const generateOccupancyExcel = async (
 
   worksheet.columns.forEach((col, idx) => { col.width = idx < identityHeaders.length ? 16 : 11; });
 
-  // --- Hoja 3: Carga Semanal (horas reales por aula, semana a semana) ---
+  // --- Hoja 3: Carga Semanal (horas reales por aula, semana a semana, desglosadas en
+  // LUN-VIE / SAB-DOM igual que la matriz de Ocupabilidad por Aula) ---
   const weeklySheet = workbook.addWorksheet('Carga Semanal');
   const weeks = buildWeekBuckets(rangeStart, rangeEnd);
   const filteredRoomKeys = new Set(summaries.map(s => s.roomKey));
   const filteredRooms = rooms.filter(r => filteredRoomKeys.has(`${r.building} - ${r.room}`));
   const weeklyLoads = calculateWeeklyRoomLoad(filteredRooms, schedules, holidays, weeks);
 
-  const weeklyHeaderRow = weeklySheet.getRow(1);
-  const weeklyIdentityHeaders = ['AULA', 'EDIFICIO', 'TIPO'];
-  weeklyHeaderRow.values = [...weeklyIdentityHeaders, ...weeks.map(w => w.label), 'TOTAL'];
-  weeklyHeaderRow.eachCell(c => sectionHeaderStyle(c));
+  const weeklyIdentityHeaders = ['EDIFICIO', 'AULA', 'TIPO'];
+  const weeklySubLabels = ['LUN-VIE', 'SAB-DOM'];
+  const weeklyTotalStartCol = weeklyIdentityHeaders.length + 1 + weeks.length * 2;
+  const weeklyTotalCols = weeklyTotalStartCol + 2;
 
+  // Una tabla independiente por TIPO de aula (mismo criterio que "DESGLOSE POR TIPO DE
+  // AMBIENTE" en Resumen), apiladas en la misma hoja con su propio título y encabezado.
+  const weeklyByType = new Map<string, typeof weeklyLoads>();
   weeklyLoads.forEach(wl => {
-    weeklySheet.addRow([wl.room, wl.building, wl.type, ...wl.weeklyHours, wl.totalHours]);
+    const list = weeklyByType.get(wl.type) || [];
+    list.push(wl);
+    weeklyByType.set(wl.type, list);
   });
 
-  weeklySheet.columns.forEach((col, idx) => { col.width = idx < weeklyIdentityHeaders.length ? 16 : 11; });
+  let cursorRow = 1;
+  Array.from(weeklyByType.entries()).sort((a, b) => a[0].localeCompare(b[0])).forEach(([type, list]) => {
+    const titleRow = weeklySheet.getRow(cursorRow);
+    const titleCell = titleRow.getCell(1);
+    titleCell.value = `${type || 'SIN TIPO'} (${list.length} ${list.length === 1 ? 'aula' : 'aulas'})`;
+    titleCell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF334155' } };
+    titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
+    weeklySheet.mergeCells(cursorRow, 1, cursorRow, weeklyTotalCols);
+    cursorRow++;
+
+    const hRow1 = weeklySheet.getRow(cursorRow);
+    const hRow2 = weeklySheet.getRow(cursorRow + 1);
+    hRow1.values = [
+      ...weeklyIdentityHeaders,
+      ...weeks.flatMap(w => [w.label, w.label]),
+      'TOTAL', 'TOTAL', 'TOTAL',
+    ];
+    hRow2.values = [
+      ...weeklyIdentityHeaders.map(() => ''),
+      ...weeks.flatMap(() => weeklySubLabels),
+      'LUN-VIE', 'SAB-DOM', 'GENERAL',
+    ];
+    weeks.forEach((_, wi) => {
+      const startCol = weeklyIdentityHeaders.length + 1 + wi * 2;
+      weeklySheet.mergeCells(cursorRow, startCol, cursorRow, startCol + 1);
+    });
+    weeklySheet.mergeCells(cursorRow, weeklyTotalStartCol, cursorRow, weeklyTotalStartCol + 2);
+    weeklyIdentityHeaders.forEach((_, i) => weeklySheet.mergeCells(cursorRow, i + 1, cursorRow + 1, i + 1));
+    [hRow1, hRow2].forEach(r => r.eachCell(c => sectionHeaderStyle(c)));
+    cursorRow += 2;
+
+    list
+      .slice()
+      .sort((a, b) => a.building.localeCompare(b.building) || a.room.localeCompare(b.room, undefined, { numeric: true }))
+      .forEach(wl => {
+        const rowValues: (string | number)[] = [wl.building, wl.room, wl.type];
+        weeks.forEach((_, wi) => {
+          rowValues.push(wl.weeklyWeekdayHours[wi], wl.weeklyWeekendHours[wi]);
+        });
+        rowValues.push(wl.totalWeekdayHours, wl.totalWeekendHours, wl.totalHours);
+        weeklySheet.getRow(cursorRow).values = rowValues;
+        cursorRow++;
+      });
+
+    cursorRow += 1; // fila en blanco entre tablas de tipo
+  });
+
+  weeklySheet.columns.forEach((col, idx) => { col.width = idx < weeklyIdentityHeaders.length ? 16 : 10; });
 
   const buffer = await workbook.xlsx.writeBuffer();
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

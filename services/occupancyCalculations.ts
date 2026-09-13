@@ -307,8 +307,12 @@ export interface RoomWeeklyLoad {
     room: string;
     building: string;
     type: string;
-    /** Horas de carga real por semana, alineado 1:1 con el arreglo de semanas usado para calcularlo. */
-    weeklyHours: number[];
+    /** Horas de carga real Lunes-Viernes por semana, alineado 1:1 con el arreglo de semanas usado para calcularlo. */
+    weeklyWeekdayHours: number[];
+    /** Horas de carga real Sábado-Domingo por semana, alineado 1:1 con el mismo arreglo de semanas. */
+    weeklyWeekendHours: number[];
+    totalWeekdayHours: number;
+    totalWeekendHours: number;
     totalHours: number;
 }
 
@@ -365,29 +369,44 @@ export const calculateWeeklyRoomLoad = (
         const roomKey = `${room.building} - ${room.room}`;
         const roomSchedules = index.get(roomKey) || [];
 
-        const weeklyHours = weeks.map(week => {
-            let hours = 0;
+        const weeklyWeekdayHours: number[] = [];
+        const weeklyWeekendHours: number[] = [];
+
+        weeks.forEach(week => {
+            let wdHours = 0;
+            let weHours = 0;
             for (let cursor = new Date(week.start); cursor <= week.end; cursor.setDate(cursor.getDate() + 1)) {
                 if (isHolidayOn(cursor, holidays)) continue;
                 const dayKey = JS_DOW_TO_DAY_KEY[cursor.getDay()];
+                const isWeekend = dayKey === 'SABADO' || dayKey === 'DOMINGO';
                 roomSchedules.forEach(block => {
                     if (!block.days.includes(dayKey)) return;
                     if (cursor < block.startDate || cursor > block.endDate) return;
                     const startMin = Math.max(toMinutes(block.startTime), TIME_START * 60);
                     const endMin = Math.min(toMinutes(block.endTime), TIME_END * 60);
-                    if (endMin > startMin) hours += (endMin - startMin) / 60;
+                    if (endMin > startMin) {
+                        if (isWeekend) weHours += (endMin - startMin) / 60;
+                        else wdHours += (endMin - startMin) / 60;
+                    }
                 });
             }
-            return Math.round(hours * 100) / 100;
+            weeklyWeekdayHours.push(Math.round(wdHours * 100) / 100);
+            weeklyWeekendHours.push(Math.round(weHours * 100) / 100);
         });
+
+        const totalWeekdayHours = Math.round(weeklyWeekdayHours.reduce((a, b) => a + b, 0) * 100) / 100;
+        const totalWeekendHours = Math.round(weeklyWeekendHours.reduce((a, b) => a + b, 0) * 100) / 100;
 
         return {
             roomKey,
             room: room.room,
             building: room.building,
             type: room.type,
-            weeklyHours,
-            totalHours: Math.round(weeklyHours.reduce((a, b) => a + b, 0) * 100) / 100,
+            weeklyWeekdayHours,
+            weeklyWeekendHours,
+            totalWeekdayHours,
+            totalWeekendHours,
+            totalHours: Math.round((totalWeekdayHours + totalWeekendHours) * 100) / 100,
         };
     });
 };
