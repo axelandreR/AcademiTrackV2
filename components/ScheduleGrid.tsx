@@ -623,6 +623,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                               onIndividualizeTask={onIndividualizeTask}
                               onNavigate={onNavigate}
                               isExtra={sched.isExtra}
+                              isSimulationMode={isSimulationMode}
                             />
                           ));
                         })()}

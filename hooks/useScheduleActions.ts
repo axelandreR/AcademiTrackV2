@@ -246,7 +246,10 @@ export const useScheduleActions = (
                 h.date.getFullYear() === normalizedTarget.getFullYear()
             );
 
-            if (academicTask.courseName !== 'REV Y CALIF CUADERNOS INFORME' && !isHol) return;
+            // Fuera de simulación, solo se puede individualizar REV Y CALIF CUADERNOS INFORME
+            // o un día feriado — cortar un bloque de clase normal en la BD principal queda
+            // reservado a simulación para no desincronizar la programación real del Cardex.
+            if (academicTask.courseName !== 'REV Y CALIF CUADERNOS INFORME' && !isHol && !isSimulationMode) return;
 
             const targetTime = normalizedTarget.getTime();
             const startTime = new Date(academicTask.startDate.getFullYear(), academicTask.startDate.getMonth(), academicTask.startDate.getDate()).getTime();

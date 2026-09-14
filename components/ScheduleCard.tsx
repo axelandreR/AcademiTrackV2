@@ -18,6 +18,7 @@ interface ScheduleCardProps {
     onIndividualizeTask?: (id: string, targetDate: Date) => void;
     onNavigate?: (type: ViewType, filter: string, instructorId?: string) => void;
     isExtra?: boolean;
+    isSimulationMode?: boolean;
 }
 
 const ScheduleCard: React.FC<ScheduleCardProps> = ({
@@ -33,6 +34,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
     onIndividualizeTask,
     onNavigate,
     isExtra,
+    isSimulationMode,
 }) => {
     const timeToMinutes = (t: string) => {
         if (!t) return 0;
@@ -83,8 +85,8 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onEditRecord?.(sched); } }}
         >
             <div className="absolute top-1.5 right-1.5 flex space-x-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 z-[80] transition-opacity">
-                {(sched.isAdministrative || sched.courseName === 'REV Y CALIF CUADERNOS INFORME' || isHolidayDay) && onIndividualizeTask && sched.startDate.getTime() !== sched.endDate.getTime() && (
-                    <button onClick={(e) => { e.stopPropagation(); onIndividualizeTask(sched.id, day.date); }} className="p-1.5 bg-black/5 hover:bg-blue-600 hover:text-white rounded-lg transition-all" title="Individualizar (Desencadenar)"><Link2Off size={12} /></button>
+                {(sched.isAdministrative || sched.courseName === 'REV Y CALIF CUADERNOS INFORME' || isHolidayDay || isSimulationMode) && onIndividualizeTask && sched.startDate.getTime() !== sched.endDate.getTime() && (
+                    <button onClick={(e) => { e.stopPropagation(); onIndividualizeTask(sched.id, day.date); }} className="p-1.5 bg-black/5 hover:bg-blue-600 hover:text-white rounded-lg transition-all" title={isSimulationMode ? 'Cortar bloque (solo en esta simulación)' : 'Individualizar (Desencadenar)'}><Link2Off size={12} /></button>
                 )}
                 {(sched.isAdministrative || sched.courseName === 'REV Y CALIF CUADERNOS INFORME' || isHolidayDay) && onDeleteRecord && (
                     <button onClick={(e) => { e.stopPropagation(); onDeleteRecord(sched.id); }} className="p-1.5 bg-black/5 hover:bg-rose-500 hover:text-white rounded-lg transition-all" title="Eliminar" aria-label={`Eliminar ${sched.courseName}`}><Trash2 size={12} /></button>
