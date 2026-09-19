@@ -11,6 +11,7 @@ import { Instructor, ProcessedSchedule } from '../types';
 import {
     getAttendancePeriodRange,
     processAttendanceJourneys,
+    findAttendanceIncongruences,
     AttendanceSheetData
 } from '../services/attendanceService';
 import { generateAttendanceExcel } from '../services/attendanceExporter';
@@ -37,6 +38,7 @@ const AttendancePage: React.FC = () => {
     // Estado de seguimiento (Nube)
     const [generatedSheets, setGeneratedSheets] = useState<Set<string>>(new Set());
     const [viewingAudit, setViewingAudit] = useState<Instructor | null>(null);
+    const [viewingIncongruence, setViewingIncongruence] = useState<string | null>(null);
     // Progreso de la descarga masiva (X de Y fichas), para que no parezca que la app se colgó.
     const [massiveProgress, setMassiveProgress] = useState<{ done: number; total: number } | null>(null);
     const [pendingSync, setPendingSync] = useState<Instructor | null>(null);
@@ -87,9 +89,23 @@ const AttendancePage: React.FC = () => {
             // la MISMA función que genera la ficha, para que nunca se desincronicen.
             const hasPresencial = processAttendanceJourneys(inst, allSchedules, startDate, endDate).journeys.length > 0;
 
-            return { ...inst, hasPresencial };
+            // Días del periodo donde la jornada de la ficha (entrada/salida) no coincide con
+            // la suma de bloques que cuenta la auditoría — aunque la auditoría diga OK, la
+            // ficha excedería (o no llegaría a) lo auditado. Ver findAttendanceIncongruences.
+            const incongruences = hasPresencial ? findAttendanceIncongruences(inst, allSchedules, startDate, endDate) : [];
+
+            return { ...inst, hasPresencial, incongruences };
         });
     }, [instructors, allSchedules, selectedMonth, selectedYear, searchTerm]);
+
+    // Listos para el ZIP masivo: auditoría OK Y jornada de la ficha congruente con la auditoría.
+    const isReadyForMassive = (inst: { id: string; incongruences: unknown[] }) =>
+        !!liveAuditByInstructor.get(inst.id)?.isAuditOk && inst.incongruences.length === 0;
+
+    const incongruentCount = useMemo(
+        () => tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk && inst.incongruences.length > 0).length,
+        [tpInstructorsWithPresencial, liveAuditByInstructor]
+    );
 
     const SENATI_LOGO_URL = 'https://afzgvqkiwlfqbidausyi.supabase.co/storage/v1/object/public/assets/LOGO_SENATI.png';
 
@@ -130,10 +146,10 @@ const AttendancePage: React.FC = () => {
     };
 
     const handleDownloadMassive = () => {
-        const readyInstructors = tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk);
+        const readyInstructors = tpInstructorsWithPresencial.filter(isReadyForMassive);
 
         if (readyInstructors.length === 0) {
-            alert("No hay instructores con estado de auditoría 'OK' para descarga masiva.");
+            alert("No hay instructores con auditoría 'OK' y jornada congruente para descarga masiva.");
             return;
         }
         setPendingMassiveCount(readyInstructors.length);
@@ -141,7 +157,7 @@ const AttendancePage: React.FC = () => {
 
     const confirmDownloadMassive = async () => {
         setPendingMassiveCount(null);
-        const readyInstructors = tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk);
+        const readyInstructors = tpInstructorsWithPresencial.filter(isReadyForMassive);
         if (readyInstructors.length === 0) return;
 
         const zip = new JSZip();
@@ -175,7 +191,7 @@ const AttendancePage: React.FC = () => {
     };
 
     const readyToDownloadCount = useMemo(() => {
-        return tpInstructorsWithPresencial.filter(inst => liveAuditByInstructor.get(inst.id)?.isAuditOk).length;
+        return tpInstructorsWithPresencial.filter(isReadyForMassive).length;
     }, [tpInstructorsWithPresencial, liveAuditByInstructor]);
 
     const months = [
@@ -277,6 +293,12 @@ const AttendancePage: React.FC = () => {
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Fichas Generadas</p>
                             <p className="text-lg font-black text-green-600">{generatedSheets.size}</p>
                         </div>
+                        {incongruentCount > 0 && (
+                            <div className="text-center" title="Auditoría OK pero la jornada de la ficha no coincide con lo auditado. Quedan fuera de la descarga masiva.">
+                                <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Jornada ≠ Auditoría</p>
+                                <p className="text-lg font-black text-amber-600">{incongruentCount}</p>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -356,7 +378,16 @@ const AttendancePage: React.FC = () => {
                                                     )}
                                                 </td>
                                                 <td className="px-8 py-5 text-center">
-                                                    {liveAudit?.isAuditOk ? (
+                                                    {liveAudit?.isAuditOk && inst.incongruences.length > 0 ? (
+                                                        <div
+                                                            onClick={() => setViewingIncongruence(inst.id)}
+                                                            title="La jornada de la ficha no coincide con la auditoría. No entra en la descarga masiva."
+                                                            className="inline-flex items-center space-x-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-[10px] font-black uppercase tracking-widest border border-amber-200 cursor-pointer hover:bg-amber-100 transition-colors"
+                                                        >
+                                                            <AlertTriangle size={10} />
+                                                            <span>Jornada ≠ Auditoría ({inst.incongruences.length})</span>
+                                                        </div>
+                                                    ) : liveAudit?.isAuditOk ? (
                                                         <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-emerald-100">
                                                             <ShieldCheck size={10} />
                                                             <span>Óptimo</span>
@@ -464,6 +495,64 @@ const AttendancePage: React.FC = () => {
                 </div>
             )}
 
+            {/* Modal de Incongruencias de Jornada (ficha vs auditoría) */}
+            {viewingIncongruence && (() => {
+                const inst = tpInstructorsWithPresencial.find(i => i.id === viewingIncongruence);
+                if (!inst) return null;
+                const fmtH = (min: number) => `${Math.floor(Math.abs(min) / 60)}:${String(Math.abs(min) % 60).padStart(2, '0')}h`;
+                return (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="bg-white rounded-[32px] w-full max-w-2xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+                            <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-amber-50/40">
+                                <div className="flex items-center space-x-4">
+                                    <div className="w-12 h-12 rounded-2xl bg-amber-100 flex items-center justify-center text-amber-600 shadow-inner">
+                                        <AlertTriangle size={24} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-black text-slate-900 leading-tight">Jornada de la ficha ≠ Auditoría</h3>
+                                        <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">{inst.name}</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setViewingIncongruence(null)}
+                                    className="w-10 h-10 rounded-xl hover:bg-white flex items-center justify-center text-slate-400 hover:text-slate-900 transition-all shadow-sm active:scale-95"
+                                >
+                                    <X size={20} />
+                                </button>
+                            </div>
+                            <div className="p-8 max-h-[60vh] overflow-y-auto space-y-4">
+                                <p className="text-xs font-bold text-slate-500 leading-relaxed">
+                                    La ficha se arma con la hora de entrada y salida de cada turno. En estos días esa jornada no coincide con la suma de los bloques que cuenta la auditoría (un hueco o un solapamiento entre bloques), así que la ficha no refleja lo auditado. Corrige el horario del bloque indicado; este instructor queda fuera de la descarga masiva hasta entonces.
+                                </p>
+                                {inst.incongruences.map((inc, idx) => (
+                                    <div key={idx} className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-tighter">{inc.dayName} {inc.dateStr}</p>
+                                            <p className="text-[10px] font-black text-amber-700 uppercase tracking-tighter">
+                                                Ficha {fmtH(inc.journeyMin)} · Auditoría {fmtH(inc.blocksMin)} · {inc.diffMin > 0 ? `+${inc.diffMin}` : inc.diffMin} min
+                                            </p>
+                                        </div>
+                                        <ul className="space-y-1">
+                                            {inc.blocks.map((b, bIdx) => (
+                                                <li key={bIdx} className="text-xs font-bold text-slate-700">{b}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end">
+                                <button
+                                    onClick={() => setViewingIncongruence(null)}
+                                    className="px-8 py-3 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all active:scale-95 shadow-lg shadow-slate-200"
+                                >
+                                    Cerrar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
             <ConfirmDialog
                 isOpen={pendingSync !== null}
                 title="Sincronizar carga"
@@ -480,7 +569,7 @@ const AttendancePage: React.FC = () => {
             <ConfirmDialog
                 isOpen={pendingMassiveCount !== null}
                 title="Descarga masiva"
-                message={`Se generarán ${pendingMassiveCount ?? 0} fichas de asistencia (solo las de instructores con auditoría OK) y se descargarán en un archivo ZIP.`}
+                message={`Se generarán ${pendingMassiveCount ?? 0} fichas de asistencia (solo las de instructores con auditoría OK y jornada congruente) y se descargarán en un archivo ZIP.${incongruentCount > 0 ? ` Quedan fuera ${incongruentCount} instructor(es) con la jornada de la ficha distinta a la auditoría (ver columna Auditoría).` : ''}`}
                 confirmLabel="Descargar"
                 onCancel={() => setPendingMassiveCount(null)}
                 onConfirm={confirmDownloadMassive}

@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { isContractualLoad, resolveInstructorByName } from '../services/businessRules';
 import { calculateWeeklyAudit } from '../services/auditCalculations';
-import { computeDailyJourney } from '../services/dailyJourney';
+import { computeDailyJourney, getDayIncongruence } from '../services/dailyJourney';
 import { detectInstructorConflicts } from '../services/conflictDetection';
 import { getExtraWindowsForDate, splitTaskFragments } from '../services/extraHoursCalculations';
 import DailyJourneyPanel from './DailyJourneyPanel';
@@ -300,13 +300,15 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         list.push({ date: new Date(scannerDate), type: 'contractual', meta: CONTRACT_HOURS_TC, real: week.contractReal });
       }
 
-      // Jornada Diaria (presencia real, de la hora más temprana a la más tardía cada día,
-      // con huecos incluidos) vs Auditoría (suma de la duración de cada bloque, ver
-      // week.contractReal) — si difieren en más de 1 minuto en la semana, hay un hueco
-      // entre bloques que debería ser consecutivo (ej. el corrimiento de 1 min del Cardex
-      // entre dos bloques importados por separado). No se corrige solo: se reporta para
-      // que se ubique y ajuste el bloque exacto en los datos del horario.
+      // Jornada Diaria (presencia real por turno — un hueco largo parte el día en turnos,
+      // ver computeDailyJourney) vs Auditoría (suma de la duración de cada bloque) — si en
+      // ALGÚN día difieren, aunque sea 1 minuto, hay un hueco entre bloques que debería
+      // ser consecutivo (ej. el corrimiento de 1 min del Cardex entre dos bloques
+      // importados por separado) o bloques solapados. No se corrige solo: se reporta para
+      // que se ubique y ajuste el bloque exacto en los datos del horario. Se compara día
+      // por día (no la suma semanal) para que un +1 y un -1 no se cancelen entre sí.
       let weekJourneyHours = 0;
+      let weekHasJourneyIncongruence = false;
       for (let d = 0; d < 7; d++) {
         const current = new Date(scannerDate);
         current.setDate(scannerDate.getDate() + d);
@@ -314,9 +316,9 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
         const dayKey = DAYS_OF_WEEK[(current.getDay() + 6) % 7].key;
         const dayTasks = schedules.filter(s => isScheduleActiveOnDate(s, current, dayKey));
         weekJourneyHours += computeDailyJourney(dayTasks, instructorType).totalHours;
+        if (getDayIncongruence(dayTasks, instructorType)) weekHasJourneyIncongruence = true;
       }
-      const journeyDiffMin = (weekJourneyHours - week.contractReal) * 60;
-      if (Math.abs(journeyDiffMin) > 1) {
+      if (weekHasJourneyIncongruence) {
         list.push({ date: new Date(scannerDate), type: 'journey', meta: week.contractReal, real: weekJourneyHours });
       }
 

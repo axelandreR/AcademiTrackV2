@@ -93,12 +93,20 @@ const DailyJourneyPanel: React.FC<DailyJourneyPanelProps> = ({ days, instructorT
                                             <Coffee size={10} className="text-slate-400" aria-label="Refrigerio registrado" />
                                         )}
                                         <span className="text-[9px] font-black text-slate-400">
-                                            {journey.morning.start}–{journey.hasRefrigerio ? journey.afternoon.end : journey.morning.end}
+                                            {journey.hasSplitShift
+                                                ? journey.shifts.map(s => `${s.start}–${s.end}`).join(' · ')
+                                                : `${journey.morning.start}–${journey.hasRefrigerio ? journey.afternoon.end : journey.morning.end}`}
                                         </span>
                                     </div>
                                     <div className="flex gap-2 text-[9px] font-bold text-slate-500">
-                                        <span>M {journey.morning.hours.toFixed(1)}h</span>
-                                        {journey.hasRefrigerio && <span>T {journey.afternoon.hours.toFixed(1)}h</span>}
+                                        {journey.hasSplitShift ? (
+                                            journey.shifts.map((s, i) => <span key={i}>T{i + 1} {s.hours.toFixed(1)}h</span>)
+                                        ) : (
+                                            <>
+                                                <span>M {journey.morning.hours.toFixed(1)}h</span>
+                                                {journey.hasRefrigerio && <span>T {journey.afternoon.hours.toFixed(1)}h</span>}
+                                            </>
+                                        )}
                                     </div>
                                     <span className={`text-sm font-black ${statusColor}`}>{journey.totalHours.toFixed(2)}h</span>
                                 </>
