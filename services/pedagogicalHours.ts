@@ -11,12 +11,15 @@ export interface DayPedagogicalHours {
     classHP: number;
     /** Tareas administrativas asíncronas del día, en horas cronológicas (no entran en classHP). */
     asyncAdminHours: number;
+    /** HP de clases que caen en una ventana de "Configurar HE" o son cobertura temporal de HE: se muestran aparte y NO entran en classHP. */
+    extraHP: number;
 }
 
 export interface WeekPedagogicalHours {
     days: DayPedagogicalHours[];
     totalHP: number;
     totalAsyncAdminHours: number;
+    totalExtraHP: number;
 }
 
 /**
@@ -36,14 +39,14 @@ export const calculateWeekPedagogicalHours = (
     extraHoursConfig: ExtraHoursConfig | null = null
 ): WeekPedagogicalHours => {
     const days: DayPedagogicalHours[] = [];
-    let totalRegularMin = 0, totalExceptionMin = 0, totalAsyncAdminMin = 0;
+    let totalRegularMin = 0, totalExceptionMin = 0, totalAsyncAdminMin = 0, totalExtraHP = 0;
 
     for (let i = 0; i < 7; i++) {
         const day = new Date(weekStart);
         day.setDate(weekStart.getDate() + i);
 
         if (day > semesterEndDate) {
-            days.push({ date: day, classHP: 0, asyncAdminHours: 0 });
+            days.push({ date: day, classHP: 0, asyncAdminHours: 0, extraHP: 0 });
             continue;
         }
 
@@ -57,9 +60,13 @@ export const calculateWeekPedagogicalHours = (
         });
         const extraWindows = extraHoursConfig ? getExtraWindowsForDate(extraHoursConfig, day, dayName) : [];
 
-        let regularMin = 0, exceptionMin = 0, asyncAdminMin = 0;
+        let regularMin = 0, exceptionMin = 0, asyncAdminMin = 0, extraHP = 0;
+        const toHP = (s: ProcessedSchedule, min: number) => (isOtherFunctionsCourse(s) ? min / 60 : min / 45);
         dayTasks.forEach(s => {
-            if (isTempHECoverage(s)) return;
+            if (isTempHECoverage(s)) {
+                if (!s.isAdministrative) extraHP += toHP(s, timeToMinutes(s.endTime) - timeToMinutes(s.startTime));
+                return;
+            }
             const taskStart = timeToMinutes(s.startTime);
             const taskEnd = timeToMinutes(s.endTime);
             const fragments = extraWindows.length > 0
@@ -67,7 +74,11 @@ export const calculateWeekPedagogicalHours = (
                 : [{ start: taskStart, end: taskEnd, extra: false }];
             fragments.forEach(frag => {
                 const dur = frag.end - frag.start;
-                if (dur <= 0 || frag.extra) return;
+                if (dur <= 0) return;
+                if (frag.extra) {
+                    if (!s.isAdministrative) extraHP += toHP(s, dur);
+                    return;
+                }
                 if (!s.isAdministrative && isOtherFunctionsCourse(s)) {
                     exceptionMin += dur;
                 } else if (isAcademicMetaLoad(s)) {
@@ -77,14 +88,15 @@ export const calculateWeekPedagogicalHours = (
             });
         });
 
-        days.push({ date: day, classHP: regularMin / 45 + exceptionMin / 60, asyncAdminHours: asyncAdminMin / 60 });
-        totalRegularMin += regularMin; totalExceptionMin += exceptionMin; totalAsyncAdminMin += asyncAdminMin;
+        days.push({ date: day, classHP: regularMin / 45 + exceptionMin / 60, asyncAdminHours: asyncAdminMin / 60, extraHP });
+        totalRegularMin += regularMin; totalExceptionMin += exceptionMin; totalAsyncAdminMin += asyncAdminMin; totalExtraHP += extraHP;
     }
 
     return {
         days,
         totalHP: totalRegularMin / 45 + totalExceptionMin / 60,
         totalAsyncAdminHours: totalAsyncAdminMin / 60,
+        totalExtraHP,
     };
 };
 
