@@ -12,8 +12,10 @@ import { ProcessedSchedule, ViewType, AvailabilityWindow, Instructor, ScheduleCa
 import { DAYS_OF_WEEK, getTimeSlots, TIME_START, COLORS, CONTRACT_HOURS_TC, getShortLabel, SEMESTER_START_DATE, SEMESTER_END_DATE } from '../constants';
 import {
   Clock, MapPin, Hash, Video, LayoutDashboard, Table as TableIcon,
-  ChevronRight, ChevronLeft, Layers, AlertTriangle, ZoomIn, ZoomOut
+  ChevronRight, ChevronLeft, Layers, AlertTriangle, ZoomIn, ZoomOut, Sigma
 } from 'lucide-react';
+import { calculateWeekPedagogicalHours, formatHP } from '../services/pedagogicalHours';
+import PedagogicalHoursPanel from './PedagogicalHoursPanel';
 import DataTable from './DataTable';
 import AuditModal from './AuditModal';
 import AuditFooter from './AuditFooter';
@@ -81,6 +83,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [isSelectorExpanded, setIsSelectorExpanded] = useState(true);
   const [isFooterExpanded, setIsFooterExpanded] = useState(false);
+  const [isHPPanelOpen, setIsHPPanelOpen] = useState(false);
   // Expandido por defecto solo en modo edición; en solo-visualización arranca colapsado
   // (el rectángulo rojo/verde ya avisa si hay algo pendiente, sin ocupar espacio).
   const [isJourneyExpanded, setIsJourneyExpanded] = useState(() => appMode === 'editor' && viewType === 'Instructor');
@@ -208,6 +211,13 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
       ),
     }));
   }, [isInstructorView, datesOfWeek, schedules, instructorType]);
+
+  // Horas pedagógicas por día y de la semana (solo vista Docente) — mismo criterio que la
+  // Meta de Horas Académicas de la auditoría (ver services/pedagogicalHours.ts).
+  const weekHP = useMemo(() => {
+    if (!isInstructorView) return null;
+    return calculateWeekPedagogicalHours(datesOfWeek[0].date, schedules, semesterEndDateSetting, currentInstructorExtraHoursConfig);
+  }, [isInstructorView, datesOfWeek, schedules, semesterEndDateSetting, currentInstructorExtraHoursConfig]);
 
   const stats = useMemo(() => {
     const weekStart = datesOfWeek[0].date;
@@ -453,6 +463,18 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
             className="absolute right-3 z-[95] flex items-center bg-white/95 backdrop-blur border border-slate-200 rounded-2xl shadow-md p-1 transition-[top] duration-150"
             style={{ top: gridHeaderHeight > 0 ? gridHeaderHeight + 8 : 12 }}
           >
+            {weekHP && (
+              <button
+                onClick={() => setIsHPPanelOpen(prev => !prev)}
+                title="Horas pedagógicas por día y de la semana"
+                aria-label="Ver horas pedagógicas de la semana"
+                aria-expanded={isHPPanelOpen}
+                className={`flex items-center gap-1 px-2 py-1.5 mr-1 rounded-xl border-r border-slate-200 text-[10px] font-black tabular-nums transition-all ${isHPPanelOpen ? 'bg-emerald-50 text-emerald-700' : 'text-emerald-700 hover:bg-emerald-50'}`}
+              >
+                <Sigma size={14} />
+                <span>{formatHP(weekHP.totalHP)} HP</span>
+              </button>
+            )}
             <button
               onClick={zoomOut}
               disabled={zoomLevel <= ZOOM_MIN}
@@ -481,6 +503,13 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
             </button>
           </div>
         )}
+        {contentMode === 'grid' && weekHP && isHPPanelOpen && (
+          <PedagogicalHoursPanel
+            week={weekHP}
+            top={(gridHeaderHeight > 0 ? gridHeaderHeight + 8 : 12) + 48}
+            onClose={() => setIsHPPanelOpen(false)}
+          />
+        )}
         <div className="flex-1 overflow-auto custom-scrollbar relative">
           {contentMode === 'grid' ? (
             <div className="min-w-[820px] md:min-w-[1100px] flex flex-col h-fit" style={{ zoom: zoomLevel } as React.CSSProperties}>
@@ -494,12 +523,23 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                     {/* Abreviado (Lun, Mar...) + fecha en una sola fila para reducir el alto
                         del encabezado — antes el nombre completo del día y la fecha iban
                         apilados en dos líneas. */}
-                    {datesOfWeek.map((day) => (
-                      <div key={day.key} className="px-2 py-2 text-center border-r border-slate-200 last:border-r-0 flex items-center justify-center gap-1.5 bg-white">
-                        <span className="font-black text-slate-900 text-[9px] sm:text-[10.8px] md:text-[12.6px] lg:text-[14.4px] xl:text-[16.2px] uppercase tracking-tighter">{day.label.slice(0, 3)}</span>
-                        <span className="text-[7.2px] sm:text-[8.1px] md:text-[9px] lg:text-[10.8px] xl:text-[12.6px] text-blue-700 font-black bg-blue-50/50 px-2 py-0.5 rounded-full border border-blue-100 shadow-sm whitespace-nowrap">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</span>
-                      </div>
-                    ))}
+                    {datesOfWeek.map((day, dayIdx) => {
+                      const dayHP = weekHP?.days[dayIdx]?.classHP;
+                      return (
+                        <div key={day.key} className="px-2 py-2 text-center border-r border-slate-200 last:border-r-0 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 bg-white">
+                          <span className="font-black text-slate-900 text-[9px] sm:text-[10.8px] md:text-[12.6px] lg:text-[14.4px] xl:text-[16.2px] uppercase tracking-tighter">{day.label.slice(0, 3)}</span>
+                          <span className="text-[7.2px] sm:text-[8.1px] md:text-[9px] lg:text-[10.8px] xl:text-[12.6px] text-blue-700 font-black bg-blue-50/50 px-2 py-0.5 rounded-full border border-blue-100 shadow-sm whitespace-nowrap">{day.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}</span>
+                          {dayHP !== undefined && (
+                            <span
+                              title={`Horas pedagógicas del día: ${formatHP(dayHP)}`}
+                              className={`text-[7.2px] sm:text-[8.1px] md:text-[9px] lg:text-[10.8px] xl:text-[12.6px] font-black tabular-nums px-1.5 py-0.5 rounded-full whitespace-nowrap ${dayHP > 0 ? 'text-emerald-700 bg-emerald-50 border border-emerald-100' : 'text-slate-300'}`}
+                            >
+                              {formatHP(dayHP)}<span className="hidden xl:inline"> HP</span>
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
                 {isInstructorView && (
@@ -666,6 +706,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
           isInstructorView={isInstructorView}
           instructorType={instructorType}
           stats={stats}
+          weeklyHP={weekHP?.totalHP}
           isFooterExpanded={isFooterExpanded}
           setIsFooterExpanded={setIsFooterExpanded}
           setShowAuditModal={setShowAuditModal}

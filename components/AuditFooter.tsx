@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { AlertTriangle, CheckCircle, ChevronDown, ChevronUp, ShieldCheck, AlertCircle } from 'lucide-react';
+import { formatHP } from '../services/pedagogicalHours';
 
 interface AuditFooterProps {
     isInstructorView: boolean;
@@ -27,6 +28,9 @@ interface AuditFooterProps {
         // carga normal, no cuentan para Meta/46h (ver services/businessRules.ts::isTempHECoverage).
         tempHECoverageHours: number;
     };
+    // Horas pedagógicas de la semana (ver services/pedagogicalHours.ts). Para TP ya es la
+    // "Horas Académicas" de arriba, así que solo se muestra aparte para TC.
+    weeklyHP?: number;
     isFooterExpanded: boolean;
     setIsFooterExpanded: (expanded: boolean) => void;
     setShowAuditModal: (show: boolean) => void;
@@ -36,6 +40,7 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
     isInstructorView,
     instructorType,
     stats,
+    weeklyHP,
     isFooterExpanded,
     setIsFooterExpanded,
     setShowAuditModal,
@@ -117,6 +122,12 @@ const AuditFooter: React.FC<AuditFooterProps> = ({
                         </div>
                     )}
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Real</span><span className={`text-base font-black ${stats.hasAcademicDiscrepancy ? 'text-rose-400' : 'text-emerald-400'}`}>{stats.academicLoad.toFixed(2)}h</span></div>
+                    {instructorType === 'TC' && weeklyHP !== undefined && (
+                        <div className="flex flex-col items-center" title="Horas pedagógicas de la semana: cursos del archivo ÷45 min (CNIU-108/126 y otras funciones ÷60)">
+                            <span className="text-[8px] font-black text-amber-400 uppercase mb-1">HP semana</span>
+                            <span className="text-base font-black text-amber-300">{formatHP(weeklyHP)}</span>
+                        </div>
+                    )}
                     <div className="h-8 w-px bg-white/10 hidden xl:block" />
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Sinc</span><span className="text-base font-black text-slate-200">{stats.syncHours.toFixed(2)}h</span></div>
                     <div className="flex flex-col items-center"><span className="text-[8px] font-black text-slate-500 uppercase mb-1">Asinc</span><span className="text-base font-black text-slate-200">{stats.asyncHours.toFixed(2)}h</span></div>
