@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 // Fix: Added ShieldAlert to the import list from lucide-react
-import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert, AlertTriangle } from 'lucide-react';
+import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert, AlertTriangle, Database } from 'lucide-react';
 import { ProcessedSchedule, ViewType, RoomData } from '../types';
 import { DAYS_OF_WEEK, COLORS } from '../constants';
 
@@ -10,13 +10,16 @@ interface RecordModalProps {
   onClose: () => void;
   onSave: (record: ProcessedSchedule) => void;
   onNavigate?: (type: ViewType, filter: string) => void;
+  // Abre Gestión de Registro Base con las filas de este NRC. Si el padre no lo pasa (ej. modo
+  // simulación, donde Registro Base escribiría en la BD real) el botón no se muestra.
+  onOpenInArchive?: (nrc: string) => void;
   initialData?: ProcessedSchedule | null;
   defaultInstructor?: string;
   allSchedules?: ProcessedSchedule[];
   rooms?: RoomData[];
 }
 
-const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, initialData, defaultInstructor, allSchedules = [], rooms = [] }) => {
+const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, onOpenInArchive, initialData, defaultInstructor, allSchedules = [], rooms = [] }) => {
   const [formData, setFormData] = useState<Partial<ProcessedSchedule>>({
     courseCode: '',
     courseName: '',
@@ -183,6 +186,9 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
 
   const isLocked = !formData.isAdministrative && !!initialData;
 
+  const archiveNrc = (initialData?.nrc || '').trim();
+  const canOpenInArchive = !!onOpenInArchive && !!initialData && !initialData.isAdministrative && archiveNrc !== '' && !['0', '0000', '-'].includes(archiveNrc);
+
   const buildingOptions = Array.from(new Set(rooms.map(r => r.building).filter(Boolean))).sort();
   const roomOptions = Array.from(new Set(
     rooms
@@ -213,6 +219,17 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
               </p>
             </div>
           </div>
+          {canOpenInArchive && (
+            <button
+              type="button"
+              onClick={() => onOpenInArchive!(archiveNrc)}
+              title="Abrir las filas de este NRC en Gestión de Registro Base para hacer cortes u otra programación"
+              className="ml-auto shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest shadow-lg shadow-blue-100 transition-all active:scale-95"
+            >
+              <Database size={14} />
+              <span className="hidden sm:inline">Registro Base</span>
+            </button>
+          )}
           <button onClick={onClose} className="p-2.5 sm:p-3 hover:bg-slate-200 rounded-full transition-colors text-slate-400 hover:text-slate-900 shrink-0"><X size={20} className="sm:hidden" /><X size={24} className="hidden sm:block" /></button>
         </div>
 

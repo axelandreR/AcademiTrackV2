@@ -579,6 +579,11 @@ const SchedulePage: React.FC = () => {
                     saveScheduleCloud(r);
                     setIsModalOpen(false);
                 }}
+                onOpenInArchive={isSimulationMode ? undefined : (nrc) => {
+                    setIsModalOpen(false);
+                    setEditingRecord(null);
+                    navigate(`/archive?nrc=${encodeURIComponent(nrc)}`);
+                }}
                 initialData={editingRecord}
                 allSchedules={allSchedules}
                 rooms={rooms}

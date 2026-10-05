@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule } from '../types';
 import { Search, Edit2, UserMinus, Calendar, MapPin, Clock, Filter, ArrowLeft } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import ArchiveEditModal from '../components/ArchiveEditModal';
 import ConfirmDialog from '../components/ConfirmDialog';
 
@@ -16,7 +16,11 @@ const MAX_RESULTS = 100;
 
 const ArchiveManagerPage: React.FC = () => {
     const { allSchedules, isLoading, saveScheduleCloud } = useData();
-    const [searchTerm, setSearchTerm] = useState('');
+    // Si se llega desde el visualizador de horarios (?nrc=XXXX) se muestran TODAS las filas de
+    // ese NRC exacto (no por coincidencia parcial) para elegir cuál programar.
+    const [searchParams] = useSearchParams();
+    const [exactNrc, setExactNrc] = useState<string | null>(() => searchParams.get('nrc')?.trim() || null);
+    const [searchTerm, setSearchTerm] = useState(() => searchParams.get('nrc')?.trim() || '');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
     const [filterType, setFilterType] = useState<'all' | 'academic' | 'admin'>('all');
     const [editingSchedule, setEditingSchedule] = useState<ProcessedSchedule | null>(null);
@@ -30,6 +34,7 @@ const ArchiveManagerPage: React.FC = () => {
 
     // Filtrado de datos (usa el término debounced, no el que se está tecleando)
     const matchingSchedules = useMemo(() => {
+        if (exactNrc) return allSchedules.filter(s => s.nrc === exactNrc);
         if (!debouncedSearchTerm && filterType === 'all') return [];
 
         const term = debouncedSearchTerm.toLowerCase();
@@ -48,12 +53,12 @@ const ArchiveManagerPage: React.FC = () => {
 
             return matchesSearch && matchesType;
         });
-    }, [allSchedules, debouncedSearchTerm, filterType]);
+    }, [allSchedules, debouncedSearchTerm, filterType, exactNrc]);
 
     const filteredSchedules = useMemo(() => matchingSchedules.slice(0, MAX_RESULTS), [matchingSchedules]);
     const hiddenResultsCount = matchingSchedules.length - filteredSchedules.length;
 
-    const isSearchActive = searchTerm.length > 0 || filterType !== 'all';
+    const isSearchActive = searchTerm.length > 0 || filterType !== 'all' || !!exactNrc;
 
     const handleSave = async (updated: ProcessedSchedule | ProcessedSchedule[]) => {
         try {
@@ -116,7 +121,7 @@ const ArchiveManagerPage: React.FC = () => {
                             type="text"
                             placeholder="Buscar por NRC, Instructor o Curso..."
                             value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
+                            onChange={(e) => { setExactNrc(null); setSearchTerm(e.target.value); }}
                             className="w-full bg-slate-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 rounded-2xl py-3 pl-12 pr-4 text-slate-900 font-medium transition-all"
                         />
                     </div>
@@ -146,6 +151,15 @@ const ArchiveManagerPage: React.FC = () => {
 
             {/* Main Content */}
             <main className="max-w-7xl mx-auto px-4 mt-8">
+                {exactNrc && (
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 bg-blue-50 border border-blue-100 text-blue-700 rounded-2xl px-5 py-3 text-sm font-bold">
+                        <span>
+                            Filas del NRC <span className="font-black">{exactNrc}</span>
+                            {filteredSchedules[0]?.courseName ? ` · ${filteredSchedules[0].courseName}` : ''} ({filteredSchedules.length} {filteredSchedules.length === 1 ? 'fila' : 'filas'}). Elige la que quieres programar con el lápiz.
+                        </span>
+                        <button onClick={() => { setExactNrc(null); setSearchTerm(''); }} className="text-blue-600 hover:text-blue-800 font-black text-xs uppercase tracking-wider">Quitar filtro</button>
+                    </div>
+                )}
                 <div className="bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-200 overflow-hidden">
                     <div className="overflow-x-auto">
                         <table className="w-full border-collapse">
@@ -251,7 +265,7 @@ const ArchiveManagerPage: React.FC = () => {
                                     <>
                                         <Search size={48} className="mb-4 opacity-20" />
                                         <p className="font-bold">No se encontraron bloques con esos criterios</p>
-                                        <button onClick={() => { setSearchTerm(''); setFilterType('all') }} className="mt-4 text-blue-600 font-black text-sm uppercase">Limpiar filtros</button>
+                                        <button onClick={() => { setExactNrc(null); setSearchTerm(''); setFilterType('all') }} className="mt-4 text-blue-600 font-black text-sm uppercase">Limpiar filtros</button>
                                     </>
                                 )}
                             </div>
