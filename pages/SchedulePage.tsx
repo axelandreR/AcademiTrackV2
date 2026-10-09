@@ -6,6 +6,8 @@ import {
 
 import ScheduleGrid from '../components/ScheduleGrid';
 import RecordModal from '../components/RecordModal';
+import SplitClassModal from '../components/SplitClassModal';
+import { SplitPlan } from '../services/classSplit';
 import ExportModal from '../components/ExportModal';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule, ViewType, AppMode, ScheduleCategory, ModalityType, ExportConfig } from '../types';
@@ -83,6 +85,7 @@ const SchedulePage: React.FC = () => {
 
     const [isWeekPickerOpen, setIsWeekPickerOpen] = useState(false);
     const [editingRecord, setEditingRecord] = useState<ProcessedSchedule | null>(null);
+    const [splittingRecord, setSplittingRecord] = useState<ProcessedSchedule | null>(null);
     const [isSidebarVisible, setIsSidebarVisible] = useState(true);
     const [currentWeekDeficit, setCurrentWeekDeficit] = useState(false);
     const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -556,6 +559,21 @@ const SchedulePage: React.FC = () => {
                 summary={instructorEmailSummary}
             />
 
+            <SplitClassModal
+                isOpen={!!splittingRecord}
+                schedule={splittingRecord}
+                allSchedules={allSchedules}
+                rooms={rooms}
+                onClose={() => setSplittingRecord(null)}
+                onConfirm={async (original: ProcessedSchedule, plan: SplitPlan) => {
+                    // Solo simulación: fuera de ella saveScheduleCloud/deleteScheduleCloud escribirían en la BD real.
+                    if (!isSimulationMode) { setSplittingRecord(null); return; }
+                    await deleteScheduleCloud(original.id);
+                    await saveScheduleCloud([...plan.rows, ...plan.refrigerioRows]);
+                    setSplittingRecord(null);
+                }}
+            />
+
             <RecordModal
                 isOpen={isModalOpen}
                 onClose={() => { setIsModalOpen(false); setEditingRecord(null); }}
@@ -579,6 +597,11 @@ const SchedulePage: React.FC = () => {
                     saveScheduleCloud(r);
                     setIsModalOpen(false);
                 }}
+                onSplitClass={isSimulationMode ? (r) => {
+                    setIsModalOpen(false);
+                    setEditingRecord(null);
+                    setSplittingRecord(r);
+                } : undefined}
                 onOpenInArchive={isSimulationMode ? undefined : (nrc) => {
                     setIsModalOpen(false);
                     setEditingRecord(null);

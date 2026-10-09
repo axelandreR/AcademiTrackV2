@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 // Fix: Added ShieldAlert to the import list from lucide-react
-import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert, AlertTriangle, Database } from 'lucide-react';
+import { X, Save, AlertCircle, MapPin, Video, Calendar, Hash, BookOpen, Layers, Briefcase, Palette, Clock, ShieldAlert, AlertTriangle, Database, Scissors } from 'lucide-react';
 import { ProcessedSchedule, ViewType, RoomData } from '../types';
 import { DAYS_OF_WEEK, COLORS } from '../constants';
 
@@ -13,13 +13,15 @@ interface RecordModalProps {
   // Abre Gestión de Registro Base con las filas de este NRC. Si el padre no lo pasa (ej. modo
   // simulación, donde Registro Base escribiría en la BD real) el botón no se muestra.
   onOpenInArchive?: (nrc: string) => void;
+  // Dividir el bloque en dos partes. Solo se pasa en modo simulación.
+  onSplitClass?: (record: ProcessedSchedule) => void;
   initialData?: ProcessedSchedule | null;
   defaultInstructor?: string;
   allSchedules?: ProcessedSchedule[];
   rooms?: RoomData[];
 }
 
-const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, onOpenInArchive, initialData, defaultInstructor, allSchedules = [], rooms = [] }) => {
+const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNavigate, onOpenInArchive, onSplitClass, initialData, defaultInstructor, allSchedules = [], rooms = [] }) => {
   const [formData, setFormData] = useState<Partial<ProcessedSchedule>>({
     courseCode: '',
     courseName: '',
@@ -186,6 +188,7 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
 
   const isLocked = !formData.isAdministrative && !!initialData;
 
+  const canSplitClass = !!onSplitClass && !!initialData && !initialData.isAdministrative;
   const archiveNrc = (initialData?.nrc || '').trim();
   const canOpenInArchive = !!onOpenInArchive && !!initialData && !initialData.isAdministrative && archiveNrc !== '' && !['0', '0000', '-'].includes(archiveNrc);
 
@@ -219,12 +222,23 @@ const RecordModal: React.FC<RecordModalProps> = ({ isOpen, onClose, onSave, onNa
               </p>
             </div>
           </div>
+          {canSplitClass && (
+            <button
+              type="button"
+              onClick={() => onSplitClass!(initialData!)}
+              title="Dividir esta clase en dos partes con horario y ambiente propios (solo simulación)"
+              className={`ml-auto shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest shadow-lg shadow-amber-100 transition-all active:scale-95`}
+            >
+              <Scissors size={14} />
+              <span className="hidden sm:inline">Dividir clase</span>
+            </button>
+          )}
           {canOpenInArchive && (
             <button
               type="button"
               onClick={() => onOpenInArchive!(archiveNrc)}
               title="Abrir las filas de este NRC en Gestión de Registro Base para hacer cortes u otra programación"
-              className="ml-auto shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest shadow-lg shadow-blue-100 transition-all active:scale-95"
+              className={`${canSplitClass ? '' : 'ml-auto'} shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest shadow-lg shadow-blue-100 transition-all active:scale-95`}
             >
               <Database size={14} />
               <span className="hidden sm:inline">Registro Base</span>
