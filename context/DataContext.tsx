@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback, useRef } from 'react';
 import { ProcessedSchedule, RoomData, Instructor, HolidayData, InstitutionalReference, ExtraHoursConfig } from '../types';
 import { AppSettings, DEFAULT_SETTINGS } from '../types/settings';
 import { supabase } from '../supabaseClient';
@@ -6,6 +6,7 @@ import { validateInstructorWeek } from '../services/auditService';
 import { SEMESTER_START_DATE, SEMESTER_END_DATE, ACTIVE_PERIODO } from '../constants';
 import { belongsToInstructor, findFuzzyNameMatches, isFuzzyNameMatch, normalizeNameKey, buildInstructorScheduleIndex, getInstructorSchedules, resolveInstructorByName } from '../services/businessRules';
 import { normalizeExtraHoursConfig } from '../services/extraHoursCalculations';
+import { ApplyPlan, planSimulationApply, findDuplicateOccurrences, groupKey } from '../services/simulationReconcile';
 import Toast, { ToastState } from '../components/Toast';
 
 const mapHolidayFromDB = (h: any): HolidayData => ({
@@ -101,7 +102,8 @@ interface DataContextType {
   startSimulation: (instructorFilter?: string) => void;
   endSimulation: () => void;
   importScheduleToSimulation: (scheduleId: string | string[], targetInstructor: string, tempHECoverage?: boolean) => number;
-  applySimulation: () => Promise<void>;
+  applySimulation: (plan?: ApplyPlan) => Promise<void>;
+  prepareApplyPlan: () => Promise<ApplyPlan>;
   saveScenario: (name: string, description?: string, metadata?: any) => Promise<void>;
   updateScenario: (id: string, metadata?: any) => Promise<void>;
   loadScenario: (id: string) => Promise<any>;
@@ -1036,6 +1038,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [simulationAdmin, setSimulationAdmin] = useState<ProcessedSchedule[]>([]);
   const [simulationConfig, setSimulationConfig] = useState<any>({});
   const [extraHoursConfig, setExtraHoursConfig] = useState<ExtraHoursConfig | null>(null);
+  // IDs del horario real que existían cuando se inició la simulación (null si se cargó un
+  // escenario guardado: no se conoce esa foto). Al aplicar, lo que se agregó a la BD DESPUÉS
+  // de iniciar y no tiene relación con la simulación no se borra (ver planSimulationApply).
+  const simulationBaseIdsRef = useRef<Set<string> | null>(null);
   // Escenario guardado del que proviene la simulación actual (si se cargó uno con
   // loadScenario, o si ya se guardó una vez en esta sesión) — permite que "Guardar
   // Escenario" ofrezca actualizar el mismo registro en vez de crear uno nuevo siempre.
@@ -1176,6 +1182,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setExtraHoursConfig(null);
       }
 
+      simulationBaseIdsRef.current = new Set([...schedulesToClone, ...adminToClone].map(s => s.id));
       setSimulationSchedules(clone(schedulesToClone));
       setSimulationAdmin(clone(adminToClone));
       setIsSimulationMode(true);
@@ -1196,6 +1203,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [schedules, administrativeTasks, notify, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig, instructors]);
 
   const endSimulation = useCallback(() => {
+    simulationBaseIdsRef.current = null;
     setIsSimulationMode(false);
     setSimulationSchedules([]);
     setSimulationAdmin([]);
@@ -1256,92 +1264,136 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return newAcad.length + newAdmin.length;
   }, [schedules, administrativeTasks, instructors, notify]);
 
+  // Lectura fresca del horario real completo del periodo (clases + administrativas), directo de
+  // la BD: la copia en memoria puede estar desactualizada (otra pestaña, una actualización de
+  // la BD hecha mientras la simulación seguía abierta) y de ella dependía qué se borraba.
+  const fetchFreshPeriodSchedules = useCallback(async (): Promise<ProcessedSchedule[]> => {
+    let all: any[] = [];
+    let offset = 0;
+    const limit = 1000;
+    let last = 0;
+    do {
+      const { data, error } = await supabase
+        .from('schedules')
+        .select('*')
+        .eq('periodo', ACTIVE_PERIODO)
+        .order('id')
+        .range(offset, offset + limit - 1);
+      if (error) throw error;
+      all = [...all, ...(data || [])];
+      last = data?.length || 0;
+      offset += limit;
+    } while (last === limit);
+    return all.map(mapSchedFromDB);
+  }, []);
+
+  // Alcance real a comparar: si la simulación está filtrada a un instructor
+  // (startSimulation con instructorFilter), 'simulationSchedules'/'simulationAdmin'
+  // SOLO contienen los horarios de ESE instructor. Comparar contra TODOS los
+  // horarios reales del sistema borraría los de todos los demás instructores
+  // (todo lo que no está en la simulación se interpreta como "eliminado").
+  // Por eso se acota al mismo subconjunto que usó startSimulation, usando el mismo
+  // matching (ID prioritario, nombre como último recurso).
+  const resolveApplyScope = useCallback(() => {
+    const instructorFilter: string | undefined = simulationConfig?.instructorFilter;
+    const instObj = instructorFilter ? instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter)) : undefined;
+    const inScope = (s: ProcessedSchedule) => {
+      if (!instructorFilter) return true;
+      return instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
+    };
+    return { instructorFilter, instObj, inScope };
+  }, [simulationConfig, instructors]);
+
+  // Calcula (sin escribir nada) qué haría "Aplicar cambios reales": compara por FECHA DE
+  // CLASE contra el horario real recién leído de la BD, para no duplicar lo que ya existe
+  // aunque en la simulación esté partido en varias filas. Ver services/simulationReconcile.ts.
+  const prepareApplyPlan = useCallback(async (): Promise<ApplyPlan> => {
+    const freshReal = await fetchFreshPeriodSchedules();
+    const { inScope } = resolveApplyScope();
+    return planSimulationApply({
+      freshReal,
+      simRows: [...simulationSchedules, ...simulationAdmin],
+      inScope,
+      baseRealIds: simulationBaseIdsRef.current
+    });
+  }, [fetchFreshPeriodSchedules, resolveApplyScope, simulationSchedules, simulationAdmin]);
+
   // La confirmación previa (acción irreversible: escribe en la BD real) vive en el
-  // componente que la dispara — components/SimulationBar.tsx — para poder usar el modal
-  // propio de la app (ConfirmDialog) en vez del window.confirm nativo del navegador.
-  const applySimulation = useCallback(async () => {
+  // componente que la dispara — components/SimulationBar.tsx — que muestra el plan de
+  // prepareApplyPlan (qué se agrega, qué ya existía, qué se elimina) antes de confirmar.
+  const applySimulation = useCallback(async (givenPlan?: ApplyPlan) => {
     setIsLoading(true);
     try {
-      // Alcance real a comparar: si la simulación está filtrada a un instructor
-      // (startSimulation con instructorFilter), 'simulationSchedules'/'simulationAdmin'
-      // SOLO contienen los horarios de ESE instructor. Comparar contra TODOS los
-      // horarios reales del sistema borraría los de todos los demás instructores
-      // (todo lo que no está en la simulación se interpreta como "eliminado").
-      // Por eso acotamos 'realItems' al mismo subconjunto que usó startSimulation,
-      // usando el mismo matching (ID prioritario, nombre como último recurso).
-      const instructorFilter = simulationConfig?.instructorFilter;
-      let realItems: ProcessedSchedule[] = [...schedules, ...administrativeTasks];
-      const instObj = instructorFilter ? instructors.find(i => normalizeNameKey(i.name) === normalizeNameKey(instructorFilter)) : undefined;
-      if (instructorFilter) {
-        const matchesFilter = (s: ProcessedSchedule) => instObj ? belongsToInstructor(instObj, s) : s.instructor === instructorFilter;
-        realItems = realItems.filter(matchesFilter);
-      }
+      const plan = givenPlan ?? await prepareApplyPlan();
+      const { instructorFilter, instObj } = resolveApplyScope();
 
-      // Respaldo automático del horario real ANTES de sobreescribirlo: guarda realItems
-      // (tal cual está en la BD ahora, con sus IDs reales) como un escenario más en
-      // "Simulaciones Guardadas". Como usa los mismos IDs, cargar este respaldo más
+      // Respaldo automático del horario real ANTES de sobreescribirlo: guarda el horario real
+      // del instructor (tal cual está en la BD ahora, con sus IDs reales) como un escenario más
+      // en "Simulaciones Guardadas". Como usa los mismos IDs, cargar este respaldo más
       // adelante y volver a aplicar restaura exactamente ese estado (revierte cualquier
       // fila agregada por HE y cualquier campo modificado). Se guarda uno nuevo en CADA
       // aplicación (historial completo) — nunca se sobreescribe un respaldo anterior, así
       // que el horario "sin horas extras" original sigue disponible aunque se aplique
       // varias veces después. Solo aplica a simulaciones acotadas a un instructor — una
       // simulación global movería demasiados horarios como para que un respaldo sea útil.
-      if (instructorFilter && instObj && realItems.length > 0) {
+      if (instructorFilter && instObj && plan.scopeRealRows.length > 0) {
         try {
-          await supabase.from('scenarios').insert({
+          const { error: backupErr } = await supabase.from('scenarios').insert({
             name: `Respaldo Auto — ${instObj.name}`,
             description: `Horario real de ${instObj.name} justo antes de aplicar cambios de simulación (${new Date().toLocaleString('es-ES')}).`,
             data: {
-              schedules: realItems,
+              schedules: plan.scopeRealRows,
               metadata: { view: 'Instructor', filter: instObj.name, instructorName: instObj.name, isAutoBackup: true },
               simulationConfig: { instructorFilter: instObj.name, instructorKey: instObj.id, ignoreAudit: true },
               extraHoursConfig: null
             }
           });
+          if (backupErr) throw backupErr;
         } catch (backupError: any) {
           console.error('Error creando respaldo automático:', backupError);
           notify('No se pudo crear el respaldo automático del horario base — continuando de todas formas.', 'error');
         }
       }
 
-      const realIds = new Set(realItems.map(s => s.id));
-      const simIds = new Set([...simulationSchedules, ...simulationAdmin].map(s => s.id));
-
-      const toDelete = [...realIds].filter(id => !simIds.has(id));
-      const toUpsert = [...simulationSchedules, ...simulationAdmin]; // We update EVERYTHING to be safe
-
-      // Execute Deletions
-      if (toDelete.length > 0) {
-        await supabase.from('schedules').delete().in('id', toDelete);
+      // Execute Deletions (en bloques: un .in() con cientos de IDs puede exceder el largo de la URL)
+      const deleteChunk = 200;
+      for (let i = 0; i < plan.toDelete.length; i += deleteChunk) {
+        const { error } = await supabase.from('schedules').delete().in('id', plan.toDelete.slice(i, i + deleteChunk));
+        if (error) throw error;
       }
 
       // Execute Upserts (Chunked)
-      const payload = toUpsert.map(mapSchedToDB);
+      const payload = plan.toUpsert.map(mapSchedToDB);
       const chunkSize = 500;
       for (let i = 0; i < payload.length; i += chunkSize) {
         const { error } = await supabase.from('schedules').upsert(payload.slice(i, i + chunkSize));
         if (error) throw error;
       }
 
-      // Actualizar el estado local: fusionar (quitar lo borrado, reemplazar/agregar lo
-      // subido), NO reemplazar todo el arreglo — de lo contrario una simulación filtrada
-      // borraría del estado local (aunque no de la BD) a todos los demás instructores.
-      const deletedSet = new Set(toDelete);
-      const upsertAcadIds = new Set(simulationSchedules.map(s => s.id));
-      const upsertAdminIds = new Set(simulationAdmin.map(s => s.id));
-
-      setSchedules(prev => [
-        ...prev.filter(s => !deletedSet.has(s.id) && !upsertAcadIds.has(s.id)),
-        ...simulationSchedules
-      ]);
-      setAdministrativeTasks(prev => [
-        ...prev.filter(s => !deletedSet.has(s.id) && !upsertAdminIds.has(s.id)),
-        ...simulationAdmin
-      ]);
+      // Comprobación posterior sobre lo que REALMENTE quedó en la BD: sesiones repetidas en los
+      // NRC/tareas que se tocaron. También deja el estado local igual a la BD (en vez de
+      // fusionar a mano), que es justo lo que antes se desfasaba.
+      let duplicatesNote = '';
+      try {
+        const after = await fetchFreshPeriodSchedules();
+        setSchedules(after.filter(s => !s.isAdministrative));
+        setAdministrativeTasks(after.filter(s => s.isAdministrative));
+        setGlobalSchedulesSummary(after);
+        const keys = new Set<string>([...plan.touchedKeys, ...plan.toUpsert.map(groupKey)]);
+        const dups = findDuplicateOccurrences(after, keys);
+        if (dups.length > 0) {
+          duplicatesNote = ` ATENCIÓN: quedaron sesiones repetidas en ${dups.length} registro(s): ${dups.slice(0, 5).map(d => d.label).join('; ')}${dups.length > 5 ? '…' : ''}. Revísalos en Registro Base › Duplicados.`;
+        }
+      } catch (checkError) {
+        console.error('Error en la comprobación posterior a aplicar:', checkError);
+        await refreshData();
+      }
 
       // Exit Simulation
       endSimulation();
-      notify("Simulación aplicada correctamente.", 'success');
+      const skipped = plan.stats.skippedRows;
+      const baseMsg = `Simulación aplicada correctamente.${skipped > 0 ? ` ${skipped} fila(s) ya existían en el horario real y no se duplicaron.` : ''}`;
+      notify(baseMsg + duplicatesNote, duplicatesNote ? 'error' : 'success');
 
     } catch (e: any) {
       console.error("Error applying simulation:", e);
@@ -1353,7 +1405,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
       setIsLoading(false);
     }
-  }, [schedules, administrativeTasks, simulationSchedules, simulationAdmin, simulationConfig, instructors, refreshData, notify]);
+  }, [prepareApplyPlan, resolveApplyScope, fetchFreshPeriodSchedules, endSimulation, refreshData, notify]);
 
   // `isExtra` es una marca de VISTA (la grilla la pone en los fragmentos de HE, ver
   // ScheduleGrid.tsx); nunca debe quedar guardada en un bloque: lo pintaría gris aunque ya
@@ -1480,6 +1532,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         setSimulationSchedules(parsed.filter(s => !s.isAdministrative));
         setSimulationAdmin(parsed.filter(s => s.isAdministrative));
+        simulationBaseIdsRef.current = null;
         setSimulationConfig(loadedConfig); // Restore config
         // Siempre explícito (incluso a null): el escenario es la fuente de verdad para
         // su propia plantilla de HE — si no tenía una guardada, no debe quedar visible
@@ -1685,6 +1738,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     endSimulation,
     importScheduleToSimulation,
     applySimulation,
+    prepareApplyPlan,
     saveScenario,
     updateScenario,
     loadScenario,
@@ -1709,7 +1763,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     instructorsMap, instructorsByNameMap, roomsMap, holidaysMap, careersMap,
     settings, loadSchedulesForFilter, globalSchedulesSummary,
     simulationConfig, extraHoursConfig, extraHoursConfigsByInstructor, saveInstructorExtraHoursConfig, setInstructorHEAssignment, startSimulation, endSimulation,
-    importScheduleToSimulation, applySimulation, saveScenario, updateScenario, loadScenario,
+    importScheduleToSimulation, applySimulation, prepareApplyPlan, saveScenario, updateScenario, loadScenario,
     currentScenarioId, currentScenarioName,
     recalculateInstructorAudit, syncInstructorIdInSchedules, updateAppSetting,
     recalculateAllInstructorsAudit, getAuditCutoffDate, liveAuditByInstructor, notify

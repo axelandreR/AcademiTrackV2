@@ -1,10 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useData } from '../context/DataContext';
 import { ProcessedSchedule } from '../types';
-import { Search, Edit2, UserMinus, Calendar, MapPin, Clock, Filter, ArrowLeft } from 'lucide-react';
+import { Search, Edit2, UserMinus, Calendar, MapPin, Clock, Filter, ArrowLeft, Layers } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import ArchiveEditModal from '../components/ArchiveEditModal';
 import ConfirmDialog from '../components/ConfirmDialog';
+import DuplicatesReportModal from '../components/DuplicatesReportModal';
 
 // Con ~5,500 registros del periodo activo, filtrar y volver a pintar la tabla en CADA
 // tecla (y sin límite de filas) es lo que se sentía como demora al escribir el NRC: un
@@ -25,6 +26,7 @@ const ArchiveManagerPage: React.FC = () => {
     const [filterType, setFilterType] = useState<'all' | 'academic' | 'admin'>('all');
     const [editingSchedule, setEditingSchedule] = useState<ProcessedSchedule | null>(null);
     const [pendingRemoval, setPendingRemoval] = useState<ProcessedSchedule | null>(null);
+    const [isDuplicatesOpen, setIsDuplicatesOpen] = useState(false);
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -99,6 +101,13 @@ const ArchiveManagerPage: React.FC = () => {
                 schedule={editingSchedule}
             />
 
+            <DuplicatesReportModal
+                isOpen={isDuplicatesOpen}
+                schedules={allSchedules}
+                onClose={() => setIsDuplicatesOpen(false)}
+                onViewNrc={(nrc) => { setIsDuplicatesOpen(false); setFilterType('all'); setExactNrc(nrc); setSearchTerm(nrc); }}
+            />
+
             {/* Header */}
             <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
                 <div className="max-w-7xl mx-auto px-4 h-20 flex items-center justify-between gap-6">
@@ -146,6 +155,15 @@ const ArchiveManagerPage: React.FC = () => {
                             Admin
                         </button>
                     </div>
+
+                    <button
+                        onClick={() => setIsDuplicatesOpen(true)}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-amber-700 bg-amber-50 border border-amber-100 hover:bg-amber-100 transition-all shrink-0"
+                        title="Buscar sesiones (NRC + fecha + horario) que aparecen en más de una fila del horario real"
+                    >
+                        <Layers size={16} />
+                        Duplicados
+                    </button>
                 </div>
             </header>
 

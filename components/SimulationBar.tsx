@@ -4,7 +4,8 @@ import { useSearchParams } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { Play, Save, X, CheckCheck, AlertTriangle, Clock, FileSpreadsheet, ChevronDown, ChevronUp } from 'lucide-react';
 import ExtraHoursModal from './ExtraHoursModal';
-import ConfirmDialog from './ConfirmDialog';
+import ApplySimulationDialog from './ApplySimulationDialog';
+import { ApplyPlan } from '../services/simulationReconcile';
 import SaveScenarioModal from './SaveScenarioModal';
 import WeeklyHEExportModal from './WeeklyHEExportModal';
 import { generateWeeklyHEExcel, generateFullPeriodHEExcel } from '../services/excelExporter';
@@ -12,13 +13,14 @@ import { resolveInstructorByName, belongsToInstructor } from '../services/busine
 
 const SimulationBar: React.FC = () => {
     const {
-        isSimulationMode, endSimulation, applySimulation, saveScenario, updateScenario,
+        isSimulationMode, endSimulation, applySimulation, prepareApplyPlan, saveScenario, updateScenario,
         currentScenarioId, currentScenarioName, extraHoursConfig, setExtraHoursConfig, holidays,
         simulationConfig, allSchedules, instructors, instructorsByNameMap, notify, saveInstructorExtraHoursConfig
     } = useData();
     const [isApplying, setIsApplying] = useState(false);
     const [isExtraHoursModalOpen, setIsExtraHoursModalOpen] = useState(false);
     const [isApplyConfirmOpen, setIsApplyConfirmOpen] = useState(false);
+    const [applyPlan, setApplyPlan] = useState<ApplyPlan | null>(null);
     const [isSaveScenarioOpen, setIsSaveScenarioOpen] = useState(false);
     const [isWeeklyExportOpen, setIsWeeklyExportOpen] = useState(false);
     const [isFullPeriodExporting, setIsFullPeriodExporting] = useState(false);
@@ -39,13 +41,27 @@ const SimulationBar: React.FC = () => {
 
     if (!isSimulationMode) return null;
 
-    const handleApply = () => setIsApplyConfirmOpen(true);
+    // Antes de escribir se compara (por fecha de clase) contra el horario real recién leído
+    // de la BD y se muestra el resumen: qué se agrega, qué ya existía y qué se elimina.
+    const handleApply = async () => {
+        setApplyPlan(null);
+        setIsApplyConfirmOpen(true);
+        try {
+            setApplyPlan(await prepareApplyPlan());
+        } catch (e: any) {
+            setIsApplyConfirmOpen(false);
+            notify('No se pudo comparar la simulación con el horario real: ' + (e?.message || e), 'error');
+        }
+    };
 
     const confirmApply = async () => {
+        const plan = applyPlan;
+        if (!plan) return;
         setIsApplyConfirmOpen(false);
         setIsApplying(true);
-        await applySimulation();
+        await applySimulation(plan);
         setIsApplying(false);
+        setApplyPlan(null);
     };
 
     const handleSave = () => setIsSaveScenarioOpen(true);
@@ -227,17 +243,11 @@ const SimulationBar: React.FC = () => {
             )}
 
             {createPortal(
-                <ConfirmDialog
+                <ApplySimulationDialog
                     isOpen={isApplyConfirmOpen}
-                    title="Aplicar simulación"
-                    message={
-                        simulationConfig?.instructorFilter
-                            ? `Se escribirán los cambios de la simulación en la base de datos real. Antes de guardar, se creará automáticamente un respaldo del horario actual de ${simulationConfig.instructorFilter} en "Simulaciones Guardadas" — puedes revertir cargando ese respaldo y volviendo a aplicar.`
-                            : 'Se escribirán los cambios de la simulación en la base de datos real. Esta simulación no está acotada a un instructor, así que no se genera un respaldo automático — esta acción es irreversible.'
-                    }
-                    confirmLabel="Aplicar cambios"
-                    variant={simulationConfig?.instructorFilter ? 'default' : 'danger'}
-                    onCancel={() => setIsApplyConfirmOpen(false)}
+                    plan={applyPlan}
+                    instructorName={simulationConfig?.instructorFilter}
+                    onCancel={() => { setIsApplyConfirmOpen(false); setApplyPlan(null); }}
                     onConfirm={confirmApply}
                 />,
                 document.body
