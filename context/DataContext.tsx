@@ -1355,10 +1355,20 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [schedules, administrativeTasks, simulationSchedules, simulationAdmin, simulationConfig, instructors, refreshData, notify]);
 
+  // `isExtra` es una marca de VISTA (la grilla la pone en los fragmentos de HE, ver
+  // ScheduleGrid.tsx); nunca debe quedar guardada en un bloque: lo pintaría gris aunque ya
+  // no exista ninguna ventana de HE. Se quita al guardar en simulación, al guardar el
+  // escenario y al cargarlo (esto último sanea los escenarios ya contaminados).
+  const stripViewFlags = <T extends object>(item: T): T => {
+    if (!('isExtra' in item)) return item;
+    const { isExtra: _ignored, ...rest } = item as T & { isExtra?: boolean };
+    return rest as T;
+  };
+
   // Intercept Cloud Functions
   const saveScheduleCloudWrapper = useCallback(async (items: ProcessedSchedule | ProcessedSchedule[]) => {
     if (isSimulationMode) {
-      const newItems = Array.isArray(items) ? items : [items];
+      const newItems = (Array.isArray(items) ? items : [items]).map(stripViewFlags);
       // Update Simulation State Only
       // Split Academic / Admin
       const newAcad = newItems.filter(i => !i.isAdministrative);
@@ -1394,7 +1404,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const saveScenario = useCallback(async (name: string, description: string = '', metadata: any = null) => {
     try {
-      const scenarioData = [...simulationSchedules, ...simulationAdmin];
+      const scenarioData = [...simulationSchedules, ...simulationAdmin].map(stripViewFlags);
       const payload = {
         schedules: scenarioData,
         metadata,
@@ -1425,7 +1435,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // una columna updated_at, para que la lista lo muestre como el más reciente.
   const updateScenario = useCallback(async (id: string, metadata: any = null) => {
     try {
-      const scenarioData = [...simulationSchedules, ...simulationAdmin];
+      const scenarioData = [...simulationSchedules, ...simulationAdmin].map(stripViewFlags);
       const payload = {
         schedules: scenarioData,
         metadata,
@@ -1463,7 +1473,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
 
         const parsed = loadedSchedules.map((s: any) => ({
-          ...s,
+          ...stripViewFlags(s),
           startDate: new Date(s.startDate),
           endDate: new Date(s.endDate)
         }));

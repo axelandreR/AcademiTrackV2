@@ -148,6 +148,12 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   // excluir fragmentos en ventana de HE de la Meta/46h, con o sin simulación activa.
   const currentInstructorExtraHoursConfig = currentInstructorMeta ? extraHoursConfigsByInstructor[currentInstructorMeta.id] || null : null;
 
+  // La grilla pinta fragmentos de HE (copias del bloque con hora recortada e `isExtra`), pero
+  // editar/dividir/guardar debe operar sobre el bloque real: si el fragmento llegara al
+  // modal, `isExtra` y el horario recortado se guardarían dentro de la simulación y el
+  // bloque quedaría gris para siempre, aunque se quite la HE.
+  const originalScheduleById = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules]);
+
   useEffect(() => {
     if (!isResizing) return;
     const handleMouseMove = (e: MouseEvent) => {
@@ -660,7 +666,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                               isOverlapping={overlappingIds.has(sched.id)}
                               getPosition={getPosition}
                               getDurationHeight={getDurationHeight}
-                              onEditRecord={onEditRecord}
+                              onEditRecord={onEditRecord ? (r) => onEditRecord(originalScheduleById.get(r.id) ?? r) : undefined}
                               onDeleteRecord={onDeleteRecord}
                               onIndividualizeTask={onIndividualizeTask}
                               onNavigate={onNavigate}
